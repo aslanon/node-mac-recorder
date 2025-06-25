@@ -12,11 +12,15 @@
 		"native",
 		"electron"
 	],
-	"author": "Your Name",
+	"author": "aslanonur",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/yourusername/node-mac-recorder.git"
+		"url": "https://github.com/aslanon/node-mac-recorder.git"
+	},
+	"homepage": "https://github.com/aslanon/node-mac-recorder#readme",
+	"bugs": {
+		"url": "https://github.com/aslanon/node-mac-recorder/issues"
 	},
 	"engines": {
 		"node": ">=14.0.0"

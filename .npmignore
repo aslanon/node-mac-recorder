@@ -1,0 +1,35 @@
+# Build files
+build/
+install.js
+
+# Test files
+test.js
+example.js
+demo-recording.mp4
+
+# Development files
+.DS_Store
+.vscode/
+*.log
+*.tmp
+
+# Git files
+.git/
+.gitignore
+
+# Documentation (README ve LICENSE dahil olacak)
+docs/
+
+# Node modules
+node_modules/
+
+# Temporary files
+window_selector.html
+selected_window.json
+*.mov
+*.mp4
+
+# Mac specific
+.DS_Store
+.AppleDouble
+.LSOverride 
