@@ -1,6 +1,5 @@
 # Build files
 build/
-install.js
 
 # Test files
 test.js
