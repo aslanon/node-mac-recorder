@@ -1,147 +1,74 @@
 # node-mac-recorder
 
-MacOS native ekran kaydı yapabilen Node.js paketi. Electron ve Nuxt uygulamalarında kullanım için optimize edilmiştir.
+A powerful native macOS screen recording Node.js package with advanced window selection, multi-display support, and granular audio controls. Built with AVFoundation for optimal performance.
 
-## Özellikler
+## Features
 
-- 🎥 Native macOS ekran kaydı (QuickTime API)
-- 🎵 Ses kaydı desteği (sistem sesi dahil)
-- 📱 Belirli alan kaydı
-- 📸 Screenshot alma (screencapture)
-- 🎛️ Çeşitli kalite seçenekleri
-- 📊 Event-driven mimari
-- 🔧 Sistem ses kontrolü
-- 🔒 İzin yönetimi ve kontrol
+✨ **Advanced Recording Capabilities**
 
-## Kurulum
+- 🖥️ **Full Screen Recording** - Capture entire displays
+- 🪟 **Window-Specific Recording** - Record individual application windows
+- 🎯 **Area Selection** - Record custom screen regions
+- 🖱️ **Multi-Display Support** - Automatic display detection and selection
+- 🎨 **Cursor Control** - Toggle cursor visibility in recordings
+
+🎵 **Granular Audio Controls**
+
+- 🎤 **Microphone Audio** - Separate microphone control (default: off)
+- 🔊 **System Audio** - System audio capture (default: on)
+- 📻 **Audio Device Listing** - Enumerate available audio devices
+- 🎛️ **Device Selection** - Choose specific audio input devices
+
+🔧 **Smart Window Management**
+
+- 📋 **Window Discovery** - List all visible application windows
+- 🎯 **Automatic Coordinate Conversion** - Handle multi-display coordinate systems
+- 📐 **Display ID Detection** - Automatically select correct display for window recording
+- 🖼️ **Window Filtering** - Smart filtering of recordable windows
+
+⚙️ **Customization Options**
+
+- 🎬 **Quality Control** - Adjustable recording quality presets
+- 🎞️ **Frame Rate Control** - Custom frame rate settings
+- 📁 **Flexible Output** - Custom output paths and formats
+- 🔐 **Permission Management** - Built-in permission checking
+
+## Installation
 
 ```bash
 npm install node-mac-recorder
 ```
 
-**İlk kurulumda native modül build edilir. Bu işlem 1-2 dakika sürebilir.**
+### Requirements
 
-### Manuel Build
+- **macOS 10.15+** (Catalina or later)
+- **Node.js 14+**
+- **Xcode Command Line Tools**
+- **Screen Recording Permission** (automatically requested)
 
-Eğer build sorunları yaşarsanız:
+### Build Requirements
 
 ```bash
-# Dependencies yükle
-npm install
+# Install Xcode Command Line Tools
+xcode-select --install
 
-# Native modülü build et
-npm run rebuild
-
-# Test et
-npm test
+# The package will automatically build native modules during installation
 ```
 
-## Sistem Gereksinimleri
-
-- macOS 10.14 veya üzeri
-- Node.js 14.0.0 veya üzeri
-- Xcode Command Line Tools
-- Ekran kaydı izinleri
-
-## Temel Kullanım
+## Quick Start
 
 ```javascript
 const MacRecorder = require("node-mac-recorder");
 
 const recorder = new MacRecorder();
 
-// Kayıt başlatma
-async function startRecording() {
-	try {
-		const outputPath = "./recordings/my-recording.mp4";
-		await recorder.startRecording(outputPath, {
-			quality: "high",
-			frameRate: 30,
-			captureCursor: false, // Default: false (cursor gizli)
-			includeMicrophone: false, // Default: false (mikrofon kapalı)
-			includeSystemAudio: true, // Default: true (sistem sesi açık)
-			displayId: 0, // Hangi ekranı kaydedeceği (0 = ana ekran)
-		});
-		console.log("Kayıt başlatıldı!");
-	} catch (error) {
-		console.error("Kayıt başlatılamadı:", error);
-	}
-}
-
-// Kayıt durdurma
-async function stopRecording() {
-	try {
-		const result = await recorder.stopRecording();
-		console.log("Kayıt tamamlandı:", result.outputPath);
-	} catch (error) {
-		console.error("Kayıt durdurulamadı:", error);
-	}
-}
-
-// Event listeners
-recorder.on("started", (outputPath) => {
-	console.log("Kayıt başladı:", outputPath);
-});
-
-recorder.on("timeUpdate", (seconds) => {
-	console.log("Kayıt süresi:", seconds, "saniye");
-});
-
-recorder.on("completed", (outputPath) => {
-	console.log("Kayıt tamamlandı:", outputPath);
-});
+// Simple full-screen recording
+await recorder.startRecording("./output.mov");
+await new Promise((resolve) => setTimeout(resolve, 5000)); // Record for 5 seconds
+await recorder.stopRecording();
 ```
 
-## Gelişmiş Kullanım
-
-### Belirli Alan Kaydı
-
-```javascript
-await recorder.startRecording("./output.mp4", {
-	captureArea: {
-		x: 100,
-		y: 100,
-		width: 800,
-		height: 600,
-	},
-});
-```
-
-### Cihaz Listesi
-
-```javascript
-// Ses cihazlarını listele
-const audioDevices = await recorder.getAudioDevices();
-console.log("Ses cihazları:", audioDevices);
-
-// Video cihazlarını listele
-const videoDevices = await recorder.getVideoDevices();
-console.log("Video cihazları:", videoDevices);
-
-// Ekranları listele
-const displays = await recorder.getDisplays();
-console.log("Ekranlar:", displays);
-
-// Pencereleri listele
-const windows = await recorder.getWindows();
-console.log("Pencereler:", windows);
-
-// Belirli ekranı kaydet
-await recorder.startRecording("./ikinci-ekran.mp4", {
-	displayId: 1, // 1. indexteki ekranı (ikinci ekran) kaydet
-	includeSystemAudio: true,
-	includeMicrophone: false,
-});
-
-// Belirli pencereyi kaydet
-await recorder.startRecording("./chrome-penceresi.mp4", {
-	windowId: 12345, // Pencere ID'si
-	includeSystemAudio: true,
-	includeMicrophone: false,
-});
-```
-
-## API Referansı
+## API Reference
 
 ### Constructor
 
@@ -149,167 +76,417 @@ await recorder.startRecording("./chrome-penceresi.mp4", {
 const recorder = new MacRecorder();
 ```
 
-### Metodlar
+### Methods
 
 #### `startRecording(outputPath, options?)`
 
-Ekran kaydını başlatır.
+Starts screen recording with the specified options.
 
-**Parametreler:**
+```javascript
+await recorder.startRecording("./recording.mov", {
+	// Audio Controls
+	includeMicrophone: false, // Enable microphone (default: false)
+	includeSystemAudio: true, // Enable system audio (default: true)
 
-- `outputPath` (string): Kayıt dosyasının kaydedileceği yol
-- `options` (object, opsiyonel): Kayıt seçenekleri
+	// Display & Window Selection
+	displayId: 0, // Display index (null = main display)
+	windowId: 12345, // Specific window ID
+	captureArea: {
+		// Custom area selection
+		x: 100,
+		y: 100,
+		width: 800,
+		height: 600,
+	},
 
-**Seçenekler:**
-
-- `includeMicrophone` (boolean): Mikrofon sesini dahil et (varsayılan: false)
-- `includeSystemAudio` (boolean): Sistem sesini dahil et (varsayılan: true)
-- `quality` (string): Kalite ('low', 'medium', 'high')
-- `frameRate` (number): Kare hızı (varsayılan: 30)
-- `captureArea` (object): Kayıt alanı {x, y, width, height}
-- `captureCursor` (boolean): İmleci kaydet (varsayılan: false)
-- `displayId` (number): Hangi ekranı kaydedeceği (varsayılan: null - ana ekran)
-- `windowId` (number): Hangi pencereyi kaydedeceği (varsayılan: null - tam ekran)
-- `showClicks` (boolean): Tıklamaları göster (varsayılan: false)
+	// Recording Options
+	quality: "high", // 'low', 'medium', 'high'
+	frameRate: 30, // FPS (15, 30, 60)
+	captureCursor: false, // Show cursor (default: false)
+});
+```
 
 #### `stopRecording()`
 
-Devam eden kaydı durdurur.
+Stops the current recording.
 
-#### `getAudioDevices()`
-
-Mevcut ses cihazlarını listeler.
-
-#### `getSystemVolume()`
-
-macOS sistem ses seviyesini döndürür.
-
-#### `setSystemVolume(volume)`
-
-macOS sistem ses seviyesini ayarlar.
-
-#### `checkPermissions()`
-
-Ekran kaydı izinlerini kontrol eder.
-
-#### `getDisplays()`
-
-Mevcut ekranları listeler.
+```javascript
+const result = await recorder.stopRecording();
+console.log("Recording saved to:", result.outputPath);
+```
 
 #### `getWindows()`
 
-Açık pencereleri listeler. Her pencere için ID, isim, uygulama adı, pozisyon ve boyut bilgisi döner.
+Returns a list of all recordable windows.
+
+```javascript
+const windows = await recorder.getWindows();
+console.log(windows);
+// [
+//   {
+//     id: 12345,
+//     name: "My App Window",
+//     appName: "MyApp",
+//     x: 100, y: 200,
+//     width: 800, height: 600
+//   },
+//   ...
+// ]
+```
+
+#### `getDisplays()`
+
+Returns information about all available displays.
+
+```javascript
+const displays = await recorder.getDisplays();
+console.log(displays);
+// [
+//   {
+//     id: 69733504,
+//     name: "Display 1",
+//     resolution: "2048x1330",
+//     x: 0, y: 0
+//   },
+//   ...
+// ]
+```
+
+#### `getAudioDevices()`
+
+Lists all available audio input devices.
+
+```javascript
+const devices = await recorder.getAudioDevices();
+console.log(devices);
+// [
+//   {
+//     id: "device-id-123",
+//     name: "Built-in Microphone",
+//     manufacturer: "Apple Inc.",
+//     isDefault: true
+//   },
+//   ...
+// ]
+```
+
+#### `checkPermissions()`
+
+Checks macOS recording permissions.
+
+```javascript
+const permissions = await recorder.checkPermissions();
+console.log(permissions);
+// {
+//   screenRecording: true,
+//   microphone: true,
+//   accessibility: true
+// }
+```
 
 #### `getStatus()`
 
-Kayıt durumunu döndürür.
-
-### Events
+Returns current recording status and options.
 
 ```javascript
-recorder.on("started", (outputPath) => {});
-recorder.on("stopped", (result) => {});
-recorder.on("completed", (outputPath) => {});
-recorder.on("progress", (data) => {});
-recorder.on("timeUpdate", (seconds) => {});
-recorder.on("error", (error) => {});
+const status = recorder.getStatus();
+console.log(status);
+// {
+//   isRecording: true,
+//   outputPath: "./recording.mov",
+//   options: { ... },
+//   recordingTime: 15
+// }
 ```
 
-## Electron Entegrasyonu
+## Usage Examples
+
+### Window-Specific Recording
 
 ```javascript
-// Main process (main.js)
-const MacRecorder = require("node-mac-recorder");
+const recorder = new MacRecorder();
+
+// List available windows
+const windows = await recorder.getWindows();
+console.log("Available windows:");
+windows.forEach((win, i) => {
+	console.log(`${i + 1}. ${win.appName} - ${win.name}`);
+});
+
+// Record a specific window
+const targetWindow = windows.find((w) => w.appName === "Safari");
+await recorder.startRecording("./safari-recording.mov", {
+	windowId: targetWindow.id,
+	includeSystemAudio: false,
+	includeMicrophone: true,
+	captureCursor: true,
+});
+
+await new Promise((resolve) => setTimeout(resolve, 10000)); // 10 seconds
+await recorder.stopRecording();
+```
+
+### Multi-Display Recording
+
+```javascript
+const recorder = new MacRecorder();
+
+// List available displays
+const displays = await recorder.getDisplays();
+console.log("Available displays:");
+displays.forEach((display, i) => {
+	console.log(`${i}: ${display.resolution} at (${display.x}, ${display.y})`);
+});
+
+// Record from second display
+await recorder.startRecording("./second-display.mov", {
+	displayId: 1, // Second display
+	quality: "high",
+	frameRate: 60,
+});
+
+await new Promise((resolve) => setTimeout(resolve, 5000));
+await recorder.stopRecording();
+```
+
+### Custom Area Recording
+
+```javascript
+const recorder = new MacRecorder();
+
+// Record specific screen area
+await recorder.startRecording("./area-recording.mov", {
+	captureArea: {
+		x: 200,
+		y: 100,
+		width: 1200,
+		height: 800,
+	},
+	quality: "medium",
+	captureCursor: false,
+});
+
+await new Promise((resolve) => setTimeout(resolve, 8000));
+await recorder.stopRecording();
+```
+
+### Audio-Only System Recording
+
+```javascript
+const recorder = new MacRecorder();
+
+// Record system audio without microphone
+await recorder.startRecording("./system-audio.mov", {
+	includeMicrophone: false,
+	includeSystemAudio: true,
+	captureArea: { x: 0, y: 0, width: 1, height: 1 }, // Minimal video
+});
+```
+
+### Event-Driven Recording
+
+```javascript
+const recorder = new MacRecorder();
+
+// Listen to recording events
+recorder.on("started", (outputPath) => {
+	console.log("Recording started:", outputPath);
+});
+
+recorder.on("stopped", (result) => {
+	console.log("Recording stopped:", result);
+});
+
+recorder.on("timeUpdate", (seconds) => {
+	console.log(`Recording time: ${seconds}s`);
+});
+
+recorder.on("completed", (outputPath) => {
+	console.log("Recording completed:", outputPath);
+});
+
+await recorder.startRecording("./event-recording.mov");
+```
+
+## Integration Examples
+
+### Electron Integration
+
+```javascript
+// In main process
 const { ipcMain } = require("electron");
+const MacRecorder = require("node-mac-recorder");
 
 const recorder = new MacRecorder();
 
-ipcMain.handle("start-recording", async (event, outputPath, options) => {
-	return await recorder.startRecording(outputPath, options);
+ipcMain.handle("start-recording", async (event, options) => {
+	try {
+		await recorder.startRecording("./recording.mov", options);
+		return { success: true };
+	} catch (error) {
+		return { success: false, error: error.message };
+	}
 });
 
 ipcMain.handle("stop-recording", async () => {
-	return await recorder.stopRecording();
+	const result = await recorder.stopRecording();
+	return result;
 });
 
-// Progress events'i renderer'a ilet
-recorder.on("timeUpdate", (seconds) => {
-	event.sender.send("recording-time-update", seconds);
-});
-```
-
-```javascript
-// Renderer process
-const { ipcRenderer } = require("electron");
-
-// Kayıt başlat
-await ipcRenderer.invoke("start-recording", "./output.mp4", {
-	quality: "high",
-});
-
-// Progress dinle
-ipcRenderer.on("recording-time-update", (event, seconds) => {
-	console.log("Kayıt süresi:", seconds);
+ipcMain.handle("get-windows", async () => {
+	return await recorder.getWindows();
 });
 ```
 
-## Nuxt Entegrasyonu
+### Express.js API
 
 ```javascript
-// plugins/recorder.client.js
-export default defineNuxtPlugin(() => {
-	// Client-side only
-	if (process.client && window.electronAPI) {
-		return {
-			provide: {
-				recorder: {
-					start: (outputPath, options) =>
-						window.electronAPI.invoke("start-recording", outputPath, options),
-					stop: () => window.electronAPI.invoke("stop-recording"),
-					// ... diğer metodlar
-				},
-			},
-		};
+const express = require("express");
+const MacRecorder = require("node-mac-recorder");
+
+const app = express();
+const recorder = new MacRecorder();
+
+app.post("/start-recording", async (req, res) => {
+	try {
+		const { windowId, duration } = req.body;
+		await recorder.startRecording("./api-recording.mov", { windowId });
+
+		setTimeout(async () => {
+			await recorder.stopRecording();
+		}, duration * 1000);
+
+		res.json({ status: "started" });
+	} catch (error) {
+		res.status(500).json({ error: error.message });
 	}
 });
-```
 
-## Hata Yönetimi
-
-```javascript
-recorder.on("error", (error) => {
-	console.error("Kayıt hatası:", error.message);
-
-	// Yaygın hatalar:
-	// - Permission denied (Ekran kaydı izni gerekli)
-	// - Output directory doesn't exist
-	// - QuickTime Player not available
-	// - Invalid capture area
+app.get("/windows", async (req, res) => {
+	const windows = await recorder.getWindows();
+	res.json(windows);
 });
 ```
 
-## İzinler
+## Advanced Features
 
-macOS'ta ekran kaydı için sistem izni gereklidir. Uygulama ilk çalıştırıldığında kullanıcıdan izin istenecektir.
+### Automatic Display Detection
 
-**Sistem Tercihleri > Güvenlik ve Gizlilik > Gizlilik > Ekran Kaydı** bölümünden manuel olarak da eklenebilir.
+When recording windows, the package automatically:
 
-## Performans İpuçları
+1. **Detects Window Location** - Determines which display contains the window
+2. **Converts Coordinates** - Translates global coordinates to display-relative coordinates
+3. **Sets Display ID** - Automatically selects the correct display for recording
+4. **Handles Multi-Monitor** - Works seamlessly across multiple displays
 
-1. **Kalite vs. Performans**: `quality: 'medium'` çoğu kullanım için idealdir
-2. **Frame Rate**: 30 FPS çoğu durum için yeterlidir
-3. **Belirli Alan**: Tam ekran yerine belirli alan kaydetmek performansı artırır
-4. **QuickTime Kullanımı**: Native macOS kaydı en iyi performansı sağlar
-5. **İzin Yönetimi**: İlk kullanımda sistem izinleri gereklidir
+```javascript
+// Window at (-2000, 100) on second display
+// Automatically converts to (440, 100) on display 1
+await recorder.startRecording("./auto-display.mov", {
+	windowId: 12345, // Package handles display detection automatically
+});
+```
 
-## Lisans
+### Smart Window Filtering
 
-MIT
+The `getWindows()` method automatically filters out:
 
-## Katkıda Bulunma
+- System windows (Dock, Menu Bar)
+- Hidden windows
+- Very small windows (< 50x50 pixels)
+- Windows without names
 
-1. Fork edin
-2. Feature branch oluşturun (`git checkout -b feature/amazing-feature`)
-3. Commit edin (`git commit -m 'Add amazing feature'`)
-4. Push edin (`git push origin feature/amazing-feature`)
-5. Pull Request oluşturun
+### Performance Optimization
+
+- **Native Implementation** - Uses AVFoundation for optimal performance
+- **Minimal Overhead** - Low CPU usage during recording
+- **Memory Efficient** - Proper memory management in native layer
+- **Quality Presets** - Balanced quality/performance options
+
+## Troubleshooting
+
+### Permission Issues
+
+If recording fails, check macOS permissions:
+
+```bash
+# Open System Preferences > Security & Privacy > Screen Recording
+# Ensure your app/terminal has permission
+```
+
+### Build Errors
+
+```bash
+# Reinstall with verbose output
+npm install node-mac-recorder --verbose
+
+# Clear npm cache
+npm cache clean --force
+
+# Ensure Xcode tools are installed
+xcode-select --install
+```
+
+### Recording Issues
+
+1. **Empty/Black Video**: Check screen recording permissions
+2. **No Audio**: Verify audio permissions and device availability
+3. **Window Not Found**: Ensure target window is visible and not minimized
+4. **Coordinate Issues**: Window may be on different display (handled automatically)
+
+### Debug Information
+
+```javascript
+// Get module information
+const info = recorder.getModuleInfo();
+console.log("Module info:", info);
+
+// Check recording status
+const status = recorder.getStatus();
+console.log("Recording status:", status);
+
+// Verify permissions
+const permissions = await recorder.checkPermissions();
+console.log("Permissions:", permissions);
+```
+
+## Performance Considerations
+
+- **Recording Quality**: Higher quality increases file size and CPU usage
+- **Frame Rate**: 30fps recommended for most use cases, 60fps for smooth motion
+- **Audio**: System audio capture adds minimal overhead
+- **Window Recording**: Slightly more efficient than full-screen recording
+- **Multi-Display**: No significant performance impact
+
+## File Formats
+
+- **Output Format**: MOV (QuickTime)
+- **Video Codec**: H.264
+- **Audio Codec**: AAC
+- **Container**: QuickTime compatible
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Changelog
+
+### Latest Updates
+
+- ✅ **Window Recording**: Automatic coordinate conversion for multi-display setups
+- ✅ **Audio Controls**: Separate microphone and system audio controls
+- ✅ **Display Selection**: Multi-monitor support with automatic detection
+- ✅ **Smart Filtering**: Improved window detection and filtering
+- ✅ **Performance**: Optimized native implementation
+
+---
+
+**Made for macOS** 🍎 | **Built with AVFoundation** 📹 | **Node.js Ready** 🚀
