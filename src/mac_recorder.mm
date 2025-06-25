@@ -1,0 +1,472 @@
+#import <napi.h>
+#import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
+#import <AppKit/AppKit.h>
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <ImageIO/ImageIO.h>
+#import <CoreAudio/CoreAudio.h>
+
+@interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
+@property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
+@end
+
+@implementation MacRecorderDelegate
+- (void)captureOutput:(AVCaptureFileOutput *)output
+didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections
+                error:(NSError *)error {
+    if (self.completionHandler) {
+        self.completionHandler(outputFileURL, error);
+    }
+}
+@end
+
+// Global state for recording
+static AVCaptureSession *g_captureSession = nil;
+static AVCaptureMovieFileOutput *g_movieFileOutput = nil;
+static AVCaptureScreenInput *g_screenInput = nil;
+static AVCaptureDeviceInput *g_audioInput = nil;
+static MacRecorderDelegate *g_delegate = nil;
+static bool g_isRecording = false;
+
+// Helper function to cleanup recording resources
+void cleanupRecording() {
+    if (g_captureSession) {
+        [g_captureSession stopRunning];
+        g_captureSession = nil;
+    }
+    g_movieFileOutput = nil;
+    g_screenInput = nil;
+    g_audioInput = nil;
+    g_delegate = nil;
+    g_isRecording = false;
+}
+
+// NAPI Function: Start Recording
+Napi::Value StartRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Output path required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    if (g_isRecording) {
+        return Napi::Boolean::New(env, false);
+    }
+    
+    std::string outputPath = info[0].As<Napi::String>().Utf8Value();
+    
+    // Options parsing
+    CGRect captureRect = CGRectNull;
+    bool captureCursor = false; // Default olarak cursor gizli
+    bool includeMicrophone = false; // Default olarak mikrofon kapalı
+    bool includeSystemAudio = true; // Default olarak sistem sesi açık
+    CGDirectDisplayID displayID = CGMainDisplayID(); // Default ana ekran
+    
+    if (info.Length() > 1 && info[1].IsObject()) {
+        Napi::Object options = info[1].As<Napi::Object>();
+        
+        // Capture area
+        if (options.Has("captureArea") && options.Get("captureArea").IsObject()) {
+            Napi::Object rectObj = options.Get("captureArea").As<Napi::Object>();
+            if (rectObj.Has("x") && rectObj.Has("y") && rectObj.Has("width") && rectObj.Has("height")) {
+                captureRect = CGRectMake(
+                    rectObj.Get("x").As<Napi::Number>().DoubleValue(),
+                    rectObj.Get("y").As<Napi::Number>().DoubleValue(),
+                    rectObj.Get("width").As<Napi::Number>().DoubleValue(),
+                    rectObj.Get("height").As<Napi::Number>().DoubleValue()
+                );
+            }
+        }
+        
+        // Capture cursor
+        if (options.Has("captureCursor")) {
+            captureCursor = options.Get("captureCursor").As<Napi::Boolean>();
+        }
+        
+        // Microphone
+        if (options.Has("includeMicrophone")) {
+            includeMicrophone = options.Get("includeMicrophone").As<Napi::Boolean>();
+        }
+        
+        // System audio
+        if (options.Has("includeSystemAudio")) {
+            includeSystemAudio = options.Get("includeSystemAudio").As<Napi::Boolean>();
+        }
+        
+        // Display ID
+        if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
+            double displayIdNum = options.Get("displayId").As<Napi::Number>().DoubleValue();
+            
+            // Get all displays and use the specified one
+            uint32_t displayCount;
+            CGGetActiveDisplayList(0, NULL, &displayCount);
+            if (displayCount > 0) {
+                CGDirectDisplayID *displays = (CGDirectDisplayID*)malloc(displayCount * sizeof(CGDirectDisplayID));
+                CGGetActiveDisplayList(displayCount, displays, &displayCount);
+                
+                if (displayIdNum >= 0 && displayIdNum < displayCount) {
+                    displayID = displays[(int)displayIdNum];
+                }
+                free(displays);
+            }
+        }
+        
+        // Window ID için gelecekte kullanım (şimdilik captureArea ile hallediliyor)
+        if (options.Has("windowId") && !options.Get("windowId").IsNull()) {
+            // WindowId belirtilmiş ama captureArea JavaScript tarafında ayarlanıyor
+            // Bu parametre gelecekte native level pencere seçimi için kullanılabilir
+        }
+    }
+    
+    @try {
+        // Create capture session
+        g_captureSession = [[AVCaptureSession alloc] init];
+        [g_captureSession beginConfiguration];
+        
+        // Set session preset
+        g_captureSession.sessionPreset = AVCaptureSessionPresetHigh;
+        
+        // Create screen input with selected display
+        g_screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:displayID];
+        
+        if (!CGRectIsNull(captureRect)) {
+            g_screenInput.cropRect = captureRect;
+        }
+        
+        // Set cursor capture
+        g_screenInput.capturesCursor = captureCursor;
+        
+        if ([g_captureSession canAddInput:g_screenInput]) {
+            [g_captureSession addInput:g_screenInput];
+        } else {
+            cleanupRecording();
+            return Napi::Boolean::New(env, false);
+        }
+        
+        // Add microphone input if requested
+        if (includeMicrophone) {
+            AVCaptureDevice *audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+            if (audioDevice) {
+                NSError *error;
+                g_audioInput = [[AVCaptureDeviceInput alloc] initWithDevice:audioDevice error:&error];
+                if (g_audioInput && [g_captureSession canAddInput:g_audioInput]) {
+                    [g_captureSession addInput:g_audioInput];
+                }
+            }
+        }
+        
+        // System audio için AVCaptureScreenInput zaten sistem sesini yakalar
+        // includeSystemAudio parametresi screen input'un ses yakalama özelliğini kontrol eder
+        if (includeSystemAudio) {
+            g_screenInput.capturesMouseClicks = YES;
+            // AVCaptureScreenInput otomatik olarak sistem sesini yakalar
+        }
+        
+        // Create movie file output
+        g_movieFileOutput = [[AVCaptureMovieFileOutput alloc] init];
+        if ([g_captureSession canAddOutput:g_movieFileOutput]) {
+            [g_captureSession addOutput:g_movieFileOutput];
+        } else {
+            cleanupRecording();
+            return Napi::Boolean::New(env, false);
+        }
+        
+        [g_captureSession commitConfiguration];
+        
+        // Start session
+        [g_captureSession startRunning];
+        
+        // Create delegate
+        g_delegate = [[MacRecorderDelegate alloc] init];
+        
+        // Start recording
+        NSURL *outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outputPath.c_str()]];
+        [g_movieFileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:g_delegate];
+        
+        g_isRecording = true;
+        return Napi::Boolean::New(env, true);
+        
+    } @catch (NSException *exception) {
+        cleanupRecording();
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Stop Recording
+Napi::Value StopRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (!g_isRecording || !g_movieFileOutput) {
+        return Napi::Boolean::New(env, false);
+    }
+    
+    @try {
+        [g_movieFileOutput stopRecording];
+        [g_captureSession stopRunning];
+        
+        g_isRecording = false;
+        return Napi::Boolean::New(env, true);
+        
+    } @catch (NSException *exception) {
+        cleanupRecording();
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+
+
+// NAPI Function: Get Windows List
+Napi::Value GetWindows(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array windowArray = Napi::Array::New(env);
+    
+    @try {
+        // Get window list
+        CFArrayRef windowList = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+            kCGNullWindowID
+        );
+        
+        if (!windowList) {
+            return windowArray;
+        }
+        
+        CFIndex windowCount = CFArrayGetCount(windowList);
+        uint32_t arrayIndex = 0;
+        
+        for (CFIndex i = 0; i < windowCount; i++) {
+            CFDictionaryRef window = (CFDictionaryRef)CFArrayGetValueAtIndex(windowList, i);
+            
+            // Get window ID
+            CFNumberRef windowIDRef = (CFNumberRef)CFDictionaryGetValue(window, kCGWindowNumber);
+            if (!windowIDRef) continue;
+            
+            uint32_t windowID;
+            CFNumberGetValue(windowIDRef, kCFNumberSInt32Type, &windowID);
+            
+            // Get window name
+            CFStringRef windowNameRef = (CFStringRef)CFDictionaryGetValue(window, kCGWindowName);
+            std::string windowName = "";
+            if (windowNameRef) {
+                const char* windowNameCStr = CFStringGetCStringPtr(windowNameRef, kCFStringEncodingUTF8);
+                if (windowNameCStr) {
+                    windowName = std::string(windowNameCStr);
+                } else {
+                    // Fallback for non-ASCII characters
+                    CFIndex length = CFStringGetLength(windowNameRef);
+                    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                    char* buffer = (char*)malloc(maxSize);
+                    if (CFStringGetCString(windowNameRef, buffer, maxSize, kCFStringEncodingUTF8)) {
+                        windowName = std::string(buffer);
+                    }
+                    free(buffer);
+                }
+            }
+            
+            // Get application name
+            CFStringRef appNameRef = (CFStringRef)CFDictionaryGetValue(window, kCGWindowOwnerName);
+            std::string appName = "";
+            if (appNameRef) {
+                const char* appNameCStr = CFStringGetCStringPtr(appNameRef, kCFStringEncodingUTF8);
+                if (appNameCStr) {
+                    appName = std::string(appNameCStr);
+                } else {
+                    CFIndex length = CFStringGetLength(appNameRef);
+                    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                    char* buffer = (char*)malloc(maxSize);
+                    if (CFStringGetCString(appNameRef, buffer, maxSize, kCFStringEncodingUTF8)) {
+                        appName = std::string(buffer);
+                    }
+                    free(buffer);
+                }
+            }
+            
+            // Get window bounds
+            CFDictionaryRef boundsRef = (CFDictionaryRef)CFDictionaryGetValue(window, kCGWindowBounds);
+            CGRect bounds = CGRectZero;
+            if (boundsRef) {
+                CGRectMakeWithDictionaryRepresentation(boundsRef, &bounds);
+            }
+            
+            // Skip windows without name or very small windows
+            if (windowName.empty() || bounds.size.width < 50 || bounds.size.height < 50) {
+                continue;
+            }
+            
+            // Create window object
+            Napi::Object windowObj = Napi::Object::New(env);
+            windowObj.Set("id", Napi::Number::New(env, windowID));
+            windowObj.Set("name", Napi::String::New(env, windowName));
+            windowObj.Set("appName", Napi::String::New(env, appName));
+            windowObj.Set("x", Napi::Number::New(env, bounds.origin.x));
+            windowObj.Set("y", Napi::Number::New(env, bounds.origin.y));
+            windowObj.Set("width", Napi::Number::New(env, bounds.size.width));
+            windowObj.Set("height", Napi::Number::New(env, bounds.size.height));
+            
+            windowArray.Set(arrayIndex++, windowObj);
+        }
+        
+        CFRelease(windowList);
+        return windowArray;
+        
+    } @catch (NSException *exception) {
+        return windowArray;
+    }
+}
+
+// NAPI Function: Get Audio Devices
+Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        NSMutableArray *devices = [NSMutableArray array];
+        
+        // Get all audio devices
+        NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+        
+        for (AVCaptureDevice *device in audioDevices) {
+            [devices addObject:@{
+                @"id": device.uniqueID,
+                @"name": device.localizedName,
+                @"manufacturer": device.manufacturer ?: @"Unknown",
+                @"isDefault": @([device isEqual:[AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio]])
+            }];
+        }
+        
+        // Convert to NAPI array
+        Napi::Array result = Napi::Array::New(env, devices.count);
+        for (NSUInteger i = 0; i < devices.count; i++) {
+            NSDictionary *device = devices[i];
+            Napi::Object deviceObj = Napi::Object::New(env);
+            deviceObj.Set("id", Napi::String::New(env, [device[@"id"] UTF8String]));
+            deviceObj.Set("name", Napi::String::New(env, [device[@"name"] UTF8String]));
+            deviceObj.Set("manufacturer", Napi::String::New(env, [device[@"manufacturer"] UTF8String]));
+            deviceObj.Set("isDefault", Napi::Boolean::New(env, [device[@"isDefault"] boolValue]));
+            result[i] = deviceObj;
+        }
+        
+        return result;
+        
+    } @catch (NSException *exception) {
+        return Napi::Array::New(env, 0);
+    }
+}
+
+// NAPI Function: Get Displays
+Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        NSMutableArray *displays = [NSMutableArray array];
+        
+        uint32_t displayCount;
+        CGGetActiveDisplayList(0, NULL, &displayCount);
+        
+        CGDirectDisplayID *displayList = (CGDirectDisplayID *)malloc(displayCount * sizeof(CGDirectDisplayID));
+        CGGetActiveDisplayList(displayCount, displayList, &displayCount);
+        
+        for (uint32_t i = 0; i < displayCount; i++) {
+            CGDirectDisplayID displayID = displayList[i];
+            CGRect bounds = CGDisplayBounds(displayID);
+            
+            [displays addObject:@{
+                @"id": @(displayID),
+                @"name": [NSString stringWithFormat:@"Display %d", i + 1],
+                @"width": @(bounds.size.width),
+                @"height": @(bounds.size.height),
+                @"x": @(bounds.origin.x),
+                @"y": @(bounds.origin.y),
+                @"isPrimary": @(CGDisplayIsMain(displayID))
+            }];
+        }
+        
+        free(displayList);
+        
+        // Convert to NAPI array
+        Napi::Array result = Napi::Array::New(env, displays.count);
+        for (NSUInteger i = 0; i < displays.count; i++) {
+            NSDictionary *display = displays[i];
+            Napi::Object displayObj = Napi::Object::New(env);
+            displayObj.Set("id", Napi::Number::New(env, [display[@"id"] unsignedIntValue]));
+            displayObj.Set("name", Napi::String::New(env, [display[@"name"] UTF8String]));
+            displayObj.Set("width", Napi::Number::New(env, [display[@"width"] doubleValue]));
+            displayObj.Set("height", Napi::Number::New(env, [display[@"height"] doubleValue]));
+            displayObj.Set("x", Napi::Number::New(env, [display[@"x"] doubleValue]));
+            displayObj.Set("y", Napi::Number::New(env, [display[@"y"] doubleValue]));
+            displayObj.Set("isPrimary", Napi::Boolean::New(env, [display[@"isPrimary"] boolValue]));
+            result[i] = displayObj;
+        }
+        
+        return result;
+        
+    } @catch (NSException *exception) {
+        return Napi::Array::New(env, 0);
+    }
+}
+
+// NAPI Function: Get Recording Status
+Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    return Napi::Boolean::New(env, g_isRecording);
+}
+
+// NAPI Function: Check Permissions
+Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        // Check screen recording permission
+        bool hasScreenPermission = true;
+        
+        if (@available(macOS 10.15, *)) {
+            // Try to create a display stream to test permissions
+            CGDisplayStreamRef stream = CGDisplayStreamCreate(
+                CGMainDisplayID(), 
+                1, 1, 
+                kCVPixelFormatType_32BGRA, 
+                nil, 
+                ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
+                    // Empty handler
+                }
+            );
+            
+            if (stream) {
+                CFRelease(stream);
+                hasScreenPermission = true;
+            } else {
+                hasScreenPermission = false;
+            }
+        }
+        
+        // Check audio permission
+        bool hasAudioPermission = true;
+        if (@available(macOS 10.14, *)) {
+            AVAuthorizationStatus audioStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+            hasAudioPermission = (audioStatus == AVAuthorizationStatusAuthorized);
+        }
+        
+        return Napi::Boolean::New(env, hasScreenPermission && hasAudioPermission);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// Initialize NAPI Module
+Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    exports.Set(Napi::String::New(env, "startRecording"), Napi::Function::New(env, StartRecording));
+    exports.Set(Napi::String::New(env, "stopRecording"), Napi::Function::New(env, StopRecording));
+
+    exports.Set(Napi::String::New(env, "getAudioDevices"), Napi::Function::New(env, GetAudioDevices));
+    exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
+    exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
+    exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
+    exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));
+    
+    return exports;
+}
+
+NODE_API_MODULE(mac_recorder, Init) 

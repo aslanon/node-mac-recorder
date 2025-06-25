@@ -1,0 +1,41 @@
+{
+	"name": "node-mac-recorder",
+	"version": "1.0.0",
+	"description": "Native macOS screen recording package for Node.js applications",
+	"main": "index.js",
+	"keywords": [
+		"macos",
+		"screen",
+		"recording",
+		"capture",
+		"video",
+		"native",
+		"electron"
+	],
+	"author": "Your Name",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yourusername/node-mac-recorder.git"
+	},
+	"engines": {
+		"node": ">=14.0.0"
+	},
+	"os": [
+		"darwin"
+	],
+	"scripts": {
+		"test": "node test.js",
+		"install": "node install.js",
+		"build": "node-gyp build",
+		"rebuild": "node-gyp rebuild",
+		"clean": "node-gyp clean"
+	},
+	"dependencies": {
+		"node-addon-api": "^7.0.0"
+	},
+	"devDependencies": {
+		"node-gyp": "^10.0.0"
+	},
+	"gypfile": true
+}
