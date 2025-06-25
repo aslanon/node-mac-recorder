@@ -45,6 +45,7 @@ npm install node-mac-recorder
 - **Node.js 14+**
 - **Xcode Command Line Tools**
 - **Screen Recording Permission** (automatically requested)
+- **CPU Architecture**: Intel (x64) and Apple Silicon (ARM64) supported
 
 ### Build Requirements
 
@@ -54,6 +55,8 @@ xcode-select --install
 
 # The package will automatically build native modules during installation
 ```
+
+**Apple Silicon Support**: The package automatically builds for the correct architecture (ARM64 on Apple Silicon, x64 on Intel) during installation. No additional configuration required.
 
 ## Quick Start
 

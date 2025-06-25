@@ -25,7 +25,7 @@ DEFS_Debug := \
 CFLAGS_Debug := \
 	-O0 \
 	-gdwarf-2 \
-	-mmacosx-version-min=10.14 \
+	-mmacosx-version-min=10.15 \
 	-arch \
 	x86_64 \
 	-Wall \
@@ -82,7 +82,7 @@ DEFS_Release := \
 CFLAGS_Release := \
 	-O3 \
 	-gdwarf-2 \
-	-mmacosx-version-min=10.14 \
+	-mmacosx-version-min=10.15 \
 	-arch \
 	x86_64 \
 	-Wall \
@@ -156,7 +156,7 @@ $(obj).$(TOOLSET)/$(TARGET)/%.o: $(obj)/%.mm FORCE_DO_CMD
 LDFLAGS_Debug := \
 	-undefined dynamic_lookup \
 	-Wl,-search_paths_first \
-	-mmacosx-version-min=10.14 \
+	-mmacosx-version-min=10.15 \
 	-arch \
 	x86_64 \
 	-L$(builddir) \
@@ -169,7 +169,7 @@ LIBTOOLFLAGS_Debug := \
 LDFLAGS_Release := \
 	-undefined dynamic_lookup \
 	-Wl,-search_paths_first \
-	-mmacosx-version-min=10.14 \
+	-mmacosx-version-min=10.15 \
 	-arch \
 	x86_64 \
 	-L$(builddir) \

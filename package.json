@@ -1,6 +1,6 @@
 {
 	"name": "node-mac-recorder",
-	"version": "1.0.3",
+	"version": "1.0.5",
 	"description": "Native macOS screen recording package for Node.js applications",
 	"main": "index.js",
 	"keywords": [
@@ -27,6 +27,10 @@
 	},
 	"os": [
 		"darwin"
+	],
+	"cpu": [
+		"x64",
+		"arm64"
 	],
 	"scripts": {
 		"test": "node test.js",
