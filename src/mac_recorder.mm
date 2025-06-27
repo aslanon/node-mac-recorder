@@ -413,6 +413,195 @@ Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, g_isRecording);
 }
 
+// NAPI Function: Get Window Thumbnail
+Napi::Value GetWindowThumbnail(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Window ID is required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    uint32_t windowID = info[0].As<Napi::Number>().Uint32Value();
+    
+    // Optional parameters
+    int maxWidth = 300;  // Default thumbnail width
+    int maxHeight = 200; // Default thumbnail height
+    
+    if (info.Length() >= 2 && !info[1].IsNull()) {
+        maxWidth = info[1].As<Napi::Number>().Int32Value();
+    }
+    if (info.Length() >= 3 && !info[2].IsNull()) {
+        maxHeight = info[2].As<Napi::Number>().Int32Value();
+    }
+    
+    @try {
+        // Create window image
+        CGImageRef windowImage = CGWindowListCreateImage(
+            CGRectNull,
+            kCGWindowListOptionIncludingWindow,
+            windowID,
+            kCGWindowImageBoundsIgnoreFraming | kCGWindowImageShouldBeOpaque
+        );
+        
+        if (!windowImage) {
+            return env.Null();
+        }
+        
+        // Get original dimensions
+        size_t originalWidth = CGImageGetWidth(windowImage);
+        size_t originalHeight = CGImageGetHeight(windowImage);
+        
+        // Calculate scaled dimensions maintaining aspect ratio
+        double scaleX = (double)maxWidth / originalWidth;
+        double scaleY = (double)maxHeight / originalHeight;
+        double scale = std::min(scaleX, scaleY);
+        
+        size_t thumbnailWidth = (size_t)(originalWidth * scale);
+        size_t thumbnailHeight = (size_t)(originalHeight * scale);
+        
+        // Create scaled image
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = CGBitmapContextCreate(
+            NULL,
+            thumbnailWidth,
+            thumbnailHeight,
+            8,
+            thumbnailWidth * 4,
+            colorSpace,
+            kCGImageAlphaPremultipliedLast
+        );
+        
+        if (context) {
+            CGContextDrawImage(context, CGRectMake(0, 0, thumbnailWidth, thumbnailHeight), windowImage);
+            CGImageRef thumbnailImage = CGBitmapContextCreateImage(context);
+            
+            if (thumbnailImage) {
+                // Convert to PNG data
+                NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:thumbnailImage];
+                NSData *pngData = [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                
+                if (pngData) {
+                    // Convert to Base64
+                    NSString *base64String = [pngData base64EncodedStringWithOptions:0];
+                    std::string base64Std = [base64String UTF8String];
+                    
+                    CGImageRelease(thumbnailImage);
+                    CGContextRelease(context);
+                    CGColorSpaceRelease(colorSpace);
+                    CGImageRelease(windowImage);
+                    
+                    return Napi::String::New(env, base64Std);
+                }
+                
+                CGImageRelease(thumbnailImage);
+            }
+            
+            CGContextRelease(context);
+        }
+        
+        CGColorSpaceRelease(colorSpace);
+        CGImageRelease(windowImage);
+        
+        return env.Null();
+        
+    } @catch (NSException *exception) {
+        return env.Null();
+    }
+}
+
+// NAPI Function: Get Display Thumbnail
+Napi::Value GetDisplayThumbnail(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Display ID is required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    uint32_t displayID = info[0].As<Napi::Number>().Uint32Value();
+    
+    // Optional parameters
+    int maxWidth = 300;  // Default thumbnail width
+    int maxHeight = 200; // Default thumbnail height
+    
+    if (info.Length() >= 2 && !info[1].IsNull()) {
+        maxWidth = info[1].As<Napi::Number>().Int32Value();
+    }
+    if (info.Length() >= 3 && !info[2].IsNull()) {
+        maxHeight = info[2].As<Napi::Number>().Int32Value();
+    }
+    
+    @try {
+        // Create display image
+        CGImageRef displayImage = CGDisplayCreateImage(displayID);
+        
+        if (!displayImage) {
+            return env.Null();
+        }
+        
+        // Get original dimensions
+        size_t originalWidth = CGImageGetWidth(displayImage);
+        size_t originalHeight = CGImageGetHeight(displayImage);
+        
+        // Calculate scaled dimensions maintaining aspect ratio
+        double scaleX = (double)maxWidth / originalWidth;
+        double scaleY = (double)maxHeight / originalHeight;
+        double scale = std::min(scaleX, scaleY);
+        
+        size_t thumbnailWidth = (size_t)(originalWidth * scale);
+        size_t thumbnailHeight = (size_t)(originalHeight * scale);
+        
+        // Create scaled image
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = CGBitmapContextCreate(
+            NULL,
+            thumbnailWidth,
+            thumbnailHeight,
+            8,
+            thumbnailWidth * 4,
+            colorSpace,
+            kCGImageAlphaPremultipliedLast
+        );
+        
+        if (context) {
+            CGContextDrawImage(context, CGRectMake(0, 0, thumbnailWidth, thumbnailHeight), displayImage);
+            CGImageRef thumbnailImage = CGBitmapContextCreateImage(context);
+            
+            if (thumbnailImage) {
+                // Convert to PNG data
+                NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:thumbnailImage];
+                NSData *pngData = [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                
+                if (pngData) {
+                    // Convert to Base64
+                    NSString *base64String = [pngData base64EncodedStringWithOptions:0];
+                    std::string base64Std = [base64String UTF8String];
+                    
+                    CGImageRelease(thumbnailImage);
+                    CGContextRelease(context);
+                    CGColorSpaceRelease(colorSpace);
+                    CGImageRelease(displayImage);
+                    
+                    return Napi::String::New(env, base64Std);
+                }
+                
+                CGImageRelease(thumbnailImage);
+            }
+            
+            CGContextRelease(context);
+        }
+        
+        CGColorSpaceRelease(colorSpace);
+        CGImageRelease(displayImage);
+        
+        return env.Null();
+        
+    } @catch (NSException *exception) {
+        return env.Null();
+    }
+}
+
 // NAPI Function: Check Permissions
 Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -465,6 +654,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
     exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
     exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));
+    
+    // Thumbnail functions
+    exports.Set(Napi::String::New(env, "getWindowThumbnail"), Napi::Function::New(env, GetWindowThumbnail));
+    exports.Set(Napi::String::New(env, "getDisplayThumbnail"), Napi::Function::New(env, GetDisplayThumbnail));
     
     return exports;
 }

@@ -25,6 +25,7 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 🎯 **Automatic Coordinate Conversion** - Handle multi-display coordinate systems
 - 📐 **Display ID Detection** - Automatically select correct display for window recording
 - 🖼️ **Window Filtering** - Smart filtering of recordable windows
+- 👁️ **Preview Thumbnails** - Generate window and display preview images
 
 ⚙️ **Customization Options**
 
@@ -202,6 +203,34 @@ console.log(status);
 // }
 ```
 
+#### `getWindowThumbnail(windowId, options?)`
+
+Captures a thumbnail preview of a specific window.
+
+```javascript
+const thumbnail = await recorder.getWindowThumbnail(12345, {
+	maxWidth: 400, // Maximum width (default: 300)
+	maxHeight: 300, // Maximum height (default: 200)
+});
+
+// Returns: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+// Can be used directly in <img> tags or saved as file
+```
+
+#### `getDisplayThumbnail(displayId, options?)`
+
+Captures a thumbnail preview of a specific display.
+
+```javascript
+const thumbnail = await recorder.getDisplayThumbnail(0, {
+	maxWidth: 400, // Maximum width (default: 300)
+	maxHeight: 300, // Maximum height (default: 200)
+});
+
+// Returns: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+// Perfect for display selection UI
+```
+
 ## Usage Examples
 
 ### Window-Specific Recording
@@ -309,6 +338,70 @@ recorder.on("completed", (outputPath) => {
 });
 
 await recorder.startRecording("./event-recording.mov");
+```
+
+### Window Selection with Thumbnails
+
+```javascript
+const recorder = new MacRecorder();
+
+// Get windows with thumbnail previews
+const windows = await recorder.getWindows();
+
+console.log("Available windows with previews:");
+for (const window of windows) {
+	console.log(`${window.appName} - ${window.name}`);
+
+	try {
+		// Generate thumbnail for each window
+		const thumbnail = await recorder.getWindowThumbnail(window.id, {
+			maxWidth: 200,
+			maxHeight: 150,
+		});
+
+		console.log(`Thumbnail: ${thumbnail.substring(0, 50)}...`);
+
+		// Use thumbnail in your UI:
+		// <img src="${thumbnail}" alt="Window Preview" />
+	} catch (error) {
+		console.log(`No preview available: ${error.message}`);
+	}
+}
+```
+
+### Display Selection Interface
+
+```javascript
+const recorder = new MacRecorder();
+
+async function createDisplaySelector() {
+	const displays = await recorder.getDisplays();
+
+	const displayOptions = await Promise.all(
+		displays.map(async (display, index) => {
+			try {
+				const thumbnail = await recorder.getDisplayThumbnail(display.id);
+				return {
+					id: display.id,
+					name: `Display ${index + 1}`,
+					resolution: display.resolution,
+					thumbnail: thumbnail,
+					isPrimary: display.isPrimary,
+				};
+			} catch (error) {
+				return {
+					id: display.id,
+					name: `Display ${index + 1}`,
+					resolution: display.resolution,
+					thumbnail: null,
+					isPrimary: display.isPrimary,
+				};
+			}
+		})
+	);
+
+	return displayOptions;
+}
 ```
 
 ## Integration Examples

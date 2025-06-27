@@ -356,6 +356,64 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
+	 * Pencere önizleme görüntüsü alır (Base64 PNG)
+	 */
+	async getWindowThumbnail(windowId, options = {}) {
+		if (!windowId) {
+			throw new Error("Window ID is required");
+		}
+
+		const { maxWidth = 300, maxHeight = 200 } = options;
+
+		return new Promise((resolve, reject) => {
+			try {
+				const base64Image = nativeBinding.getWindowThumbnail(
+					windowId,
+					maxWidth,
+					maxHeight
+				);
+
+				if (base64Image) {
+					resolve(`data:image/png;base64,${base64Image}`);
+				} else {
+					reject(new Error("Failed to capture window thumbnail"));
+				}
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	/**
+	 * Ekran önizleme görüntüsü alır (Base64 PNG)
+	 */
+	async getDisplayThumbnail(displayId, options = {}) {
+		if (displayId === null || displayId === undefined) {
+			throw new Error("Display ID is required");
+		}
+
+		const { maxWidth = 300, maxHeight = 200 } = options;
+
+		return new Promise((resolve, reject) => {
+			try {
+				const base64Image = nativeBinding.getDisplayThumbnail(
+					displayId,
+					maxWidth,
+					maxHeight
+				);
+
+				if (base64Image) {
+					resolve(`data:image/png;base64,${base64Image}`);
+				} else {
+					reject(new Error("Failed to capture display thumbnail"));
+				}
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	/**
 	 * Native modül bilgilerini döndürür
 	 */
 	getModuleInfo() {
