@@ -234,61 +234,47 @@ const thumbnail = await recorder.getDisplayThumbnail(0, {
 
 ### Cursor Tracking Methods
 
-#### `startCursorTracking(outputPath)`
+#### `startCursorCapture(outputPath)`
 
-Starts tracking cursor movements and saves data to JSON file.
-
-```javascript
-await recorder.startCursorTracking("./cursor-data.json");
-// Cursor tracking started - will record position, cursor type, and events
-```
-
-#### `stopCursorTracking()`
-
-Stops cursor tracking and saves collected data.
+Starts automatic cursor tracking and saves data to JSON file in real-time.
 
 ```javascript
-await recorder.stopCursorTracking();
-// Data saved to specified JSON file
+await recorder.startCursorCapture("./cursor-data.json");
+// Cursor tracking started - automatically writing to file
 ```
 
-#### `getCursorPosition()`
+#### `stopCursorCapture()`
 
-Gets current cursor position and type.
+Stops cursor tracking and closes the output file.
 
 ```javascript
-const position = recorder.getCursorPosition();
-console.log(position);
-// {
-//   x: 1234,
-//   y: 567,
-//   cursorType: "default" // "default", "pointer", "grabbing", "text"
-// }
+await recorder.stopCursorCapture();
+// Tracking stopped, file closed
 ```
 
-#### `getCursorTrackingStatus()`
+**JSON Output Format:**
 
-Returns cursor tracking status and data count.
-
-```javascript
-const status = recorder.getCursorTrackingStatus();
-console.log(status);
-// {
-//   isTracking: true,
-//   dataCount: 1250,
-//   hasEventTap: true,
-//   hasRunLoopSource: true
-// }
+```json
+[
+	{
+		"x": 851,
+		"y": 432,
+		"timestamp": 201,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 851,
+		"y": 432,
+		"timestamp": 220,
+		"cursorType": "pointer",
+		"type": "mousedown"
+	}
+]
 ```
 
-#### `saveCursorData(outputPath)`
-
-Manually saves current cursor data to file.
-
-```javascript
-await recorder.saveCursorData("./cursor-backup.json");
-// Data saved to file
-```
+**Cursor Types:** `default`, `pointer`, `text`, `grab`, `grabbing`, `ew-resize`, `ns-resize`, `crosshair`  
+**Event Types:** `move`, `mousedown`, `mouseup`, `rightmousedown`, `rightmouseup`
 
 ## Usage Examples
 
@@ -466,56 +452,51 @@ async function createDisplaySelector() {
 ### Cursor Tracking Usage
 
 ```javascript
-const recorder = new MacRecorder();
+const MacRecorder = require("node-mac-recorder");
 
 async function trackUserInteraction() {
-	// Start cursor tracking
-	await recorder.startCursorTracking("./user-interactions.json");
-	console.log("Cursor tracking started...");
+	const recorder = new MacRecorder();
 
-	// Monitor real-time cursor position
-	const monitorInterval = setInterval(() => {
-		const position = recorder.getCursorPosition();
-		console.log(
-			`Cursor: ${position.x}, ${position.y} (${position.cursorType})`
-		);
+	try {
+		// Start cursor tracking - automatically writes to file
+		await recorder.startCursorCapture("./user-interactions.json");
+		console.log("✅ Cursor tracking started...");
 
-		const status = recorder.getCursorTrackingStatus();
-		console.log(`Tracking status: ${status.dataCount} positions recorded`);
-	}, 100); // Check every 100ms
+		// Track for 5 seconds
+		console.log("📱 Move mouse and click for 5 seconds...");
+		await new Promise((resolve) => setTimeout(resolve, 5000));
 
-	// Track for 10 seconds
-	setTimeout(async () => {
-		clearInterval(monitorInterval);
+		// Stop tracking
+		await recorder.stopCursorCapture();
+		console.log("✅ Cursor tracking completed!");
 
-		// Stop tracking and save data
-		await recorder.stopCursorTracking();
-		console.log("Cursor tracking completed!");
-
-		// Load and analyze the data
+		// Analyze the data
 		const fs = require("fs");
 		const data = JSON.parse(
 			fs.readFileSync("./user-interactions.json", "utf8")
 		);
 
-		console.log(`Total interactions recorded: ${data.length}`);
+		console.log(`📄 ${data.length} events recorded`);
 
-		// Analyze cursor types
+		// Count clicks
+		const clicks = data.filter((d) => d.type === "mousedown").length;
+		if (clicks > 0) {
+			console.log(`🖱️ ${clicks} clicks detected`);
+		}
+
+		// Most used cursor type
 		const cursorTypes = {};
 		data.forEach((item) => {
 			cursorTypes[item.cursorType] = (cursorTypes[item.cursorType] || 0) + 1;
 		});
 
-		console.log("Cursor types distribution:", cursorTypes);
-
-		// Analyze event types
-		const eventTypes = {};
-		data.forEach((item) => {
-			eventTypes[item.type] = (eventTypes[item.type] || 0) + 1;
-		});
-
-		console.log("Event types distribution:", eventTypes);
-	}, 10000);
+		const mostUsed = Object.keys(cursorTypes).reduce((a, b) =>
+			cursorTypes[a] > cursorTypes[b] ? a : b
+		);
+		console.log(`🎯 Most used cursor: ${mostUsed}`);
+	} catch (error) {
+		console.error("❌ Error:", error.message);
+	}
 }
 
 trackUserInteraction();
@@ -524,33 +505,37 @@ trackUserInteraction();
 ### Combined Screen Recording + Cursor Tracking
 
 ```javascript
-const recorder = new MacRecorder();
+const MacRecorder = require("node-mac-recorder");
 
 async function recordWithCursorTracking() {
-	// Start both screen recording and cursor tracking
-	await Promise.all([
-		recorder.startRecording("./screen-recording.mov", {
-			captureCursor: false, // Don't show cursor in video
-			includeSystemAudio: true,
-			quality: "high",
-		}),
-		recorder.startCursorTracking("./cursor-data.json"),
-	]);
+	const recorder = new MacRecorder();
 
-	console.log("Recording screen and tracking cursor...");
-
-	// Record for 30 seconds
-	setTimeout(async () => {
+	try {
+		// Start both screen recording and cursor tracking
 		await Promise.all([
-			recorder.stopRecording(),
-			recorder.stopCursorTracking(),
+			recorder.startRecording("./screen-recording.mov", {
+				captureCursor: false, // Don't show cursor in video
+				includeSystemAudio: true,
+				quality: "high",
+			}),
+			recorder.startCursorCapture("./cursor-data.json"),
 		]);
 
-		console.log("Screen recording and cursor tracking completed!");
-		console.log("Files created:");
-		console.log("- screen-recording.mov");
-		console.log("- cursor-data.json");
-	}, 30000);
+		console.log("✅ Recording screen and tracking cursor...");
+
+		// Record for 10 seconds
+		await new Promise((resolve) => setTimeout(resolve, 10000));
+
+		// Stop both
+		await Promise.all([recorder.stopRecording(), recorder.stopCursorCapture()]);
+
+		console.log("✅ Recording completed!");
+		console.log("📁 Files created:");
+		console.log("   - screen-recording.mov");
+		console.log("   - cursor-data.json");
+	} catch (error) {
+		console.error("❌ Error:", error.message);
+	}
 }
 
 recordWithCursorTracking();
@@ -650,6 +635,21 @@ The `getWindows()` method automatically filters out:
 - **Minimal Overhead** - Low CPU usage during recording
 - **Memory Efficient** - Proper memory management in native layer
 - **Quality Presets** - Balanced quality/performance options
+
+## Testing
+
+Run the included demo to test cursor tracking:
+
+```bash
+node cursor-test.js
+```
+
+This will:
+
+- ✅ Start cursor tracking for 5 seconds
+- 📱 Capture mouse movements and clicks
+- 📄 Save data to `cursor-data.json`
+- 🖱️ Report clicks detected
 
 ## Troubleshooting
 
