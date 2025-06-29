@@ -11,6 +11,7 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 🎯 **Area Selection** - Record custom screen regions
 - 🖱️ **Multi-Display Support** - Automatic display detection and selection
 - 🎨 **Cursor Control** - Toggle cursor visibility in recordings
+- 🖱️ **Cursor Tracking** - Track mouse position, cursor types, and click events
 
 🎵 **Granular Audio Controls**
 
@@ -231,6 +232,64 @@ const thumbnail = await recorder.getDisplayThumbnail(0, {
 // Perfect for display selection UI
 ```
 
+### Cursor Tracking Methods
+
+#### `startCursorTracking(outputPath)`
+
+Starts tracking cursor movements and saves data to JSON file.
+
+```javascript
+await recorder.startCursorTracking("./cursor-data.json");
+// Cursor tracking started - will record position, cursor type, and events
+```
+
+#### `stopCursorTracking()`
+
+Stops cursor tracking and saves collected data.
+
+```javascript
+await recorder.stopCursorTracking();
+// Data saved to specified JSON file
+```
+
+#### `getCursorPosition()`
+
+Gets current cursor position and type.
+
+```javascript
+const position = recorder.getCursorPosition();
+console.log(position);
+// {
+//   x: 1234,
+//   y: 567,
+//   cursorType: "default" // "default", "pointer", "grabbing", "text"
+// }
+```
+
+#### `getCursorTrackingStatus()`
+
+Returns cursor tracking status and data count.
+
+```javascript
+const status = recorder.getCursorTrackingStatus();
+console.log(status);
+// {
+//   isTracking: true,
+//   dataCount: 1250,
+//   hasEventTap: true,
+//   hasRunLoopSource: true
+// }
+```
+
+#### `saveCursorData(outputPath)`
+
+Manually saves current cursor data to file.
+
+```javascript
+await recorder.saveCursorData("./cursor-backup.json");
+// Data saved to file
+```
+
 ## Usage Examples
 
 ### Window-Specific Recording
@@ -402,6 +461,99 @@ async function createDisplaySelector() {
 
 	return displayOptions;
 }
+```
+
+### Cursor Tracking Usage
+
+```javascript
+const recorder = new MacRecorder();
+
+async function trackUserInteraction() {
+	// Start cursor tracking
+	await recorder.startCursorTracking("./user-interactions.json");
+	console.log("Cursor tracking started...");
+
+	// Monitor real-time cursor position
+	const monitorInterval = setInterval(() => {
+		const position = recorder.getCursorPosition();
+		console.log(
+			`Cursor: ${position.x}, ${position.y} (${position.cursorType})`
+		);
+
+		const status = recorder.getCursorTrackingStatus();
+		console.log(`Tracking status: ${status.dataCount} positions recorded`);
+	}, 100); // Check every 100ms
+
+	// Track for 10 seconds
+	setTimeout(async () => {
+		clearInterval(monitorInterval);
+
+		// Stop tracking and save data
+		await recorder.stopCursorTracking();
+		console.log("Cursor tracking completed!");
+
+		// Load and analyze the data
+		const fs = require("fs");
+		const data = JSON.parse(
+			fs.readFileSync("./user-interactions.json", "utf8")
+		);
+
+		console.log(`Total interactions recorded: ${data.length}`);
+
+		// Analyze cursor types
+		const cursorTypes = {};
+		data.forEach((item) => {
+			cursorTypes[item.cursorType] = (cursorTypes[item.cursorType] || 0) + 1;
+		});
+
+		console.log("Cursor types distribution:", cursorTypes);
+
+		// Analyze event types
+		const eventTypes = {};
+		data.forEach((item) => {
+			eventTypes[item.type] = (eventTypes[item.type] || 0) + 1;
+		});
+
+		console.log("Event types distribution:", eventTypes);
+	}, 10000);
+}
+
+trackUserInteraction();
+```
+
+### Combined Screen Recording + Cursor Tracking
+
+```javascript
+const recorder = new MacRecorder();
+
+async function recordWithCursorTracking() {
+	// Start both screen recording and cursor tracking
+	await Promise.all([
+		recorder.startRecording("./screen-recording.mov", {
+			captureCursor: false, // Don't show cursor in video
+			includeSystemAudio: true,
+			quality: "high",
+		}),
+		recorder.startCursorTracking("./cursor-data.json"),
+	]);
+
+	console.log("Recording screen and tracking cursor...");
+
+	// Record for 30 seconds
+	setTimeout(async () => {
+		await Promise.all([
+			recorder.stopRecording(),
+			recorder.stopCursorTracking(),
+		]);
+
+		console.log("Screen recording and cursor tracking completed!");
+		console.log("Files created:");
+		console.log("- screen-recording.mov");
+		console.log("- cursor-data.json");
+	}, 30000);
+}
+
+recordWithCursorTracking();
 ```
 
 ## Integration Examples
@@ -577,6 +729,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ### Latest Updates
 
+- ✅ **Cursor Tracking**: Track mouse position, cursor types, and click events with JSON export
 - ✅ **Window Recording**: Automatic coordinate conversion for multi-display setups
 - ✅ **Audio Controls**: Separate microphone and system audio controls
 - ✅ **Display Selection**: Multi-monitor support with automatic detection

@@ -414,6 +414,96 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
+	 * Cursor tracking başlatır
+	 */
+	async startCursorTracking(outputPath) {
+		if (!outputPath) {
+			throw new Error("Output path is required");
+		}
+
+		return new Promise((resolve, reject) => {
+			try {
+				const success = nativeBinding.startCursorTracking(outputPath);
+				if (success) {
+					this.emit("cursorTrackingStarted", outputPath);
+					resolve(true);
+				} else {
+					reject(
+						new Error(
+							"Failed to start cursor tracking. Check permissions and try again."
+						)
+					);
+				}
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	/**
+	 * Cursor tracking durdurur ve JSON dosyasını kaydeder
+	 */
+	async stopCursorTracking() {
+		return new Promise((resolve, reject) => {
+			try {
+				const success = nativeBinding.stopCursorTracking();
+				if (success) {
+					this.emit("cursorTrackingStopped");
+					resolve(true);
+				} else {
+					reject(new Error("Failed to stop cursor tracking"));
+				}
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	/**
+	 * Anlık cursor pozisyonunu ve tipini döndürür
+	 */
+	getCursorPosition() {
+		try {
+			return nativeBinding.getCursorPosition();
+		} catch (error) {
+			throw new Error("Failed to get cursor position: " + error.message);
+		}
+	}
+
+	/**
+	 * Cursor tracking durumunu döndürür
+	 */
+	getCursorTrackingStatus() {
+		try {
+			return nativeBinding.getCursorTrackingStatus();
+		} catch (error) {
+			throw new Error("Failed to get cursor tracking status: " + error.message);
+		}
+	}
+
+	/**
+	 * Cursor verilerini JSON dosyasına kaydeder
+	 */
+	async saveCursorData(outputPath) {
+		if (!outputPath) {
+			throw new Error("Output path is required");
+		}
+
+		return new Promise((resolve, reject) => {
+			try {
+				const success = nativeBinding.saveCursorData(outputPath);
+				if (success) {
+					resolve(true);
+				} else {
+					reject(new Error("Failed to save cursor data"));
+				}
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	/**
 	 * Native modül bilgilerini döndürür
 	 */
 	getModuleInfo() {

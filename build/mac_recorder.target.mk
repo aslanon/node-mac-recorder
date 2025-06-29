@@ -122,7 +122,8 @@ INCS_Release := \
 OBJS := \
 	$(obj).target/$(TARGET)/src/mac_recorder.o \
 	$(obj).target/$(TARGET)/src/screen_capture.o \
-	$(obj).target/$(TARGET)/src/audio_capture.o
+	$(obj).target/$(TARGET)/src/audio_capture.o \
+	$(obj).target/$(TARGET)/src/cursor_tracker.o
 
 # Add to the list of files we specially track dependencies for.
 all_deps += $(OBJS)
@@ -185,7 +186,10 @@ LIBS := \
 	-framework CoreVideo \
 	-framework Foundation \
 	-framework AppKit \
-	-framework ScreenCaptureKit
+	-framework ScreenCaptureKit \
+	-framework ApplicationServices \
+	-framework Carbon \
+	-framework Accessibility
 
 $(builddir)/mac_recorder.node: GYP_LDFLAGS := $(LDFLAGS_$(BUILDTYPE))
 $(builddir)/mac_recorder.node: LIBS := $(LIBS)

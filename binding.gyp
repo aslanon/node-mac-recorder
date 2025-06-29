@@ -5,7 +5,8 @@
       "sources": [
         "src/mac_recorder.mm",
         "src/screen_capture.mm",
-        "src/audio_capture.mm"
+        "src/audio_capture.mm",
+        "src/cursor_tracker.mm"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
@@ -30,7 +31,10 @@
           "-framework CoreVideo",
           "-framework Foundation",
           "-framework AppKit",
-          "-framework ScreenCaptureKit"
+          "-framework ScreenCaptureKit",
+          "-framework ApplicationServices",
+          "-framework Carbon",
+          "-framework Accessibility"
         ]
       },
       "defines": [ "NAPI_DISABLE_CPP_EXCEPTIONS" ]

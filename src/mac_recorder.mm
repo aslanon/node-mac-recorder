@@ -7,6 +7,9 @@
 #import <ImageIO/ImageIO.h>
 #import <CoreAudio/CoreAudio.h>
 
+// Cursor tracker function declarations
+Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
+
 @interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
 @end
@@ -658,6 +661,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // Thumbnail functions
     exports.Set(Napi::String::New(env, "getWindowThumbnail"), Napi::Function::New(env, GetWindowThumbnail));
     exports.Set(Napi::String::New(env, "getDisplayThumbnail"), Napi::Function::New(env, GetDisplayThumbnail));
+    
+    // Initialize cursor tracker
+    InitCursorTracker(env, exports);
     
     return exports;
 }
