@@ -1,0 +1,93 @@
+[
+	{
+		"x": 1119,
+		"y": 1090,
+		"timestamp": 106,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1119,
+		"y": 1080,
+		"timestamp": 407,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1119,
+		"y": 1066,
+		"timestamp": 423,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1119,
+		"y": 1042,
+		"timestamp": 446,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1119,
+		"y": 968,
+		"timestamp": 466,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1129,
+		"y": 906,
+		"timestamp": 487,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1153,
+		"y": 820,
+		"timestamp": 507,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1168,
+		"y": 782,
+		"timestamp": 528,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1176,
+		"y": 764,
+		"timestamp": 549,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1176,
+		"y": 764,
+		"timestamp": 2578,
+		"cursorType": "default",
+		"type": "mousedown"
+	},
+	{
+		"x": 1176,
+		"y": 764,
+		"timestamp": 2599,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1176,
+		"y": 764,
+		"timestamp": 2724,
+		"cursorType": "default",
+		"type": "mouseup"
+	},
+	{
+		"x": 1176,
+		"y": 764,
+		"timestamp": 2744,
+		"cursorType": "default",
+		"type": "move"
+	}
+]

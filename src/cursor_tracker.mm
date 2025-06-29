@@ -8,16 +8,18 @@
 
 // Global state for cursor tracking
 static bool g_isCursorTracking = false;
-static NSMutableArray *g_cursorData = nil;
 static CFMachPortRef g_eventTap = NULL;
 static CFRunLoopSourceRef g_runLoopSource = NULL;
 static NSDate *g_trackingStartTime = nil;
 static NSString *g_outputPath = nil;
 static NSTimer *g_cursorTimer = nil;
 static int g_debugCallbackCount = 0;
+static NSFileHandle *g_fileHandle = nil;
+static bool g_isFirstWrite = true;
 
 // Forward declaration
-void cursorTimerCallback(NSTimer *timer);
+void cursorTimerCallback();
+void writeToFile(NSDictionary *cursorData);
 
 // Timer helper class
 @interface CursorTimerTarget : NSObject
@@ -26,7 +28,7 @@ void cursorTimerCallback(NSTimer *timer);
 
 @implementation CursorTimerTarget
 - (void)timerCallback:(NSTimer *)timer {
-    cursorTimerCallback(timer);
+    cursorTimerCallback();
 }
 @end
 
@@ -36,31 +38,87 @@ static CursorTimerTarget *g_timerTarget = nil;
 static NSString *g_lastDetectedCursorType = nil;
 static int g_cursorTypeCounter = 0;
 
-// Cursor type detection helper
+// Mouse button state tracking
+static bool g_leftMouseDown = false;
+static bool g_rightMouseDown = false;
+static NSString *g_lastEventType = @"move";
+
+// Cursor type detection helper - gerçek cursor type'ı al
 NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
         
-        // Simple simulation - cycle through cursor types for demo
-        // Bu gerçek uygulamada daha akıllı olacak
-        int typeIndex = (g_cursorTypeCounter / 6) % 4; // Her 6 call'da değiştir (daha hızlı demo)
-        
-        switch (typeIndex) {
-            case 0:
+        @try {
+            // NSCursor.currentCursor kullanarak gerçek cursor type'ı al
+            NSCursor *currentCursor = [NSCursor currentCursor];
+            
+            if (currentCursor == [NSCursor arrowCursor]) {
                 g_lastDetectedCursorType = @"default";
                 return @"default";
-            case 1:
+            } else if (currentCursor == [NSCursor pointingHandCursor]) {
                 g_lastDetectedCursorType = @"pointer";
                 return @"pointer";
-            case 2:
+            } else if (currentCursor == [NSCursor IBeamCursor]) {
                 g_lastDetectedCursorType = @"text";
                 return @"text";
-            case 3:
+            } else if (currentCursor == [NSCursor openHandCursor]) {
+                g_lastDetectedCursorType = @"grab";
+                return @"grab";
+            } else if (currentCursor == [NSCursor closedHandCursor]) {
                 g_lastDetectedCursorType = @"grabbing";
                 return @"grabbing";
-            default:
+            } else if (currentCursor == [NSCursor resizeLeftRightCursor]) {
+                g_lastDetectedCursorType = @"ew-resize";
+                return @"ew-resize";
+            } else if (currentCursor == [NSCursor resizeUpDownCursor]) {
+                g_lastDetectedCursorType = @"ns-resize";
+                return @"ns-resize";
+            } else if (currentCursor == [NSCursor crosshairCursor]) {
+                g_lastDetectedCursorType = @"crosshair";
+                return @"crosshair";
+            } else {
+                // Bilinmeyen cursor - default olarak dön
                 g_lastDetectedCursorType = @"default";
                 return @"default";
+            }
+        } @catch (NSException *exception) {
+            // Hata durumunda default dön
+            g_lastDetectedCursorType = @"default";
+            return @"default";
+        }
+    }
+}
+
+// Dosyaya yazma helper fonksiyonu
+void writeToFile(NSDictionary *cursorData) {
+    @autoreleasepool {
+        if (!g_fileHandle || !cursorData) {
+            return;
+        }
+        
+        @try {
+            NSError *error;
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:cursorData
+                                                               options:0
+                                                                 error:&error];
+            if (jsonData && !error) {
+                NSString *jsonString = [[[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding] autorelease];
+                
+                if (g_isFirstWrite) {
+                    // İlk yazma - array başlat
+                    [g_fileHandle writeData:[@"[" dataUsingEncoding:NSUTF8StringEncoding]];
+                    [g_fileHandle writeData:[jsonString dataUsingEncoding:NSUTF8StringEncoding]];
+                    g_isFirstWrite = false;
+                } else {
+                    // Sonraki yazmalar - virgül + json
+                    [g_fileHandle writeData:[@"," dataUsingEncoding:NSUTF8StringEncoding]];
+                    [g_fileHandle writeData:[jsonString dataUsingEncoding:NSUTF8StringEncoding]];
+                }
+                
+                [g_fileHandle synchronizeFile];
+            }
+        } @catch (NSException *exception) {
+            // Hata durumunda sessizce devam et
         }
     }
 }
@@ -68,7 +126,9 @@ NSString* getCursorType() {
 // Event callback for mouse events
 CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
     @autoreleasepool {
-        if (!g_isCursorTracking || !g_cursorData || !g_trackingStartTime) {
+        g_debugCallbackCount++; // Callback çağrıldığını say
+        
+        if (!g_isCursorTracking || !g_trackingStartTime || !g_fileHandle) {
             return event;
         }
         
@@ -109,21 +169,19 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             @"type": eventType
         };
         
-        // Thread-safe olarak array'e ekle
-        @synchronized(g_cursorData) {
-            [g_cursorData addObject:cursorInfo];
-        }
+        // Direkt dosyaya yaz
+        writeToFile(cursorInfo);
         
         return event;
     }
 }
 
 // Timer callback for periodic cursor position updates
-void cursorTimerCallback(NSTimer *timer) {
+void cursorTimerCallback() {
     @autoreleasepool {
-        g_debugCallbackCount++;
+        g_debugCallbackCount++; // Timer callback çağrıldığını say
         
-        if (!g_isCursorTracking || !g_cursorData || !g_trackingStartTime) {
+        if (!g_isCursorTracking || !g_trackingStartTime || !g_fileHandle) {
             return;
         }
         
@@ -155,10 +213,8 @@ void cursorTimerCallback(NSTimer *timer) {
             @"type": @"move"
         };
         
-        // Thread-safe olarak array'e ekle
-        @synchronized(g_cursorData) {
-            [g_cursorData addObject:cursorInfo];
-        }
+        // Direkt dosyaya yaz
+        writeToFile(cursorInfo);
     }
 }
 
@@ -166,39 +222,53 @@ void cursorTimerCallback(NSTimer *timer) {
 void cleanupCursorTracking() {
     g_isCursorTracking = false;
     
-    // Timer'ı durdur
+    // Timer temizle
     if (g_cursorTimer) {
         [g_cursorTimer invalidate];
         g_cursorTimer = nil;
     }
     
-    // Timer target'ı temizle
     if (g_timerTarget) {
-        [g_timerTarget release];
+        [g_timerTarget autorelease];
         g_timerTarget = nil;
     }
     
-    // Event tap'i durdur
+    // Dosyayı önce kapat (en önemli işlem)
+    if (g_fileHandle) {
+        @try {
+            if (g_isFirstWrite) {
+                // Hiç veri yazılmamışsa boş array
+                [g_fileHandle writeData:[@"[]" dataUsingEncoding:NSUTF8StringEncoding]];
+            } else {
+                // JSON array'i kapat
+                [g_fileHandle writeData:[@"]" dataUsingEncoding:NSUTF8StringEncoding]];
+            }
+            [g_fileHandle synchronizeFile];
+            [g_fileHandle closeFile];
+        } @catch (NSException *exception) {
+            // Dosya işlemi hata verirse sessizce devam et
+        }
+        g_fileHandle = nil;
+    }
+    
+    // Event tap'i durdur (non-blocking)
     if (g_eventTap) {
         CGEventTapEnable(g_eventTap, false);
-        CFMachPortInvalidate(g_eventTap);
-        CFRelease(g_eventTap);
-        g_eventTap = NULL;
+        g_eventTap = NULL; // CFRelease işlemini yapmıyoruz - system handle etsin
     }
     
-    // Run loop source'unu kaldır
+    // Run loop source'unu kaldır (non-blocking)
     if (g_runLoopSource) {
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), g_runLoopSource, kCFRunLoopCommonModes);
-        CFRelease(g_runLoopSource);
-        g_runLoopSource = NULL;
+        g_runLoopSource = NULL; // CFRelease işlemini yapmıyoruz
     }
     
-    g_cursorData = nil;
+    // Global değişkenleri sıfırla
     g_trackingStartTime = nil;
     g_outputPath = nil;
     g_debugCallbackCount = 0;
     g_lastDetectedCursorType = nil;
     g_cursorTypeCounter = 0;
+    g_isFirstWrite = true;
 }
 
 // NAPI Function: Start Cursor Tracking
@@ -217,10 +287,25 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
     std::string outputPath = info[0].As<Napi::String>().Utf8Value();
     
     @try {
-        // Initialize cursor data array
-        g_cursorData = [[NSMutableArray alloc] init];
-        g_trackingStartTime = [NSDate date];
+        // Dosyayı oluştur ve aç
         g_outputPath = [NSString stringWithUTF8String:outputPath.c_str()];
+        g_fileHandle = [[NSFileHandle fileHandleForWritingAtPath:g_outputPath] retain];
+        
+        if (!g_fileHandle) {
+            // Dosya yoksa oluştur
+            [[NSFileManager defaultManager] createFileAtPath:g_outputPath contents:nil attributes:nil];
+            g_fileHandle = [[NSFileHandle fileHandleForWritingAtPath:g_outputPath] retain];
+        }
+        
+        if (!g_fileHandle) {
+            return Napi::Boolean::New(env, false);
+        }
+        
+        // Dosyayı temizle (baştan başla)
+        [g_fileHandle truncateFileAtOffset:0];
+        g_isFirstWrite = true;
+        
+        g_trackingStartTime = [NSDate date];
         
         // Create event tap for mouse events
         CGEventMask eventMask = (CGEventMaskBit(kCGEventLeftMouseDown) |
@@ -244,23 +329,21 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
         if (g_eventTap) {
             // Event tap başarılı - detaylı event tracking aktif
             g_runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, g_eventTap, 0);
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), g_runLoopSource, kCFRunLoopCommonModes);
+            CFRunLoopAddSource(CFRunLoopGetMain(), g_runLoopSource, kCFRunLoopCommonModes);
             CGEventTapEnable(g_eventTap, true);
         }
-        // Event tap başarısız olsa da devam et - sadece timer ile tracking yapar
         
-        // Timer helper oluştur
+        // NSTimer kullan (main thread'de çalışır)
         g_timerTarget = [[CursorTimerTarget alloc] init];
         
-        // NSTimer kullan (ana thread'de çalışır)
-        g_cursorTimer = [NSTimer scheduledTimerWithTimeInterval:0.016667 // ~60 FPS
-                                                         target:g_timerTarget
-                                                       selector:@selector(timerCallback:)
-                                                       userInfo:nil
-                                                        repeats:YES];
+        g_cursorTimer = [NSTimer timerWithTimeInterval:0.05 // 50ms (20 FPS)
+                                                target:g_timerTarget
+                                              selector:@selector(timerCallback:)
+                                              userInfo:nil
+                                               repeats:YES];
         
-        // Timer'ı farklı run loop mode'larında da çalıştır
-        [[NSRunLoop currentRunLoop] addTimer:g_cursorTimer forMode:NSRunLoopCommonModes];
+        // Main run loop'a ekle
+        [[NSRunLoop mainRunLoop] addTimer:g_cursorTimer forMode:NSRunLoopCommonModes];
         
         g_isCursorTracking = true;
         return Napi::Boolean::New(env, true);
@@ -280,19 +363,6 @@ Napi::Value StopCursorTracking(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // JSON dosyasını kaydet
-        if (g_cursorData && g_outputPath) {
-            @synchronized(g_cursorData) {
-                NSError *error;
-                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:g_cursorData
-                                                                   options:NSJSONWritingPrettyPrinted
-                                                                     error:&error];
-                if (jsonData && !error) {
-                    [jsonData writeToFile:g_outputPath atomically:YES];
-                }
-            }
-        }
-        
         cleanupCursorTracking();
         return Napi::Boolean::New(env, true);
         
@@ -319,10 +389,39 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         
         NSString *cursorType = getCursorType();
         
+        // Mouse button state'ini kontrol et
+        bool currentLeftMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonLeft);
+        bool currentRightMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight);
+        
+        NSString *eventType = @"move";
+        
+        // Mouse button state değişikliklerini tespit et
+        if (currentLeftMouseDown && !g_leftMouseDown) {
+            eventType = @"mousedown";
+            g_lastEventType = @"mousedown";
+        } else if (!currentLeftMouseDown && g_leftMouseDown) {
+            eventType = @"mouseup";
+            g_lastEventType = @"mouseup";
+        } else if (currentRightMouseDown && !g_rightMouseDown) {
+            eventType = @"rightmousedown";
+            g_lastEventType = @"rightmousedown";
+        } else if (!currentRightMouseDown && g_rightMouseDown) {
+            eventType = @"rightmouseup";
+            g_lastEventType = @"rightmouseup";
+        } else {
+            eventType = @"move";
+            g_lastEventType = @"move";
+        }
+        
+        // State'i güncelle
+        g_leftMouseDown = currentLeftMouseDown;
+        g_rightMouseDown = currentRightMouseDown;
+        
         Napi::Object result = Napi::Object::New(env);
         result.Set("x", Napi::Number::New(env, (int)location.x));
         result.Set("y", Napi::Number::New(env, (int)location.y));
         result.Set("cursorType", Napi::String::New(env, [cursorType UTF8String]));
+        result.Set("eventType", Napi::String::New(env, [eventType UTF8String]));
         
         return result;
         
@@ -337,54 +436,14 @@ Napi::Value GetCursorTrackingStatus(const Napi::CallbackInfo& info) {
     
     Napi::Object result = Napi::Object::New(env);
     result.Set("isTracking", Napi::Boolean::New(env, g_isCursorTracking));
-    
-    NSUInteger dataCount = 0;
-    if (g_cursorData) {
-        @synchronized(g_cursorData) {
-            dataCount = [g_cursorData count];
-        }
-    }
-    
-    result.Set("dataCount", Napi::Number::New(env, (int)dataCount));
     result.Set("hasEventTap", Napi::Boolean::New(env, g_eventTap != NULL));
     result.Set("hasRunLoopSource", Napi::Boolean::New(env, g_runLoopSource != NULL));
+    result.Set("hasFileHandle", Napi::Boolean::New(env, g_fileHandle != NULL));
+    result.Set("hasTimer", Napi::Boolean::New(env, g_cursorTimer != NULL));
     result.Set("debugCallbackCount", Napi::Number::New(env, g_debugCallbackCount));
     result.Set("cursorTypeCounter", Napi::Number::New(env, g_cursorTypeCounter));
     
     return result;
-}
-
-// NAPI Function: Save Cursor Data
-Napi::Value SaveCursorData(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Output path required").ThrowAsJavaScriptException();
-        return env.Null();
-    }
-    
-    std::string outputPath = info[0].As<Napi::String>().Utf8Value();
-    
-    @try {
-        if (g_cursorData) {
-            @synchronized(g_cursorData) {
-                NSError *error;
-                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:g_cursorData
-                                                                   options:NSJSONWritingPrettyPrinted
-                                                                     error:&error];
-                if (jsonData && !error) {
-                    NSString *filePath = [NSString stringWithUTF8String:outputPath.c_str()];
-                    BOOL success = [jsonData writeToFile:filePath atomically:YES];
-                    return Napi::Boolean::New(env, success);
-                }
-            }
-        }
-        
-        return Napi::Boolean::New(env, false);
-        
-    } @catch (NSException *exception) {
-        return Napi::Boolean::New(env, false);
-    }
 }
 
 // Export functions
@@ -393,7 +452,6 @@ Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports) {
     exports.Set("stopCursorTracking", Napi::Function::New(env, StopCursorTracking));
     exports.Set("getCursorPosition", Napi::Function::New(env, GetCursorPosition));
     exports.Set("getCursorTrackingStatus", Napi::Function::New(env, GetCursorTrackingStatus));
-    exports.Set("saveCursorData", Napi::Function::New(env, SaveCursorData));
     
     return exports;
 } 

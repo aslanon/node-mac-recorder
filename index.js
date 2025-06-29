@@ -25,6 +25,14 @@ class MacRecorder extends EventEmitter {
 		this.outputPath = null;
 		this.recordingTimer = null;
 		this.recordingStartTime = null;
+
+		// Cursor capture variables
+		this.cursorCaptureInterval = null;
+		this.cursorCaptureFile = null;
+		this.cursorCaptureStartTime = null;
+		this.cursorCaptureFirstWrite = true;
+		this.lastCapturedData = null;
+
 		this.options = {
 			includeMicrophone: false, // Default olarak mikrofon kapalı
 			includeSystemAudio: true, // Default olarak sistem sesi açık
@@ -414,26 +422,96 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
-	 * Cursor tracking başlatır
+	 * Event'in kaydedilip kaydedilmeyeceğini belirler
 	 */
-	async startCursorTracking(outputPath) {
-		if (!outputPath) {
-			throw new Error("Output path is required");
+	shouldCaptureEvent(currentData) {
+		if (!this.lastCapturedData) {
+			return true; // İlk event
+		}
+
+		const last = this.lastCapturedData;
+
+		// Event type değişmişse
+		if (currentData.type !== last.type) {
+			return true;
+		}
+
+		// Pozisyon değişmişse (minimum 2 pixel tolerans)
+		if (
+			Math.abs(currentData.x - last.x) >= 2 ||
+			Math.abs(currentData.y - last.y) >= 2
+		) {
+			return true;
+		}
+
+		// Cursor type değişmişse
+		if (currentData.cursorType !== last.cursorType) {
+			return true;
+		}
+
+		// Hiçbir değişiklik yoksa kaydetme
+		return false;
+	}
+
+	/**
+	 * Cursor capture başlatır - otomatik olarak dosyaya yazmaya başlar
+	 */
+	async startCursorCapture(filepath) {
+		if (!filepath) {
+			throw new Error("File path is required");
+		}
+
+		if (this.cursorCaptureInterval) {
+			throw new Error("Cursor capture is already running");
 		}
 
 		return new Promise((resolve, reject) => {
 			try {
-				const success = nativeBinding.startCursorTracking(outputPath);
-				if (success) {
-					this.emit("cursorTrackingStarted", outputPath);
-					resolve(true);
-				} else {
-					reject(
-						new Error(
-							"Failed to start cursor tracking. Check permissions and try again."
-						)
-					);
-				}
+				// Dosyayı oluştur ve temizle
+				const fs = require("fs");
+				fs.writeFileSync(filepath, "[");
+
+				this.cursorCaptureFile = filepath;
+				this.cursorCaptureStartTime = Date.now();
+				this.cursorCaptureFirstWrite = true;
+				this.lastCapturedData = null;
+
+				// JavaScript interval ile polling yap (daha sık - mouse event'leri yakalamak için)
+				this.cursorCaptureInterval = setInterval(() => {
+					try {
+						const position = nativeBinding.getCursorPosition();
+						const timestamp = Date.now() - this.cursorCaptureStartTime;
+
+						const cursorData = {
+							x: position.x,
+							y: position.y,
+							timestamp: timestamp,
+							cursorType: position.cursorType,
+							type: position.eventType || "move",
+						};
+
+						// Sadece eventType değiştiğinde veya pozisyon değiştiğinde kaydet
+						if (this.shouldCaptureEvent(cursorData)) {
+							// Dosyaya ekle
+							const jsonString = JSON.stringify(cursorData);
+
+							if (this.cursorCaptureFirstWrite) {
+								fs.appendFileSync(filepath, jsonString);
+								this.cursorCaptureFirstWrite = false;
+							} else {
+								fs.appendFileSync(filepath, "," + jsonString);
+							}
+
+							// Son pozisyonu sakla
+							this.lastCapturedData = { ...cursorData };
+						}
+					} catch (error) {
+						console.error("Cursor capture error:", error);
+					}
+				}, 20); // 50 FPS - mouse event'leri yakalamak için daha hızlı
+
+				this.emit("cursorCaptureStarted", filepath);
+				resolve(true);
 			} catch (error) {
 				reject(error);
 			}
@@ -441,18 +519,33 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
-	 * Cursor tracking durdurur ve JSON dosyasını kaydeder
+	 * Cursor capture durdurur - dosya yazma işlemini sonlandırır
 	 */
-	async stopCursorTracking() {
+	async stopCursorCapture() {
 		return new Promise((resolve, reject) => {
 			try {
-				const success = nativeBinding.stopCursorTracking();
-				if (success) {
-					this.emit("cursorTrackingStopped");
-					resolve(true);
-				} else {
-					reject(new Error("Failed to stop cursor tracking"));
+				if (!this.cursorCaptureInterval) {
+					return resolve(false);
 				}
+
+				// Interval'ı durdur
+				clearInterval(this.cursorCaptureInterval);
+				this.cursorCaptureInterval = null;
+
+				// Dosyayı kapat
+				if (this.cursorCaptureFile) {
+					const fs = require("fs");
+					fs.appendFileSync(this.cursorCaptureFile, "]");
+					this.cursorCaptureFile = null;
+				}
+
+				// Değişkenleri temizle
+				this.lastCapturedData = null;
+				this.cursorCaptureStartTime = null;
+				this.cursorCaptureFirstWrite = true;
+
+				this.emit("cursorCaptureStopped");
+				resolve(true);
 			} catch (error) {
 				reject(error);
 			}
@@ -471,36 +564,14 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
-	 * Cursor tracking durumunu döndürür
+	 * Cursor capture durumunu döndürür
 	 */
-	getCursorTrackingStatus() {
-		try {
-			return nativeBinding.getCursorTrackingStatus();
-		} catch (error) {
-			throw new Error("Failed to get cursor tracking status: " + error.message);
-		}
-	}
-
-	/**
-	 * Cursor verilerini JSON dosyasına kaydeder
-	 */
-	async saveCursorData(outputPath) {
-		if (!outputPath) {
-			throw new Error("Output path is required");
-		}
-
-		return new Promise((resolve, reject) => {
-			try {
-				const success = nativeBinding.saveCursorData(outputPath);
-				if (success) {
-					resolve(true);
-				} else {
-					reject(new Error("Failed to save cursor data"));
-				}
-			} catch (error) {
-				reject(error);
-			}
-		});
+	getCursorCaptureStatus() {
+		return {
+			isCapturing: !!this.cursorCaptureInterval,
+			outputFile: this.cursorCaptureFile || null,
+			startTime: this.cursorCaptureStartTime || null,
+		};
 	}
 
 	/**
