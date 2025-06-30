@@ -69,31 +69,17 @@ class MacRecorder extends EventEmitter {
 	 * macOS ekranlarını listeler
 	 */
 	async getDisplays() {
-		return new Promise((resolve, reject) => {
-			try {
-				const displays = nativeBinding.getDisplays();
-				const formattedDisplays = displays.map((display, index) => ({
-					id: index,
-					name:
-						typeof display === "string"
-							? display
-							: display.name || `Display ${index + 1}`,
-					resolution:
-						typeof display === "object"
-							? `${display.width}x${display.height}`
-							: "Unknown",
-					width: typeof display === "object" ? display.width : null,
-					height: typeof display === "object" ? display.height : null,
-					x: typeof display === "object" ? display.x : 0,
-					y: typeof display === "object" ? display.y : 0,
-					isPrimary:
-						typeof display === "object" ? display.isPrimary : index === 0,
-				}));
-				resolve(formattedDisplays);
-			} catch (error) {
-				reject(error);
-			}
-		});
+		const displays = nativeBinding.getDisplays();
+		return displays.map((display, index) => ({
+			id: display.id, // Use the actual display ID from native code
+			name: display.name,
+			width: display.width,
+			height: display.height,
+			x: display.x,
+			y: display.y,
+			isPrimary: display.isPrimary,
+			resolution: `${display.width}x${display.height}`,
+		}));
 	}
 
 	/**
@@ -404,8 +390,16 @@ class MacRecorder extends EventEmitter {
 
 		return new Promise((resolve, reject) => {
 			try {
+				// Get all displays first to validate the ID
+				const displays = nativeBinding.getDisplays();
+				const display = displays.find((d) => d.id === displayId);
+
+				if (!display) {
+					throw new Error(`Display with ID ${displayId} not found`);
+				}
+
 				const base64Image = nativeBinding.getDisplayThumbnail(
-					displayId,
+					display.id, // Use the actual CGDirectDisplayID
 					maxWidth,
 					maxHeight
 				);
@@ -585,6 +579,52 @@ class MacRecorder extends EventEmitter {
 			nodeVersion: process.version,
 			nativeModule: "mac_recorder.node",
 		};
+	}
+
+	async getDisplaysWithThumbnails(options = {}) {
+		const displays = await this.getDisplays();
+
+		// Get thumbnails for each display
+		const displayPromises = displays.map(async (display) => {
+			try {
+				const thumbnail = await this.getDisplayThumbnail(display.id, options);
+				return {
+					...display,
+					thumbnail,
+				};
+			} catch (error) {
+				return {
+					...display,
+					thumbnail: null,
+					thumbnailError: error.message,
+				};
+			}
+		});
+
+		return Promise.all(displayPromises);
+	}
+
+	async getWindowsWithThumbnails(options = {}) {
+		const windows = await this.getWindows();
+
+		// Get thumbnails for each window
+		const windowPromises = windows.map(async (window) => {
+			try {
+				const thumbnail = await this.getWindowThumbnail(window.id, options);
+				return {
+					...window,
+					thumbnail,
+				};
+			} catch (error) {
+				return {
+					...window,
+					thumbnail: null,
+					thumbnailError: error.message,
+				};
+			}
+		});
+
+		return Promise.all(windowPromises);
 	}
 }
 

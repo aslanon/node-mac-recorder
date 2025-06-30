@@ -7,6 +7,9 @@
 #import <ImageIO/ImageIO.h>
 #import <CoreAudio/CoreAudio.h>
 
+// Import screen capture
+#import "screen_capture.h"
+
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 
@@ -363,35 +366,20 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     @try {
-        NSMutableArray *displays = [NSMutableArray array];
-        
-        uint32_t displayCount;
-        CGGetActiveDisplayList(0, NULL, &displayCount);
-        
-        CGDirectDisplayID *displayList = (CGDirectDisplayID *)malloc(displayCount * sizeof(CGDirectDisplayID));
-        CGGetActiveDisplayList(displayCount, displayList, &displayCount);
-        
-        for (uint32_t i = 0; i < displayCount; i++) {
-            CGDirectDisplayID displayID = displayList[i];
-            CGRect bounds = CGDisplayBounds(displayID);
-            
-            [displays addObject:@{
-                @"id": @(displayID),
-                @"name": [NSString stringWithFormat:@"Display %d", i + 1],
-                @"width": @(bounds.size.width),
-                @"height": @(bounds.size.height),
-                @"x": @(bounds.origin.x),
-                @"y": @(bounds.origin.y),
-                @"isPrimary": @(CGDisplayIsMain(displayID))
-            }];
-        }
-        
-        free(displayList);
-        
-        // Convert to NAPI array
+        NSArray *displays = [ScreenCapture getAvailableDisplays];
         Napi::Array result = Napi::Array::New(env, displays.count);
+        
+        NSLog(@"Found %lu displays", (unsigned long)displays.count);
+        
         for (NSUInteger i = 0; i < displays.count; i++) {
             NSDictionary *display = displays[i];
+            NSLog(@"Display %lu: ID=%u, Name=%@, Size=%@x%@", 
+                  (unsigned long)i,
+                  [display[@"id"] unsignedIntValue],
+                  display[@"name"],
+                  display[@"width"],
+                  display[@"height"]);
+                  
             Napi::Object displayObj = Napi::Object::New(env);
             displayObj.Set("id", Napi::Number::New(env, [display[@"id"] unsignedIntValue]));
             displayObj.Set("name", Napi::String::New(env, [display[@"name"] UTF8String]));
@@ -406,6 +394,7 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
         return result;
         
     } @catch (NSException *exception) {
+        NSLog(@"Exception in GetDisplays: %@", exception);
         return Napi::Array::New(env, 0);
     }
 }
@@ -536,16 +525,42 @@ Napi::Value GetDisplayThumbnail(const Napi::CallbackInfo& info) {
     }
     
     @try {
+        // Verify display exists
+        CGDirectDisplayID activeDisplays[32];
+        uint32_t displayCount;
+        CGError err = CGGetActiveDisplayList(32, activeDisplays, &displayCount);
+        
+        if (err != kCGErrorSuccess) {
+            NSLog(@"Failed to get active display list: %d", err);
+            return env.Null();
+        }
+        
+        bool displayFound = false;
+        for (uint32_t i = 0; i < displayCount; i++) {
+            if (activeDisplays[i] == displayID) {
+                displayFound = true;
+                break;
+            }
+        }
+        
+        if (!displayFound) {
+            NSLog(@"Display ID %u not found in active displays", displayID);
+            return env.Null();
+        }
+        
         // Create display image
         CGImageRef displayImage = CGDisplayCreateImage(displayID);
         
         if (!displayImage) {
+            NSLog(@"CGDisplayCreateImage failed for display ID: %u", displayID);
             return env.Null();
         }
         
         // Get original dimensions
         size_t originalWidth = CGImageGetWidth(displayImage);
         size_t originalHeight = CGImageGetHeight(displayImage);
+        
+        NSLog(@"Original dimensions: %zux%zu", originalWidth, originalHeight);
         
         // Calculate scaled dimensions maintaining aspect ratio
         double scaleX = (double)maxWidth / originalWidth;
@@ -554,6 +569,8 @@ Napi::Value GetDisplayThumbnail(const Napi::CallbackInfo& info) {
         
         size_t thumbnailWidth = (size_t)(originalWidth * scale);
         size_t thumbnailHeight = (size_t)(originalHeight * scale);
+        
+        NSLog(@"Thumbnail dimensions: %zux%zu (scale: %f)", thumbnailWidth, thumbnailHeight, scale);
         
         // Create scaled image
         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
@@ -564,43 +581,61 @@ Napi::Value GetDisplayThumbnail(const Napi::CallbackInfo& info) {
             8,
             thumbnailWidth * 4,
             colorSpace,
-            kCGImageAlphaPremultipliedLast
+            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
         );
         
-        if (context) {
-            CGContextDrawImage(context, CGRectMake(0, 0, thumbnailWidth, thumbnailHeight), displayImage);
-            CGImageRef thumbnailImage = CGBitmapContextCreateImage(context);
-            
-            if (thumbnailImage) {
-                // Convert to PNG data
-                NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:thumbnailImage];
-                NSData *pngData = [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-                
-                if (pngData) {
-                    // Convert to Base64
-                    NSString *base64String = [pngData base64EncodedStringWithOptions:0];
-                    std::string base64Std = [base64String UTF8String];
-                    
-                    CGImageRelease(thumbnailImage);
-                    CGContextRelease(context);
-                    CGColorSpaceRelease(colorSpace);
-                    CGImageRelease(displayImage);
-                    
-                    return Napi::String::New(env, base64Std);
-                }
-                
-                CGImageRelease(thumbnailImage);
-            }
-            
-            CGContextRelease(context);
+        if (!context) {
+            NSLog(@"Failed to create bitmap context");
+            CGImageRelease(displayImage);
+            CGColorSpaceRelease(colorSpace);
+            return env.Null();
         }
         
+        // Set interpolation quality for better scaling
+        CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+        
+        // Draw the image
+        CGContextDrawImage(context, CGRectMake(0, 0, thumbnailWidth, thumbnailHeight), displayImage);
+        CGImageRef thumbnailImage = CGBitmapContextCreateImage(context);
+        
+        if (!thumbnailImage) {
+            NSLog(@"Failed to create thumbnail image");
+            CGContextRelease(context);
+            CGImageRelease(displayImage);
+            CGColorSpaceRelease(colorSpace);
+            return env.Null();
+        }
+        
+        // Convert to PNG data
+        NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:thumbnailImage];
+        NSDictionary *properties = @{NSImageCompressionFactor: @0.8};
+        NSData *pngData = [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:properties];
+        
+        if (!pngData) {
+            NSLog(@"Failed to convert image to PNG data");
+            CGImageRelease(thumbnailImage);
+            CGContextRelease(context);
+            CGImageRelease(displayImage);
+            CGColorSpaceRelease(colorSpace);
+            return env.Null();
+        }
+        
+        // Convert to Base64
+        NSString *base64String = [pngData base64EncodedStringWithOptions:0];
+        std::string base64Std = [base64String UTF8String];
+        
+        NSLog(@"Successfully created thumbnail with base64 length: %lu", (unsigned long)base64Std.length());
+        
+        // Cleanup
+        CGImageRelease(thumbnailImage);
+        CGContextRelease(context);
         CGColorSpaceRelease(colorSpace);
         CGImageRelease(displayImage);
         
-        return env.Null();
+        return Napi::String::New(env, base64Std);
         
     } @catch (NSException *exception) {
+        NSLog(@"Exception in GetDisplayThumbnail: %@", exception);
         return env.Null();
     }
 }

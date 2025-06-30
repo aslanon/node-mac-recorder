@@ -7,7 +7,8 @@ Release/obj.target/mac_recorder/src/mac_recorder.o: \
   /Users/onur/Library/Caches/node-gyp/20.10.0/include/node/js_native_api_types.h \
   /Users/onur/Library/Caches/node-gyp/20.10.0/include/node/node_api_types.h \
   /Users/onur/codes/node-mac-recorder/node_modules/node-addon-api/napi-inl.h \
-  /Users/onur/codes/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h
+  /Users/onur/codes/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h \
+  ../src/screen_capture.h
 ../src/mac_recorder.mm:
 /Users/onur/codes/node-mac-recorder/node_modules/node-addon-api/napi.h:
 /Users/onur/Library/Caches/node-gyp/20.10.0/include/node/node_api.h:
@@ -16,3 +17,4 @@ Release/obj.target/mac_recorder/src/mac_recorder.o: \
 /Users/onur/Library/Caches/node-gyp/20.10.0/include/node/node_api_types.h:
 /Users/onur/codes/node-mac-recorder/node_modules/node-addon-api/napi-inl.h:
 /Users/onur/codes/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h:
+../src/screen_capture.h:

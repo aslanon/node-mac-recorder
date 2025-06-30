@@ -1,29 +1,53 @@
-const MacRecorder = require("./index.js");
+const MacRecorder = require("./");
 const fs = require("fs");
 const path = require("path");
 
+async function saveBase64Image(base64String, filePath) {
+	// Remove the data:image/png;base64, prefix if it exists
+	const base64Data = base64String.replace(/^data:image\/png;base64,/, "");
+
+	// Create directory if it doesn't exist
+	const dir = path.dirname(filePath);
+	if (!fs.existsSync(dir)) {
+		fs.mkdirSync(dir, { recursive: true });
+	}
+
+	// Write the file
+	fs.writeFileSync(filePath, base64Data, "base64");
+	console.log(`✅ Saved image to: ${filePath}`);
+}
+
 async function runTests() {
+	console.log("\n🎯 macOS Screen Recorder Test Suite\n");
+
 	const recorder = new MacRecorder();
 
-	console.log("🎯 macOS Screen Recorder Test Suite\n");
+	// Create test output directory
+	const outputDir = path.join(__dirname, "test-output");
+	if (!fs.existsSync(outputDir)) {
+		fs.mkdirSync(outputDir, { recursive: true });
+	}
 
-	// 1. Permission Check
+	// 1. Permissions Test
 	console.log("1️⃣ Testing Permissions...");
 	try {
-		const hasPermissions = await recorder.checkPermissions();
-		console.log(`✅ Permissions: ${hasPermissions ? "Granted" : "Denied"}\n`);
+		const permissions = await recorder.checkPermissions();
+		console.log("✅ Permissions:", permissions);
+		console.log();
 	} catch (error) {
-		console.error("❌ Permission check failed:", error.message);
+		console.error("❌ Permissions test failed:", error.message);
 	}
 
 	// 2. Audio Devices Test
 	console.log("2️⃣ Testing Audio Devices...");
 	try {
-		const audioDevices = await recorder.getAudioDevices();
-		console.log(`✅ Found ${audioDevices.length} audio devices:`);
-		audioDevices.forEach((device, index) => {
+		const devices = await recorder.getAudioDevices();
+		console.log(`✅ Found ${devices.length} audio devices:`);
+		devices.forEach((device, index) => {
 			console.log(
-				`   ${index}: ${device.name} ${device.isDefault ? "(Default)" : ""}`
+				`   ${index}: ${device.name} ${
+					device.manufacturer ? `(${device.manufacturer})` : ""
+				}`
 			);
 		});
 		console.log();
@@ -72,6 +96,9 @@ async function runTests() {
 		const displays = await recorder.getDisplays();
 		if (displays.length > 0) {
 			const display = displays[0];
+			console.log(
+				`Testing thumbnail for display: ${display.name} (ID: ${display.id})`
+			);
 			const thumbnail = await recorder.getDisplayThumbnail(display.id, {
 				maxWidth: 200,
 				maxHeight: 150,
