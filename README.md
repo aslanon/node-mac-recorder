@@ -92,6 +92,7 @@ await recorder.startRecording("./recording.mov", {
 	// Audio Controls
 	includeMicrophone: false, // Enable microphone (default: false)
 	includeSystemAudio: true, // Enable system audio (default: true)
+	audioDeviceId: "device-id", // Specific audio input device (default: system default)
 
 	// Display & Window Selection
 	displayId: 0, // Display index (null = main display)
@@ -159,14 +160,14 @@ console.log(displays);
 
 #### `getAudioDevices()`
 
-Lists all available audio input devices.
+Returns a list of available audio input devices.
 
 ```javascript
 const devices = await recorder.getAudioDevices();
 console.log(devices);
 // [
 //   {
-//     id: "device-id-123",
+//     id: "device-id",
 //     name: "Built-in Microphone",
 //     manufacturer: "Apple Inc.",
 //     isDefault: true

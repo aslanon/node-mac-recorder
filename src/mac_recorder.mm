@@ -70,6 +70,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     bool includeMicrophone = false; // Default olarak mikrofon kapalı
     bool includeSystemAudio = true; // Default olarak sistem sesi açık
     CGDirectDisplayID displayID = CGMainDisplayID(); // Default ana ekran
+    NSString *audioDeviceId = nil; // Default audio device ID
     
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
@@ -95,6 +96,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         // Microphone
         if (options.Has("includeMicrophone")) {
             includeMicrophone = options.Get("includeMicrophone").As<Napi::Boolean>();
+        }
+        
+        // Audio device ID
+        if (options.Has("audioDeviceId") && !options.Get("audioDeviceId").IsNull()) {
+            std::string deviceId = options.Get("audioDeviceId").As<Napi::String>().Utf8Value();
+            audioDeviceId = [NSString stringWithUTF8String:deviceId.c_str()];
         }
         
         // System audio
@@ -154,12 +161,41 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         
         // Add microphone input if requested
         if (includeMicrophone) {
-            AVCaptureDevice *audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+            AVCaptureDevice *audioDevice = nil;
+            
+            if (audioDeviceId) {
+                // Try to find the specified device
+                NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+                NSLog(@"[DEBUG] Looking for audio device with ID: %@", audioDeviceId);
+                NSLog(@"[DEBUG] Available audio devices:");
+                for (AVCaptureDevice *device in devices) {
+                    NSLog(@"[DEBUG] - Device: %@ (ID: %@)", device.localizedName, device.uniqueID);
+                    if ([device.uniqueID isEqualToString:audioDeviceId]) {
+                        NSLog(@"[DEBUG] Found matching device: %@", device.localizedName);
+                        audioDevice = device;
+                        break;
+                    }
+                }
+                
+                if (!audioDevice) {
+                    NSLog(@"[DEBUG] Specified audio device not found, falling back to default");
+                }
+            }
+            
+            // Fallback to default device if specified device not found
+            if (!audioDevice) {
+                audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+                NSLog(@"[DEBUG] Using default audio device: %@ (ID: %@)", audioDevice.localizedName, audioDevice.uniqueID);
+            }
+            
             if (audioDevice) {
                 NSError *error;
                 g_audioInput = [[AVCaptureDeviceInput alloc] initWithDevice:audioDevice error:&error];
                 if (g_audioInput && [g_captureSession canAddInput:g_audioInput]) {
                     [g_captureSession addInput:g_audioInput];
+                    NSLog(@"[DEBUG] Successfully added audio input device");
+                } else {
+                    NSLog(@"[DEBUG] Failed to add audio input device: %@", error);
                 }
             }
         }

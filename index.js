@@ -99,8 +99,16 @@ class MacRecorder extends EventEmitter {
 	/**
 	 * Kayıt seçeneklerini ayarlar
 	 */
-	setOptions(options) {
-		this.options = { ...this.options, ...options };
+	setOptions(options = {}) {
+		this.options = {
+			includeMicrophone: options.includeMicrophone || false,
+			includeSystemAudio: options.includeSystemAudio !== false, // Default true
+			captureCursor: options.captureCursor || false,
+			displayId: options.displayId || null, // null = ana ekran
+			windowId: options.windowId || null, // null = tam ekran
+			audioDeviceId: options.audioDeviceId || null, // null = default device
+			captureArea: options.captureArea || null,
+		};
 	}
 
 	/**
@@ -219,6 +227,7 @@ class MacRecorder extends EventEmitter {
 					captureCursor: this.options.captureCursor || false,
 					displayId: this.options.displayId || null, // null = ana ekran
 					windowId: this.options.windowId || null, // null = tam ekran
+					audioDeviceId: this.options.audioDeviceId || null, // null = default device
 				};
 
 				// Manuel captureArea varsa onu kullan
