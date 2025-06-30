@@ -43,47 +43,113 @@ static bool g_leftMouseDown = false;
 static bool g_rightMouseDown = false;
 static NSString *g_lastEventType = @"move";
 
-// Cursor type detection helper - gerçek cursor type'ı al
+// Event tap callback
+static CGEventRef eventTapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *userInfo) {
+    return event;
+}
+
+// Cursor type detection helper - sistem genelindeki cursor type'ı al
 NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
         
         @try {
-            // NSCursor.currentCursor kullanarak gerçek cursor type'ı al
-            NSCursor *currentCursor = [NSCursor currentCursor];
+            // Get current cursor info
+            NSCursor *currentCursor = [NSCursor currentSystemCursor];
+            NSString *cursorType = @"default";
             
-            if (currentCursor == [NSCursor arrowCursor]) {
-                g_lastDetectedCursorType = @"default";
-                return @"default";
-            } else if (currentCursor == [NSCursor pointingHandCursor]) {
-                g_lastDetectedCursorType = @"pointer";
+            // Get cursor image info
+            NSImage *cursorImage = [currentCursor image];
+            NSPoint hotSpot = [currentCursor hotSpot];
+            NSSize imageSize = [cursorImage size];
+            
+            // Check cursor type by comparing with standard cursors
+            if ([currentCursor isEqual:[NSCursor pointingHandCursor]] ||
+                (hotSpot.x >= 5 && hotSpot.x <= 7 && hotSpot.y >= 0 && hotSpot.y <= 4) ||
+                (hotSpot.x >= 12 && hotSpot.x <= 14 && hotSpot.y >= 7 && hotSpot.y <= 9)) {
                 return @"pointer";
-            } else if (currentCursor == [NSCursor IBeamCursor]) {
-                g_lastDetectedCursorType = @"text";
+            } else if ([currentCursor isEqual:[NSCursor IBeamCursor]] ||
+                      (hotSpot.x >= 3 && hotSpot.x <= 5 && hotSpot.y >= 8 && hotSpot.y <= 10 && 
+                       imageSize.width <= 10 && imageSize.height >= 16)) {
                 return @"text";
-            } else if (currentCursor == [NSCursor openHandCursor]) {
-                g_lastDetectedCursorType = @"grab";
-                return @"grab";
-            } else if (currentCursor == [NSCursor closedHandCursor]) {
-                g_lastDetectedCursorType = @"grabbing";
-                return @"grabbing";
-            } else if (currentCursor == [NSCursor resizeLeftRightCursor]) {
-                g_lastDetectedCursorType = @"ew-resize";
+            } else if ([currentCursor isEqual:[NSCursor resizeLeftRightCursor]]) {
                 return @"ew-resize";
-            } else if (currentCursor == [NSCursor resizeUpDownCursor]) {
-                g_lastDetectedCursorType = @"ns-resize";
+            } else if ([currentCursor isEqual:[NSCursor resizeUpDownCursor]]) {
                 return @"ns-resize";
-            } else if (currentCursor == [NSCursor crosshairCursor]) {
-                g_lastDetectedCursorType = @"crosshair";
-                return @"crosshair";
-            } else {
-                // Bilinmeyen cursor - default olarak dön
-                g_lastDetectedCursorType = @"default";
-                return @"default";
+            } else if ([currentCursor isEqual:[NSCursor openHandCursor]] || 
+                      [currentCursor isEqual:[NSCursor closedHandCursor]]) {
+                return @"grabbing";
             }
+            
+            // Check if we're in a drag operation
+            CGEventRef event = CGEventCreate(NULL);
+            if (event) {
+                CGEventType eventType = (CGEventType)CGEventGetType(event);
+                if (eventType == kCGEventLeftMouseDragged || 
+                    eventType == kCGEventRightMouseDragged) {
+                    CFRelease(event);
+                    return @"grabbing";
+                }
+                CFRelease(event);
+            }
+            
+            // Get the window under the cursor
+            CGPoint cursorPos = CGEventGetLocation(CGEventCreate(NULL));
+            AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+            AXUIElementRef elementAtPosition = NULL;
+            AXError error = AXUIElementCopyElementAtPosition(systemWide, cursorPos.x, cursorPos.y, &elementAtPosition);
+            
+            if (error == kAXErrorSuccess && elementAtPosition) {
+                CFStringRef role = NULL;
+                error = AXUIElementCopyAttributeValue(elementAtPosition, kAXRoleAttribute, (CFTypeRef*)&role);
+                
+                if (error == kAXErrorSuccess && role) {
+                    NSString *elementRole = (__bridge_transfer NSString*)role;
+                    
+                    // Check for clickable elements that should show pointer cursor
+                    if ([elementRole isEqualToString:@"AXLink"] ||
+                        [elementRole isEqualToString:@"AXButton"] ||
+                        [elementRole isEqualToString:@"AXMenuItem"] ||
+                        [elementRole isEqualToString:@"AXRadioButton"] ||
+                        [elementRole isEqualToString:@"AXCheckBox"]) {
+                        return @"pointer";
+                    }
+                    
+                    // Check subrole for additional pointer cursor elements
+                    CFStringRef subrole = NULL;
+                    error = AXUIElementCopyAttributeValue(elementAtPosition, kAXSubroleAttribute, (CFTypeRef*)&subrole);
+                    if (error == kAXErrorSuccess && subrole) {
+                        NSString *elementSubrole = (__bridge_transfer NSString*)subrole;
+                        
+                        if ([elementSubrole isEqualToString:@"AXClickable"] ||
+                            [elementSubrole isEqualToString:@"AXDisclosureTriangle"] ||
+                            [elementSubrole isEqualToString:@"AXToolbarButton"] ||
+                            [elementSubrole isEqualToString:@"AXCloseButton"] ||
+                            [elementSubrole isEqualToString:@"AXMinimizeButton"] ||
+                            [elementSubrole isEqualToString:@"AXZoomButton"]) {
+                            return @"pointer";
+                        }
+                    }
+                    
+                    // Check for text elements
+                    if ([elementRole isEqualToString:@"AXTextField"] || 
+                        [elementRole isEqualToString:@"AXTextArea"] ||
+                        [elementRole isEqualToString:@"AXStaticText"]) {
+                        return @"text";
+                    }
+                }
+                
+                CFRelease(elementAtPosition);
+            }
+            
+            if (systemWide) {
+                CFRelease(systemWide);
+            }
+            
+            return cursorType;
+            
         } @catch (NSException *exception) {
-            // Hata durumunda default dön
-            g_lastDetectedCursorType = @"default";
+            NSLog(@"Error in getCursorType: %@", exception);
             return @"default";
         }
     }

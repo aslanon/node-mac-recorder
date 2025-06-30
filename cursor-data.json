@@ -1,93 +1,359 @@
 [
 	{
-		"x": 1119,
-		"y": 1090,
-		"timestamp": 106,
+		"x": 1947,
+		"y": 780,
+		"timestamp": 85,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1950,
+		"y": 780,
+		"timestamp": 1476,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1954,
+		"y": 778,
+		"timestamp": 1500,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1958,
+		"y": 777,
+		"timestamp": 1518,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1963,
+		"y": 775,
+		"timestamp": 1541,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1967,
+		"y": 775,
+		"timestamp": 1595,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1119,
-		"y": 1080,
-		"timestamp": 407,
+		"x": 1971,
+		"y": 775,
+		"timestamp": 1596,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1119,
-		"y": 1066,
-		"timestamp": 423,
+		"x": 1973,
+		"y": 775,
+		"timestamp": 1617,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1119,
-		"y": 1042,
-		"timestamp": 446,
+		"x": 1975,
+		"y": 775,
+		"timestamp": 1659,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1119,
-		"y": 968,
-		"timestamp": 466,
-		"cursorType": "default",
+		"x": 1977,
+		"y": 775,
+		"timestamp": 1679,
+		"cursorType": "pointer",
 		"type": "move"
 	},
 	{
-		"x": 1129,
-		"y": 906,
-		"timestamp": 487,
-		"cursorType": "default",
+		"x": 1979,
+		"y": 775,
+		"timestamp": 1744,
+		"cursorType": "pointer",
 		"type": "move"
 	},
 	{
-		"x": 1153,
-		"y": 820,
-		"timestamp": 507,
-		"cursorType": "default",
+		"x": 1979,
+		"y": 777,
+		"timestamp": 1807,
+		"cursorType": "pointer",
 		"type": "move"
 	},
 	{
-		"x": 1168,
+		"x": 1973,
 		"y": 782,
-		"timestamp": 528,
+		"timestamp": 1828,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1176,
-		"y": 764,
-		"timestamp": 549,
+		"x": 1968,
+		"y": 787,
+		"timestamp": 1850,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1176,
-		"y": 764,
-		"timestamp": 2578,
-		"cursorType": "default",
-		"type": "mousedown"
+		"x": 1957,
+		"y": 793,
+		"timestamp": 1868,
+		"cursorType": "pointer",
+		"type": "move"
 	},
 	{
-		"x": 1176,
-		"y": 764,
-		"timestamp": 2599,
+		"x": 1948,
+		"y": 799,
+		"timestamp": 1891,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1943,
+		"y": 802,
+		"timestamp": 1911,
 		"cursorType": "default",
 		"type": "move"
 	},
 	{
-		"x": 1176,
-		"y": 764,
-		"timestamp": 2724,
+		"x": 1937,
+		"y": 804,
+		"timestamp": 1933,
 		"cursorType": "default",
-		"type": "mouseup"
+		"type": "move"
 	},
 	{
-		"x": 1176,
-		"y": 764,
-		"timestamp": 2744,
+		"x": 1938,
+		"y": 800,
+		"timestamp": 2309,
 		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1939,
+		"y": 799,
+		"timestamp": 2329,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1940,
+		"y": 797,
+		"timestamp": 2435,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1941,
+		"y": 794,
+		"timestamp": 2477,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1941,
+		"y": 792,
+		"timestamp": 2500,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1942,
+		"y": 788,
+		"timestamp": 2518,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1943,
+		"y": 786,
+		"timestamp": 2560,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1945,
+		"y": 784,
+		"timestamp": 2707,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1945,
+		"y": 796,
+		"timestamp": 3544,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 1945,
+		"y": 817,
+		"timestamp": 3568,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1951,
+		"y": 863,
+		"timestamp": 3589,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1956,
+		"y": 925,
+		"timestamp": 3609,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1966,
+		"y": 983,
+		"timestamp": 3630,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1970,
+		"y": 1006,
+		"timestamp": 3650,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1978,
+		"y": 1042,
+		"timestamp": 3675,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1983,
+		"y": 1061,
+		"timestamp": 3693,
+		"cursorType": "default",
+		"type": "move"
+	},
+	{
+		"x": 1986,
+		"y": 1072,
+		"timestamp": 3713,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1990,
+		"y": 1082,
+		"timestamp": 3734,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1991,
+		"y": 1086,
+		"timestamp": 3755,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1993,
+		"y": 1091,
+		"timestamp": 3776,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1994,
+		"y": 1096,
+		"timestamp": 3797,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1995,
+		"y": 1099,
+		"timestamp": 3818,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1997,
+		"y": 1106,
+		"timestamp": 3841,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1997,
+		"y": 1109,
+		"timestamp": 3859,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 1998,
+		"y": 1116,
+		"timestamp": 3882,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 2000,
+		"y": 1120,
+		"timestamp": 3902,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 2000,
+		"y": 1123,
+		"timestamp": 3924,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 2001,
+		"y": 1126,
+		"timestamp": 3945,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 2001,
+		"y": 1129,
+		"timestamp": 3967,
+		"cursorType": "text",
+		"type": "move"
+	},
+	{
+		"x": 2002,
+		"y": 1135,
+		"timestamp": 3986,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 2002,
+		"y": 1142,
+		"timestamp": 4007,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 2002,
+		"y": 1146,
+		"timestamp": 4027,
+		"cursorType": "pointer",
+		"type": "move"
+	},
+	{
+		"x": 2002,
+		"y": 1151,
+		"timestamp": 4049,
+		"cursorType": "pointer",
 		"type": "move"
 	}
 ]
