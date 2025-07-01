@@ -251,21 +251,12 @@ void cursorTimerCallback() {
             return;
         }
         
-        // Ana thread'de mouse pozisyonu al
-        __block NSPoint mouseLocation;
-        __block CGPoint location;
-        
-        if ([NSThread isMainThread]) {
-            mouseLocation = [NSEvent mouseLocation];
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                mouseLocation = [NSEvent mouseLocation];
-            });
+        // CGEventGetLocation direkt global koordinat verir - çoklu ekran desteği için daha doğru
+        CGEventRef event = CGEventCreate(NULL);
+        CGPoint location = CGEventGetLocation(event);
+        if (event) {
+            CFRelease(event);
         }
-        
-        CGDirectDisplayID mainDisplay = CGMainDisplayID();
-        size_t displayHeight = CGDisplayPixelsHigh(mainDisplay);
-        location = CGPointMake(mouseLocation.x, displayHeight - mouseLocation.y);
         
         NSTimeInterval timestamp = [[NSDate date] timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSString *cursorType = getCursorType();
@@ -443,15 +434,13 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     @try {
-        // NSEvent kullanarak mouse pozisyonu al (daha güvenli)
-        NSPoint mouseLocation = [NSEvent mouseLocation];
-        
-        // CGDisplayPixelsHigh ve CGDisplayPixelsWide ile koordinat dönüşümü
-        CGDirectDisplayID mainDisplay = CGMainDisplayID();
-        size_t displayHeight = CGDisplayPixelsHigh(mainDisplay);
-        
-        // macOS coordinate system (bottom-left origin) to screen coordinates (top-left origin)
-        CGPoint location = CGPointMake(mouseLocation.x, displayHeight - mouseLocation.y);
+        // NSEvent mouseLocation zaten global koordinatlarda (all displays combined)
+        // CGEventGetLocation kullanarak direkt global koordinat al - daha doğru
+        CGEventRef event = CGEventCreate(NULL);
+        CGPoint location = CGEventGetLocation(event);
+        if (event) {
+            CFRelease(event);
+        }
         
         NSString *cursorType = getCursorType();
         

@@ -419,7 +419,6 @@
     "yes": "true",
     "cache": "/Users/onur/.npm",
     "user_agent": "npm/10.2.3 node/v20.10.0 darwin x64 workspaces/false",
-    "prefix": "/usr/local",
-    "build_from_source": "true"
+    "prefix": "/usr/local"
   }
 }

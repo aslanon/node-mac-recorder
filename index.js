@@ -32,6 +32,8 @@ class MacRecorder extends EventEmitter {
 		this.cursorCaptureStartTime = null;
 		this.cursorCaptureFirstWrite = true;
 		this.lastCapturedData = null;
+		this.cursorDisplayInfo = null;
+		this.recordingDisplayInfo = null;
 
 		this.options = {
 			includeMicrophone: false, // Default olarak mikrofon kapalı
@@ -44,6 +46,10 @@ class MacRecorder extends EventEmitter {
 			displayId: null, // Hangi ekranı kaydedeceği (null = ana ekran)
 			windowId: null, // Hangi pencereyi kaydedeceği (null = tam ekran)
 		};
+
+		// Display cache için async initialization
+		this.cachedDisplays = null;
+		this.refreshDisplayCache();
 	}
 
 	/**
@@ -189,6 +195,16 @@ class MacRecorder extends EventEmitter {
 					// DisplayId'yi ayarla
 					if (targetDisplayId !== null) {
 						this.options.displayId = targetDisplayId;
+
+						// Recording için display bilgisini sakla (cursor capture için)
+						const targetDisplay = displays[targetDisplayId];
+						this.recordingDisplayInfo = {
+							displayId: targetDisplayId,
+							x: targetDisplay.x,
+							y: targetDisplay.y,
+							width: parseInt(targetDisplay.resolution.split("x")[0]),
+							height: parseInt(targetDisplay.resolution.split("x")[1]),
+						};
 					}
 
 					this.options.captureArea = {
@@ -207,6 +223,25 @@ class MacRecorder extends EventEmitter {
 					"Pencere bilgisi alınamadı, tam ekran kaydedilecek:",
 					error.message
 				);
+			}
+		}
+
+		// DisplayId manuel ayarlanmışsa display bilgisini sakla
+		if (this.options.displayId !== null && !this.recordingDisplayInfo) {
+			try {
+				const displays = await this.getDisplays();
+				if (this.options.displayId < displays.length) {
+					const targetDisplay = displays[this.options.displayId];
+					this.recordingDisplayInfo = {
+						displayId: this.options.displayId,
+						x: targetDisplay.x,
+						y: targetDisplay.y,
+						width: parseInt(targetDisplay.resolution.split("x")[0]),
+						height: parseInt(targetDisplay.resolution.split("x")[1]),
+					};
+				}
+			} catch (error) {
+				console.warn("Display bilgisi alınamadı:", error.message);
 			}
 		}
 
@@ -291,6 +326,7 @@ class MacRecorder extends EventEmitter {
 				}
 
 				this.isRecording = false;
+				this.recordingDisplayInfo = null;
 
 				const result = {
 					code: success ? 0 : 1,
@@ -311,6 +347,7 @@ class MacRecorder extends EventEmitter {
 				resolve(result);
 			} catch (error) {
 				this.isRecording = false;
+				this.recordingDisplayInfo = null;
 				if (this.recordingTimer) {
 					clearInterval(this.recordingTimer);
 					this.recordingTimer = null;
@@ -458,14 +495,50 @@ class MacRecorder extends EventEmitter {
 
 	/**
 	 * Cursor capture başlatır - otomatik olarak dosyaya yazmaya başlar
+	 * Recording başlatılmışsa otomatik olarak display-relative koordinatlar kullanır
+	 * @param {string} filepath - Cursor data JSON dosya yolu
 	 */
-	async startCursorCapture(filepath) {
-		if (!filepath) {
-			throw new Error("File path is required");
+	async startCursorCapture(intervalOrFilepath = 100) {
+		let filepath;
+		let interval = 20; // Default 50 FPS
+
+		// Parameter parsing: number = interval, string = filepath
+		if (typeof intervalOrFilepath === "number") {
+			interval = Math.max(10, intervalOrFilepath); // Min 10ms
+			filepath = `cursor-data-${Date.now()}.json`;
+		} else if (typeof intervalOrFilepath === "string") {
+			filepath = intervalOrFilepath;
+		} else {
+			throw new Error(
+				"Parameter must be interval (number) or filepath (string)"
+			);
 		}
 
 		if (this.cursorCaptureInterval) {
 			throw new Error("Cursor capture is already running");
+		}
+
+		// Recording başlatılmışsa o display'i kullan, yoksa main display kullan
+		if (this.recordingDisplayInfo) {
+			this.cursorDisplayInfo = this.recordingDisplayInfo;
+		} else {
+			// Main display bilgisini al (her zaman relative koordinatlar için)
+			try {
+				const displays = await this.getDisplays();
+				const mainDisplay = displays.find((d) => d.isPrimary) || displays[0];
+				if (mainDisplay) {
+					this.cursorDisplayInfo = {
+						displayId: 0,
+						x: mainDisplay.x,
+						y: mainDisplay.y,
+						width: parseInt(mainDisplay.resolution.split("x")[0]),
+						height: parseInt(mainDisplay.resolution.split("x")[1]),
+					};
+				}
+			} catch (error) {
+				console.warn("Main display bilgisi alınamadı:", error.message);
+				this.cursorDisplayInfo = null; // Fallback: global koordinatlar
+			}
 		}
 
 		return new Promise((resolve, reject) => {
@@ -485,9 +558,29 @@ class MacRecorder extends EventEmitter {
 						const position = nativeBinding.getCursorPosition();
 						const timestamp = Date.now() - this.cursorCaptureStartTime;
 
+						// Global koordinatları display-relative'e çevir
+						let x = position.x;
+						let y = position.y;
+
+						if (this.cursorDisplayInfo) {
+							// Display offset'lerini çıkar
+							x = position.x - this.cursorDisplayInfo.x;
+							y = position.y - this.cursorDisplayInfo.y;
+
+							// Display bounds kontrolü - cursor display dışındaysa kaydetme
+							if (
+								x < 0 ||
+								y < 0 ||
+								x >= this.cursorDisplayInfo.width ||
+								y >= this.cursorDisplayInfo.height
+							) {
+								return; // Bu frame'i skip et
+							}
+						}
+
 						const cursorData = {
-							x: position.x,
-							y: position.y,
+							x: x,
+							y: y,
 							timestamp: timestamp,
 							cursorType: position.cursorType,
 							type: position.eventType || "move",
@@ -511,7 +604,7 @@ class MacRecorder extends EventEmitter {
 					} catch (error) {
 						console.error("Cursor capture error:", error);
 					}
-				}, 20); // 50 FPS - mouse event'leri yakalamak için daha hızlı
+				}, interval); // Configurable FPS
 
 				this.emit("cursorCaptureStarted", filepath);
 				resolve(true);
@@ -546,6 +639,7 @@ class MacRecorder extends EventEmitter {
 				this.lastCapturedData = null;
 				this.cursorCaptureStartTime = null;
 				this.cursorCaptureFirstWrite = true;
+				this.cursorDisplayInfo = null;
 
 				this.emit("cursorCaptureStopped");
 				resolve(true);
@@ -557,13 +651,95 @@ class MacRecorder extends EventEmitter {
 
 	/**
 	 * Anlık cursor pozisyonunu ve tipini döndürür
+	 * Display-relative koordinatlar döner (her zaman pozitif)
 	 */
 	getCursorPosition() {
 		try {
-			return nativeBinding.getCursorPosition();
+			const position = nativeBinding.getCursorPosition();
+
+			// Cursor hangi display'de ise o display'e relative döndür
+			return this.getDisplayRelativePositionSync(position);
 		} catch (error) {
 			throw new Error("Failed to get cursor position: " + error.message);
 		}
+	}
+
+	/**
+	 * Global koordinatları en uygun display'e relative çevirir (sync version)
+	 */
+	getDisplayRelativePositionSync(position) {
+		try {
+			// Cache'lenmiş displays'leri kullan
+			if (!this.cachedDisplays) {
+				// İlk çağrı - global koordinat döndür ve cache başlat
+				this.refreshDisplayCache();
+				return position;
+			}
+
+			// Cursor hangi display içinde ise onu bul
+			for (const display of this.cachedDisplays) {
+				const x = parseInt(display.x);
+				const y = parseInt(display.y);
+				const width = parseInt(display.resolution.split("x")[0]);
+				const height = parseInt(display.resolution.split("x")[1]);
+
+				if (
+					position.x >= x &&
+					position.x < x + width &&
+					position.y >= y &&
+					position.y < y + height
+				) {
+					// Bu display içinde
+					return {
+						x: position.x - x,
+						y: position.y - y,
+						cursorType: position.cursorType,
+						eventType: position.eventType,
+						displayId: display.id,
+						displayIndex: this.cachedDisplays.indexOf(display),
+					};
+				}
+			}
+
+			// Hiçbir display'de değilse main display'e relative döndür
+			const mainDisplay =
+				this.cachedDisplays.find((d) => d.isPrimary) || this.cachedDisplays[0];
+			if (mainDisplay) {
+				return {
+					x: position.x - parseInt(mainDisplay.x),
+					y: position.y - parseInt(mainDisplay.y),
+					cursorType: position.cursorType,
+					eventType: position.eventType,
+					displayId: mainDisplay.id,
+					displayIndex: this.cachedDisplays.indexOf(mainDisplay),
+					outsideDisplay: true,
+				};
+			}
+
+			// Fallback: global koordinat
+			return position;
+		} catch (error) {
+			// Hata durumunda global koordinat döndür
+			return position;
+		}
+	}
+
+	/**
+	 * Display cache'ini refresh eder
+	 */
+	async refreshDisplayCache() {
+		try {
+			this.cachedDisplays = await this.getDisplays();
+		} catch (error) {
+			console.warn("Display cache refresh failed:", error.message);
+		}
+	}
+
+	/**
+	 * getCurrentCursorPosition alias for getCursorPosition (backward compatibility)
+	 */
+	getCurrentCursorPosition() {
+		return this.getCursorPosition();
 	}
 
 	/**
@@ -574,6 +750,7 @@ class MacRecorder extends EventEmitter {
 			isCapturing: !!this.cursorCaptureInterval,
 			outputFile: this.cursorCaptureFile || null,
 			startTime: this.cursorCaptureStartTime || null,
+			displayInfo: this.cursorDisplayInfo || null,
 		};
 	}
 
