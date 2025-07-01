@@ -50,6 +50,9 @@ class MacRecorder extends EventEmitter {
 		// Display cache için async initialization
 		this.cachedDisplays = null;
 		this.refreshDisplayCache();
+
+		// Native cursor warm-up (cold start delay'ini önlemek için)
+		this.warmUpCursor();
 	}
 
 	/**
@@ -733,6 +736,21 @@ class MacRecorder extends EventEmitter {
 		} catch (error) {
 			console.warn("Display cache refresh failed:", error.message);
 		}
+	}
+
+	/**
+	 * Native cursor modülünü warm-up yapar (cold start delay'ini önler)
+	 */
+	warmUpCursor() {
+		// Async warm-up to prevent blocking constructor
+		setTimeout(() => {
+			try {
+				// Silent warm-up call
+				nativeBinding.getCursorPosition();
+			} catch (error) {
+				// Ignore warm-up errors
+			}
+		}, 10); // 10ms delay to not block initialization
 	}
 
 	/**
