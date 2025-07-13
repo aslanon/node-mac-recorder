@@ -585,6 +585,7 @@ class MacRecorder extends EventEmitter {
 							x: x,
 							y: y,
 							timestamp: timestamp,
+							unixTimeMs: Date.now(),
 							cursorType: position.cursorType,
 							type: position.eventType || "move",
 						};

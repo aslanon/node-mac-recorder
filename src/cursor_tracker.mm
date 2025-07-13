@@ -199,7 +199,9 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         }
         
         CGPoint location = CGEventGetLocation(event);
-        NSTimeInterval timestamp = [[NSDate date] timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
+        NSDate *currentDate = [NSDate date];
+        NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
+        NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
         NSString *eventType = @"move";
         
@@ -230,7 +232,8 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         NSDictionary *cursorInfo = @{
             @"x": @((int)location.x),
             @"y": @((int)location.y),
-            @"timestamp": @((int)timestamp),
+            @"timestamp": @(timestamp),
+            @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
             @"type": eventType
         };
@@ -258,14 +261,17 @@ void cursorTimerCallback() {
             CFRelease(event);
         }
         
-        NSTimeInterval timestamp = [[NSDate date] timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
+        NSDate *currentDate = [NSDate date];
+        NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
+        NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
         
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
             @"x": @((int)location.x),
             @"y": @((int)location.y),
-            @"timestamp": @((int)timestamp),
+            @"timestamp": @(timestamp),
+            @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
             @"type": @"move"
         };
