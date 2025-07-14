@@ -163,7 +163,7 @@ class MacRecorder extends EventEmitter {
 							targetWindow.y >= display.y &&
 							targetWindow.y < display.y + displayHeight
 						) {
-							targetDisplayId = i;
+							targetDisplayId = display.id; // Use actual display ID, not array index
 							// Koordinatları display'e göre normalize et
 							adjustedX = targetWindow.x - display.x;
 							adjustedY = targetWindow.y - display.y;
@@ -175,7 +175,7 @@ class MacRecorder extends EventEmitter {
 					if (targetDisplayId === null) {
 						const mainDisplay = displays.find((d) => d.x === 0 && d.y === 0);
 						if (mainDisplay) {
-							targetDisplayId = displays.indexOf(mainDisplay);
+							targetDisplayId = mainDisplay.id; // Use actual display ID, not array index
 							adjustedX = Math.max(
 								0,
 								Math.min(
@@ -200,7 +200,7 @@ class MacRecorder extends EventEmitter {
 						this.options.displayId = targetDisplayId;
 
 						// Recording için display bilgisini sakla (cursor capture için)
-						const targetDisplay = displays[targetDisplayId];
+						const targetDisplay = displays.find(d => d.id === targetDisplayId);
 						this.recordingDisplayInfo = {
 							displayId: targetDisplayId,
 							x: targetDisplay.x,
@@ -233,8 +233,8 @@ class MacRecorder extends EventEmitter {
 		if (this.options.displayId !== null && !this.recordingDisplayInfo) {
 			try {
 				const displays = await this.getDisplays();
-				if (this.options.displayId < displays.length) {
-					const targetDisplay = displays[this.options.displayId];
+				const targetDisplay = displays.find(d => d.id === this.options.displayId);
+				if (targetDisplay) {
 					this.recordingDisplayInfo = {
 						displayId: this.options.displayId,
 						x: targetDisplay.x,

@@ -113,16 +113,30 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
             double displayIdNum = options.Get("displayId").As<Napi::Number>().DoubleValue();
             
-            // Get all displays and use the specified one
+            // Use the display ID directly (not as an index)
+            // The JavaScript layer passes the actual CGDirectDisplayID
+            displayID = (CGDirectDisplayID)displayIdNum;
+            
+            // Verify that this display ID is valid
             uint32_t displayCount;
             CGGetActiveDisplayList(0, NULL, &displayCount);
             if (displayCount > 0) {
                 CGDirectDisplayID *displays = (CGDirectDisplayID*)malloc(displayCount * sizeof(CGDirectDisplayID));
                 CGGetActiveDisplayList(displayCount, displays, &displayCount);
                 
-                if (displayIdNum >= 0 && displayIdNum < displayCount) {
-                    displayID = displays[(int)displayIdNum];
+                bool validDisplay = false;
+                for (uint32_t i = 0; i < displayCount; i++) {
+                    if (displays[i] == displayID) {
+                        validDisplay = true;
+                        break;
+                    }
                 }
+                
+                if (!validDisplay) {
+                    // Fallback to main display if invalid ID provided
+                    displayID = CGMainDisplayID();
+                }
+                
                 free(displays);
             }
         }
