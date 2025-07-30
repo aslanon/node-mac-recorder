@@ -93,6 +93,7 @@ await recorder.startRecording("./recording.mov", {
 	includeMicrophone: false, // Enable microphone (default: false)
 	includeSystemAudio: true, // Enable system audio (default: true)
 	audioDeviceId: "device-id", // Specific audio input device (default: system default)
+	systemAudioDeviceId: "system-device-id", // Specific system audio device (auto-detected by default)
 
 	// Display & Window Selection
 	displayId: 0, // Display index (null = main display)
@@ -348,18 +349,61 @@ await new Promise((resolve) => setTimeout(resolve, 8000));
 await recorder.stopRecording();
 ```
 
-### Audio-Only System Recording
+### Advanced System Audio Recording
 
 ```javascript
 const recorder = new MacRecorder();
 
-// Record system audio without microphone
-await recorder.startRecording("./system-audio.mov", {
-	includeMicrophone: false,
-	includeSystemAudio: true,
-	captureArea: { x: 0, y: 0, width: 1, height: 1 }, // Minimal video
+// List available audio devices to find system audio devices
+const audioDevices = await recorder.getAudioDevices();
+console.log("Available audio devices:");
+audioDevices.forEach((device, i) => {
+	console.log(`${i + 1}. ${device.name} (ID: ${device.id})`);
 });
+
+// Find system audio device (like BlackHole, Soundflower, etc.)
+const systemAudioDevice = audioDevices.find(device => 
+	device.name.toLowerCase().includes('blackhole') ||
+	device.name.toLowerCase().includes('soundflower') ||
+	device.name.toLowerCase().includes('loopback') ||
+	device.name.toLowerCase().includes('aggregate')
+);
+
+if (systemAudioDevice) {
+	console.log(`Using system audio device: ${systemAudioDevice.name}`);
+	
+	// Record with specific system audio device
+	await recorder.startRecording("./system-audio-specific.mov", {
+		includeMicrophone: false,
+		includeSystemAudio: true,
+		systemAudioDeviceId: systemAudioDevice.id, // Specify exact device
+		captureArea: { x: 0, y: 0, width: 1, height: 1 }, // Minimal video
+	});
+} else {
+	console.log("No system audio device found. Installing BlackHole or Soundflower recommended.");
+	
+	// Record with default system audio capture (may not work without virtual audio device)
+	await recorder.startRecording("./system-audio-default.mov", {
+		includeMicrophone: false,
+		includeSystemAudio: true, // Auto-detect system audio device
+		captureArea: { x: 0, y: 0, width: 1, height: 1 },
+	});
+}
+
+// Record for 10 seconds
+await new Promise(resolve => setTimeout(resolve, 10000));
+await recorder.stopRecording();
 ```
+
+**System Audio Setup:**
+
+For reliable system audio capture, install a virtual audio device:
+
+1. **BlackHole** (Free): https://github.com/ExistentialAudio/BlackHole
+2. **Soundflower** (Free): https://github.com/mattingalls/Soundflower  
+3. **Loopback** (Paid): https://rogueamoeba.com/loopback/
+
+These create aggregate audio devices that the package can detect and use for system audio capture.
 
 ### Event-Driven Recording
 

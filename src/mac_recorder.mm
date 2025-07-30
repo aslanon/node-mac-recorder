@@ -71,6 +71,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     bool includeSystemAudio = true; // Default olarak sistem sesi açık
     CGDirectDisplayID displayID = CGMainDisplayID(); // Default ana ekran
     NSString *audioDeviceId = nil; // Default audio device ID
+    NSString *systemAudioDeviceId = nil; // System audio device ID
     
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
@@ -107,6 +108,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         // System audio
         if (options.Has("includeSystemAudio")) {
             includeSystemAudio = options.Get("includeSystemAudio").As<Napi::Boolean>();
+        }
+        
+        // System audio device ID
+        if (options.Has("systemAudioDeviceId") && !options.Get("systemAudioDeviceId").IsNull()) {
+            std::string sysDeviceId = options.Get("systemAudioDeviceId").As<Napi::String>().Utf8Value();
+            systemAudioDeviceId = [NSString stringWithUTF8String:sysDeviceId.c_str()];
         }
         
         // Display ID
@@ -214,11 +221,71 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             }
         }
         
-        // System audio için AVCaptureScreenInput zaten sistem sesini yakalar
-        // includeSystemAudio parametresi screen input'un ses yakalama özelliğini kontrol eder
+        // System audio configuration
         if (includeSystemAudio) {
+            // Enable audio capture in screen input
             g_screenInput.capturesMouseClicks = YES;
-            // AVCaptureScreenInput otomatik olarak sistem sesini yakalar
+            
+            // Try to add system audio input using Core Audio
+            // This approach captures system audio by creating a virtual audio device
+            if (@available(macOS 10.15, *)) {
+                // Configure screen input for better audio capture
+                g_screenInput.capturesCursor = captureCursor;
+                g_screenInput.capturesMouseClicks = YES;
+                
+                // Try to find and add system audio device (like Soundflower, BlackHole, etc.)
+                NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+                AVCaptureDevice *systemAudioDevice = nil;
+                
+                // If specific system audio device ID is provided, try to find it first
+                if (systemAudioDeviceId) {
+                    for (AVCaptureDevice *device in audioDevices) {
+                        if ([device.uniqueID isEqualToString:systemAudioDeviceId]) {
+                            systemAudioDevice = device;
+                            NSLog(@"[DEBUG] Found specified system audio device: %@ (ID: %@)", device.localizedName, device.uniqueID);
+                            break;
+                        }
+                    }
+                }
+                
+                // If no specific device found or specified, look for known system audio devices
+                if (!systemAudioDevice) {
+                    for (AVCaptureDevice *device in audioDevices) {
+                        NSString *deviceName = [device.localizedName lowercaseString];
+                        // Check for common system audio capture devices
+                        if ([deviceName containsString:@"soundflower"] || 
+                            [deviceName containsString:@"blackhole"] ||
+                            [deviceName containsString:@"loopback"] ||
+                            [deviceName containsString:@"system audio"] ||
+                            [deviceName containsString:@"aggregate"]) {
+                            systemAudioDevice = device;
+                            NSLog(@"[DEBUG] Auto-detected system audio device: %@", device.localizedName);
+                            break;
+                        }
+                    }
+                }
+                
+                // If we found a system audio device, add it as an additional input
+                if (systemAudioDevice && !includeMicrophone) {
+                    // Only add system audio device if microphone is not already added
+                    NSError *error;
+                    AVCaptureDeviceInput *systemAudioInput = [[AVCaptureDeviceInput alloc] initWithDevice:systemAudioDevice error:&error];
+                    if (systemAudioInput && [g_captureSession canAddInput:systemAudioInput]) {
+                        [g_captureSession addInput:systemAudioInput];
+                        NSLog(@"[DEBUG] Successfully added system audio device: %@", systemAudioDevice.localizedName);
+                    } else if (error) {
+                        NSLog(@"[DEBUG] Failed to add system audio device: %@", error.localizedDescription);
+                    }
+                } else if (includeSystemAudio && !systemAudioDevice) {
+                    NSLog(@"[DEBUG] System audio requested but no suitable device found. Available devices:");
+                    for (AVCaptureDevice *device in audioDevices) {
+                        NSLog(@"[DEBUG] - %@ (ID: %@)", device.localizedName, device.uniqueID);
+                    }
+                }
+            }
+        } else {
+            // Explicitly disable audio capture if not requested
+            g_screenInput.capturesMouseClicks = NO;
         }
         
         // Create movie file output

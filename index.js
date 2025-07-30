@@ -111,11 +111,12 @@ class MacRecorder extends EventEmitter {
 	setOptions(options = {}) {
 		this.options = {
 			includeMicrophone: options.includeMicrophone || false,
-			includeSystemAudio: options.includeSystemAudio !== false, // Default true
+			includeSystemAudio: options.includeSystemAudio !== false, // Default true unless explicitly disabled
 			captureCursor: options.captureCursor || false,
 			displayId: options.displayId || null, // null = ana ekran
 			windowId: options.windowId || null, // null = tam ekran
 			audioDeviceId: options.audioDeviceId || null, // null = default device
+			systemAudioDeviceId: options.systemAudioDeviceId || null, // null = auto-detect system audio device
 			captureArea: options.captureArea || null,
 		};
 	}
@@ -261,11 +262,12 @@ class MacRecorder extends EventEmitter {
 				// Native kayıt başlat
 				const recordingOptions = {
 					includeMicrophone: this.options.includeMicrophone || false,
-					includeSystemAudio: this.options.includeSystemAudio !== false, // Default true
+					includeSystemAudio: this.options.includeSystemAudio !== false, // Default true unless explicitly disabled
 					captureCursor: this.options.captureCursor || false,
 					displayId: this.options.displayId || null, // null = ana ekran
 					windowId: this.options.windowId || null, // null = tam ekran
 					audioDeviceId: this.options.audioDeviceId || null, // null = default device
+					systemAudioDeviceId: this.options.systemAudioDeviceId || null, // null = auto-detect system audio device
 				};
 
 				// Manuel captureArea varsa onu kullan
