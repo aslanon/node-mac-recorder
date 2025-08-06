@@ -835,4 +835,7 @@ class MacRecorder extends EventEmitter {
 	}
 }
 
+// WindowSelector modülünü de export edelim
+MacRecorder.WindowSelector = require('./window-selector');
+
 module.exports = MacRecorder;

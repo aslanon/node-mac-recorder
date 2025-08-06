@@ -13,6 +13,9 @@
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 
+// Window selector function declarations
+Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
+
 @interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
 @end
@@ -816,6 +819,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     
     // Initialize cursor tracker
     InitCursorTracker(env, exports);
+    
+    // Initialize window selector
+    InitWindowSelector(env, exports);
     
     return exports;
 }

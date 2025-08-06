@@ -6,7 +6,8 @@
         "src/mac_recorder.mm",
         "src/screen_capture.mm",
         "src/audio_capture.mm",
-        "src/cursor_tracker.mm"
+        "src/cursor_tracker.mm",
+        "src/window_selector.mm"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"

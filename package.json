@@ -37,7 +37,9 @@
 		"install": "node install.js",
 		"build": "node-gyp build",
 		"rebuild": "node-gyp rebuild",
-		"clean": "node-gyp clean"
+		"clean": "node-gyp clean",
+		"test:window-selector": "node window-selector-test.js",
+		"example:window-selector": "node examples/window-selector-example.js"
 	},
 	"dependencies": {
 		"node-addon-api": "^7.0.0"
