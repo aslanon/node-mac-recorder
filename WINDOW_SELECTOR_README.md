@@ -12,6 +12,8 @@ Bu modül, macOS'ta sistem imleci ile pencere seçimi yapabilmenizi sağlayan g�
 - **Multi-display Support**: Çoklu ekran kurulumlarında çalışır
 - **Detailed Window Info**: Pencere pozisyonu, boyutu ve hangi ekranda olduğunu döndürür
 - **Event-driven API**: Pencere hover, seçim ve hata durumları için event'ler
+- **Window Focus Control**: Detect edilen pencereyi otomatik olarak en öne getirir
+- **Auto Bring-to-Front**: Cursor hangi pencereye gelirse otomatik focus yapar
 - **Permission Management**: macOS izin kontrolü ve yönetimi
 
 ## 🚀 Kurulum
@@ -149,6 +151,29 @@ Seçici durumunu döndürür.
 macOS izinlerini kontrol eder.
 
 **Returns:** `Promise<PermissionStatus>`
+
+##### `async bringWindowToFront(windowId)`
+Belirtilen pencereyi en öne getirir (focus yapar).
+
+**Parameters:**
+- `windowId` (number) - Window ID
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.bringWindowToFront(windowInfo.id);
+```
+
+##### `setBringToFrontEnabled(enabled)`
+Otomatik pencere en öne getirme özelliğini aktif/pasif yapar.
+
+**Parameters:**
+- `enabled` (boolean) - Enable/disable
+
+```javascript
+selector.setBringToFrontEnabled(true);  // Auto mode ON
+selector.setBringToFrontEnabled(false); // Auto mode OFF
+```
 
 ##### `async cleanup()`
 Tüm kaynakları temizler ve seçimi durdurur.
@@ -308,6 +333,46 @@ if (!permissions.screenRecording) {
 ```
 
 ## 🌟 Gelişmiş Örnekler
+
+### Auto Bring-to-Front (Otomatik Focus)
+```javascript
+const WindowSelector = require('./window-selector');
+
+async function autoBringToFront() {
+    const selector = new WindowSelector();
+    
+    // Otomatik focus modunu aktif et
+    selector.setBringToFrontEnabled(true);
+    
+    selector.on('windowEntered', (window) => {
+        console.log(`🔝 Auto-focused: ${window.appName} - "${window.title}"`);
+    });
+    
+    await selector.startSelection();
+    console.log('🖱️ Move cursor over windows - they will come to front automatically!');
+}
+```
+
+### Manuel Window Focus
+```javascript
+const WindowSelector = require('./window-selector');
+
+async function manualFocus() {
+    const selector = new WindowSelector();
+    
+    selector.on('windowEntered', async (window) => {
+        console.log(`Found: ${window.appName} - "${window.title}"`);
+        
+        // Manuel olarak pencereyi en öne getir
+        const success = await selector.bringWindowToFront(window.id);
+        if (success) {
+            console.log('✅ Window brought to front!');
+        }
+    });
+    
+    await selector.startSelection();
+}
+```
 
 ### Otomatik Pencere Kaydı
 ```javascript

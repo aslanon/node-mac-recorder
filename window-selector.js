@@ -215,6 +215,38 @@ class WindowSelector extends EventEmitter {
 	}
 
 	/**
+	 * Pencereyi en öne getirir (focus yapar)
+	 * @param {number} windowId - Window ID
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async bringWindowToFront(windowId) {
+		if (!windowId) {
+			throw new Error("Window ID is required");
+		}
+
+		try {
+			const success = nativeBinding.bringWindowToFront(windowId);
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to bring window to front: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Otomatik pencere en öne getirme özelliğini aktif/pasif yapar
+	 * Cursor hangi pencereye gelirse otomatik olarak en öne getirir
+	 * @param {boolean} enabled - Enable/disable auto bring to front
+	 */
+	setBringToFrontEnabled(enabled) {
+		try {
+			nativeBinding.setBringToFrontEnabled(enabled);
+			console.log(`🔄 Auto bring-to-front: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+		} catch (error) {
+			throw new Error(`Failed to set bring to front: ${error.message}`);
+		}
+	}
+
+	/**
 	 * Cleanup - tüm kaynakları temizle
 	 */
 	async cleanup() {

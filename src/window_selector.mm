@@ -15,12 +15,14 @@ static NSTimer *g_trackingTimer = nil;
 static NSDictionary *g_selectedWindowInfo = nil;
 static NSMutableArray *g_allWindows = nil;
 static NSDictionary *g_currentWindowUnderCursor = nil;
+static bool g_bringToFrontEnabled = true; // Default enabled
 
 // Forward declarations
 void cleanupWindowSelector();
 void updateOverlay();
 NSDictionary* getWindowUnderCursor(CGPoint point);
 NSArray* getAllSelectableWindows();
+bool bringWindowToFront(int windowId);
 
 // Custom overlay view class
 @interface WindowSelectorOverlayView : NSView
@@ -98,6 +100,112 @@ NSArray* getAllSelectableWindows();
 @end
 
 static WindowSelectorDelegate *g_delegate = nil;
+
+// Bring window to front using Accessibility API
+bool bringWindowToFront(int windowId) {
+    @autoreleasepool {
+        @try {
+            // Method 1: Using Accessibility API (most reliable)
+            AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+            if (!systemWide) return false;
+            
+            CFArrayRef windowList = NULL;
+            AXError error = AXUIElementCopyAttributeValue(systemWide, kAXWindowsAttribute, (CFTypeRef*)&windowList);
+            
+            if (error == kAXErrorSuccess && windowList) {
+                CFIndex windowCount = CFArrayGetCount(windowList);
+                
+                for (CFIndex i = 0; i < windowCount; i++) {
+                    AXUIElementRef windowElement = (AXUIElementRef)CFArrayGetValueAtIndex(windowList, i);
+                    
+                    // Get window ID by comparing with CGWindowList
+                    // Since _AXUIElementGetWindow is not available, we'll use app PID approach
+                    pid_t windowPid;
+                    error = AXUIElementGetPid(windowElement, &windowPid);
+                    
+                    if (error == kAXErrorSuccess) {
+                        // Get window info for this PID from CGWindowList
+                        CFArrayRef cgWindowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+                        if (cgWindowList) {
+                            NSArray *windowArray = (__bridge NSArray *)cgWindowList;
+                            
+                            for (NSDictionary *windowInfo in windowArray) {
+                                NSNumber *cgWindowId = [windowInfo objectForKey:(NSString *)kCGWindowNumber];
+                                NSNumber *processId = [windowInfo objectForKey:(NSString *)kCGWindowOwnerPID];
+                                
+                                if ([cgWindowId intValue] == windowId && [processId intValue] == windowPid) {
+                                    // Found the window, bring it to front
+                                    NSLog(@"🔝 BRINGING TO FRONT: Window ID %d (PID: %d)", windowId, windowPid);
+                                    
+                                    // Method 1: Raise specific window (not the whole app)
+                                    error = AXUIElementPerformAction(windowElement, kAXRaiseAction);
+                                    if (error == kAXErrorSuccess) {
+                                        NSLog(@"   ✅ Specific window raised successfully");
+                                    } else {
+                                        NSLog(@"   ⚠️ Raise action failed: %d", error);
+                                    }
+                                    
+                                    // Method 2: Focus specific window (not main window)
+                                    error = AXUIElementSetAttributeValue(windowElement, kAXFocusedAttribute, kCFBooleanTrue);
+                                    if (error == kAXErrorSuccess) {
+                                        NSLog(@"   ✅ Specific window focused");
+                                    } else {
+                                        NSLog(@"   ⚠️ Focus failed: %d", error);
+                                    }
+                                    
+                                    CFRelease(cgWindowList);
+                                    CFRelease(windowList);
+                                    CFRelease(systemWide);
+                                    return true;
+                                }
+                            }
+                            CFRelease(cgWindowList);
+                        }
+                    }
+                }
+                CFRelease(windowList);
+            }
+            
+            CFRelease(systemWide);
+            
+            // Method 2: Light activation fallback (minimal app activation)
+            NSLog(@"   🔄 Trying minimal activation for window %d", windowId);
+            
+            // Get window info to find the process
+            CFArrayRef cgWindowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+            if (cgWindowList) {
+                NSArray *windowArray = (__bridge NSArray *)cgWindowList;
+                
+                for (NSDictionary *windowInfo in windowArray) {
+                    NSNumber *cgWindowId = [windowInfo objectForKey:(NSString *)kCGWindowNumber];
+                    if ([cgWindowId intValue] == windowId) {
+                        // Get process ID
+                        NSNumber *processId = [windowInfo objectForKey:(NSString *)kCGWindowOwnerPID];
+                        if (processId) {
+                            // Light activation - only bring app to front, don't activate all windows
+                            NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:[processId intValue]];
+                            if (app) {
+                                // Use NSApplicationActivateIgnoringOtherApps only (no NSApplicationActivateAllWindows)
+                                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+                                NSLog(@"   ✅ App minimally activated: PID %d (specific window should be frontmost)", [processId intValue]);
+                                CFRelease(cgWindowList);
+                                return true;
+                            }
+                        }
+                        break;
+                    }
+                }
+                CFRelease(cgWindowList);
+            }
+            
+            return false;
+            
+        } @catch (NSException *exception) {
+            NSLog(@"❌ Error bringing window to front: %@", exception);
+            return false;
+        }
+    }
+}
 
 // Get all selectable windows
 NSArray* getAllSelectableWindows() {
@@ -216,6 +324,17 @@ void updateOverlay() {
                   overlayFrame.origin.x, overlayFrame.origin.y, 
                   overlayFrame.size.width, overlayFrame.size.height,
                   [g_overlayWindow level]);
+            
+            // Bring window to front if enabled
+            if (g_bringToFrontEnabled) {
+                int windowId = [[windowUnderCursor objectForKey:@"id"] intValue];
+                if (windowId > 0) {
+                    bool success = bringWindowToFront(windowId);
+                    if (!success) {
+                        NSLog(@"   ⚠️ Failed to bring window to front");
+                    }
+                }
+            }
             [g_overlayWindow setFrame:overlayFrame display:YES];
             
             // Update overlay view window info
@@ -441,6 +560,43 @@ Napi::Value GetSelectedWindowInfo(const Napi::CallbackInfo& info) {
     }
 }
 
+// NAPI Function: Bring Window To Front
+Napi::Value BringWindowToFront(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Window ID required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int windowId = info[0].As<Napi::Number>().Int32Value();
+    
+    @try {
+        bool success = bringWindowToFront(windowId);
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Enable/Disable Auto Bring To Front
+Napi::Value SetBringToFrontEnabled(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Boolean value required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    bool enabled = info[0].As<Napi::Boolean>();
+    g_bringToFrontEnabled = enabled;
+    
+    NSLog(@"🔄 Auto bring-to-front: %s", enabled ? "ENABLED" : "DISABLED");
+    
+    return Napi::Boolean::New(env, true);
+}
+
 // NAPI Function: Get Window Selection Status
 Napi::Value GetWindowSelectionStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -477,6 +633,8 @@ Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports) {
     exports.Set("stopWindowSelection", Napi::Function::New(env, StopWindowSelection));
     exports.Set("getSelectedWindowInfo", Napi::Function::New(env, GetSelectedWindowInfo));
     exports.Set("getWindowSelectionStatus", Napi::Function::New(env, GetWindowSelectionStatus));
+    exports.Set("bringWindowToFront", Napi::Function::New(env, BringWindowToFront));
+    exports.Set("setBringToFrontEnabled", Napi::Function::New(env, SetBringToFrontEnabled));
     
     return exports;
 }
