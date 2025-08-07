@@ -133,8 +133,9 @@ static NSURL *g_outputURL = nil;
             cfg.width = (int)src.size.width;
             cfg.height = (int)src.size.height;
         } else {
-            cfg.width = (int)targetDisplay.width;
-            cfg.height = (int)targetDisplay.height;
+            CGRect displayFrame = targetDisplay.frame;
+            cfg.width = (int)displayFrame.size.width;
+            cfg.height = (int)displayFrame.size.height;
         }
         cfg.showsCursor = captureCursorNum.boolValue;
         if (includeMicNum || includeSystemAudioNum) {
