@@ -139,19 +139,21 @@ class MacRecorder extends EventEmitter {
 		// WindowId varsa captureArea'yı otomatik ayarla
 		if (this.options.windowId && !this.options.captureArea) {
 			try {
-				const windows = await this.getWindows();
-				const displays = await this.getDisplays();
-				const targetWindow = windows.find(
-					(w) => w.id === this.options.windowId
-				);
-
-				if (targetWindow) {
-					// Pencere hangi display'de olduğunu bul
+				// Window selector'dan seçilen pencere bilgisini al
+				const WindowSelector = require('./window-selector');
+				const selector = new WindowSelector();
+				const selectedWindow = selector.getSelectedWindow();
+				
+				// Eğer window selector'dan overlay koordinatları varsa onları kullan
+				if (selectedWindow && selectedWindow.overlayX !== undefined) {
+					console.log('🎯 Using overlay coordinates for exact recording match');
+					console.log(`Overlay coords: (${selectedWindow.overlayX}, ${selectedWindow.overlayY}) ${selectedWindow.overlayWidth}x${selectedWindow.overlayHeight}`);
+					
+					const displays = await this.getDisplays();
+					const targetWindow = selectedWindow;
+					
+					// Display ID'yi bul
 					let targetDisplayId = null;
-					let adjustedX = targetWindow.x;
-					let adjustedY = targetWindow.y;
-
-					// Pencere hangi display'de?
 					for (let i = 0; i < displays.length; i++) {
 						const display = displays[i];
 						const displayWidth = parseInt(display.resolution.split("x")[0]);
@@ -159,20 +161,73 @@ class MacRecorder extends EventEmitter {
 
 						// Pencere bu display sınırları içinde mi?
 						if (
-							targetWindow.x >= display.x &&
-							targetWindow.x < display.x + displayWidth &&
-							targetWindow.y >= display.y &&
-							targetWindow.y < display.y + displayHeight
+							targetWindow.overlayX >= display.x &&
+							targetWindow.overlayX < display.x + displayWidth &&
+							targetWindow.overlayY >= display.y &&
+							targetWindow.overlayY < display.y + displayHeight
 						) {
-							targetDisplayId = display.id; // Use actual display ID, not array index
-							// Koordinatları display'e göre normalize et
-							adjustedX = targetWindow.x - display.x;
-							
-							// Koordinatları display'e göre normalize et
-							adjustedY = targetWindow.y - display.y;
+							targetDisplayId = display.id;
 							break;
 						}
 					}
+					
+					// Display ID'yi ayarla
+					if (targetDisplayId !== null) {
+						this.options.displayId = targetDisplayId;
+						const targetDisplay = displays.find(d => d.id === targetDisplayId);
+						this.recordingDisplayInfo = {
+							displayId: targetDisplayId,
+							x: targetDisplay.x,
+							y: targetDisplay.y,
+							width: parseInt(targetDisplay.resolution.split("x")[0]),
+							height: parseInt(targetDisplay.resolution.split("x")[1]),
+						};
+					}
+
+					// Overlay koordinatlarını direkt kullan - display offset'ini çıkar
+					const targetDisplay = displays.find(d => d.id === targetDisplayId);
+					this.options.captureArea = {
+						x: targetWindow.overlayX - (targetDisplay ? targetDisplay.x : 0),
+						y: targetWindow.overlayY - (targetDisplay ? targetDisplay.y : 0),
+						width: targetWindow.overlayWidth,
+						height: targetWindow.overlayHeight,
+					};
+
+					console.log(`🎬 Recording area: x=${this.options.captureArea.x}, y=${this.options.captureArea.y}, w=${this.options.captureArea.width}, h=${this.options.captureArea.height}`);
+				} else {
+					// Fallback: Eski yöntem
+					const windows = await this.getWindows();
+					const displays = await this.getDisplays();
+					const targetWindow = windows.find(
+						(w) => w.id === this.options.windowId
+					);
+
+					if (targetWindow) {
+						// Pencere hangi display'de olduğunu bul
+						let targetDisplayId = null;
+						let adjustedX = targetWindow.x;
+						let adjustedY = targetWindow.y;
+
+						// Pencere hangi display'de?
+						for (let i = 0; i < displays.length; i++) {
+							const display = displays[i];
+							const displayWidth = parseInt(display.resolution.split("x")[0]);
+							const displayHeight = parseInt(display.resolution.split("x")[1]);
+
+							// Pencere bu display sınırları içinde mi?
+							if (
+								targetWindow.x >= display.x &&
+								targetWindow.x < display.x + displayWidth &&
+								targetWindow.y >= display.y &&
+								targetWindow.y < display.y + displayHeight
+							) {
+								targetDisplayId = display.id; // Use actual display ID, not array index
+								// Koordinatları display'e göre normalize et
+								adjustedX = targetWindow.x - display.x;
+								adjustedY = targetWindow.y - display.y;
+								break;
+							}
+						}
 
 					// Eğer display bulunamadıysa ana display kullan
 					if (targetDisplayId === null) {

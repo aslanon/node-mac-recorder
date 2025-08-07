@@ -990,10 +990,23 @@ Napi::Value GetSelectedWindowInfo(const Napi::CallbackInfo& info) {
         result.Set("id", Napi::Number::New(env, [[g_selectedWindowInfo objectForKey:@"id"] intValue]));
         result.Set("title", Napi::String::New(env, [[g_selectedWindowInfo objectForKey:@"title"] UTF8String]));
         result.Set("appName", Napi::String::New(env, [[g_selectedWindowInfo objectForKey:@"appName"] UTF8String]));
+        // Original CGWindow coordinates
         result.Set("x", Napi::Number::New(env, [[g_selectedWindowInfo objectForKey:@"x"] intValue]));
         result.Set("y", Napi::Number::New(env, [[g_selectedWindowInfo objectForKey:@"y"] intValue]));
         result.Set("width", Napi::Number::New(env, [[g_selectedWindowInfo objectForKey:@"width"] intValue]));
         result.Set("height", Napi::Number::New(env, [[g_selectedWindowInfo objectForKey:@"height"] intValue]));
+        
+        // Add overlay coordinates for direct use in recording
+        // These are the exact coordinates used by the recording preview overlay
+        int windowX = [[g_selectedWindowInfo objectForKey:@"x"] intValue];
+        int windowY = [[g_selectedWindowInfo objectForKey:@"y"] intValue];
+        int windowWidth = [[g_selectedWindowInfo objectForKey:@"width"] intValue];
+        int windowHeight = [[g_selectedWindowInfo objectForKey:@"height"] intValue];
+        
+        result.Set("overlayX", Napi::Number::New(env, windowX));
+        result.Set("overlayY", Napi::Number::New(env, windowY));
+        result.Set("overlayWidth", Napi::Number::New(env, windowWidth));
+        result.Set("overlayHeight", Napi::Number::New(env, windowHeight));
         
         // Determine which screen this window is on
         int x = [[g_selectedWindowInfo objectForKey:@"x"] intValue];
