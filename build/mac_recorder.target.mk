@@ -37,6 +37,7 @@ CFLAGS_C_Debug := \
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Debug := \
+	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
 	-ObjC++
@@ -90,6 +91,7 @@ CFLAGS_C_Release := \
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Release := \
+	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
 	-ObjC++
