@@ -273,6 +273,146 @@ class WindowSelector extends EventEmitter {
 	}
 
 	/**
+	 * Seçilen pencere için kayıt önizleme overlay'ini gösterir
+	 * Tüm ekranı siyah yapar, sadece pencere alanını şeffaf bırakır
+	 * @param {Object} windowInfo - Pencere bilgileri
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async showRecordingPreview(windowInfo) {
+		if (!windowInfo) {
+			throw new Error("Window info is required");
+		}
+
+		try {
+			const success = nativeBinding.showRecordingPreview(windowInfo);
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to show recording preview: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Kayıt önizleme overlay'ini gizler
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async hideRecordingPreview() {
+		try {
+			const success = nativeBinding.hideRecordingPreview();
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to hide recording preview: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Ekran seçimi başlatır
+	 * Tüm ekranları overlay ile gösterir ve seçim yapılmasını bekler
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async startScreenSelection() {
+		try {
+			const success = nativeBinding.startScreenSelection();
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to start screen selection: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Ekran seçimini durdurur
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async stopScreenSelection() {
+		try {
+			const success = nativeBinding.stopScreenSelection();
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to stop screen selection: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Seçilen ekran bilgisini döndürür
+	 * @returns {Object|null} Screen info or null
+	 */
+	getSelectedScreen() {
+		try {
+			return nativeBinding.getSelectedScreenInfo();
+		} catch (error) {
+			console.error(`Failed to get selected screen: ${error.message}`);
+			return null;
+		}
+	}
+
+	/**
+	 * Promise tabanlı ekran seçimi
+	 * Kullanıcı bir ekran seçene kadar bekler
+	 * @returns {Promise<Object>} Selected screen info
+	 */
+	async selectScreen() {
+		try {
+			// Start screen selection
+			await this.startScreenSelection();
+			
+			// Poll for selection completion
+			return new Promise((resolve, reject) => {
+				const checkSelection = () => {
+					const selectedScreen = this.getSelectedScreen();
+					if (selectedScreen) {
+						resolve(selectedScreen);
+					} else {
+						// Check again in 100ms
+						setTimeout(checkSelection, 100);
+					}
+				};
+				
+				// Start polling
+				checkSelection();
+				
+				// Timeout after 60 seconds
+				setTimeout(() => {
+					this.stopScreenSelection();
+					reject(new Error('Screen selection timed out'));
+				}, 60000);
+			});
+		} catch (error) {
+			throw new Error(`Failed to select screen: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Seçilen ekran için kayıt önizleme overlay'ini gösterir
+	 * Diğer ekranları siyah yapar, sadece seçili ekranı şeffaf bırakır
+	 * @param {Object} screenInfo - Ekran bilgileri
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async showScreenRecordingPreview(screenInfo) {
+		if (!screenInfo) {
+			throw new Error("Screen info is required");
+		}
+
+		try {
+			const success = nativeBinding.showScreenRecordingPreview(screenInfo);
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to show screen recording preview: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Ekran kayıt önizleme overlay'ini gizler
+	 * @returns {Promise<boolean>} Success/failure
+	 */
+	async hideScreenRecordingPreview() {
+		try {
+			const success = nativeBinding.hideScreenRecordingPreview();
+			return success;
+		} catch (error) {
+			throw new Error(`Failed to hide screen recording preview: ${error.message}`);
+		}
+	}
+
+	/**
 	 * macOS'ta pencere seçim izinlerini kontrol eder
 	 */
 	async checkPermissions() {

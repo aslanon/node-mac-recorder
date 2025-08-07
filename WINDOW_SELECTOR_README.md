@@ -14,6 +14,9 @@ Bu modül, macOS'ta sistem imleci ile pencere seçimi yapabilmenizi sağlayan g�
 - **Event-driven API**: Pencere hover, seçim ve hata durumları için event'ler
 - **Window Focus Control**: Detect edilen pencereyi otomatik olarak en öne getirir
 - **Auto Bring-to-Front**: Cursor hangi pencereye gelirse otomatik focus yapar
+- **Recording Preview Overlay**: Kayıt alanını görselleştiren tam ekran overlay sistemi
+- **Screen Selection**: Tam ekran overlay ile ekran seçimi (menu bar dahil)
+- **Screen Recording Preview**: Seçilen ekran için kayıt önizleme sistemi
 - **Permission Management**: macOS izin kontrolü ve yönetimi
 
 ## 🚀 Kurulum
@@ -175,6 +178,84 @@ selector.setBringToFrontEnabled(true);  // Auto mode ON
 selector.setBringToFrontEnabled(false); // Auto mode OFF
 ```
 
+##### `async showRecordingPreview(windowInfo)`
+Seçilen pencere için kayıt önizleme overlay'ini gösterir. Tüm ekranı siyah yapar, sadece pencere alanını şeffaf bırakır.
+
+**Parameters:**
+- `windowInfo` (WindowInfo) - Pencere bilgileri
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.showRecordingPreview(selectedWindow);
+```
+
+##### `async hideRecordingPreview()`
+Kayıt önizleme overlay'ini gizler.
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.hideRecordingPreview();
+```
+
+##### `async startScreenSelection()`
+Ekran seçim modunu başlatır. Tüm ekranları overlay ile gösterir.
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.startScreenSelection();
+```
+
+##### `async stopScreenSelection()`
+Ekran seçim modunu durdurur.
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.stopScreenSelection();
+```
+
+##### `getSelectedScreen()`
+Son seçilen ekran bilgisini döndürür.
+
+**Returns:** `ScreenInfo | null`
+
+```javascript
+const screenInfo = selector.getSelectedScreen();
+```
+
+##### `async selectScreen()`
+Promise tabanlı ekran seçimi. Kullanıcı bir ekran seçene kadar bekler.
+
+**Returns:** `Promise<ScreenInfo>`
+
+```javascript
+const selectedScreen = await selector.selectScreen();
+```
+
+##### `async showScreenRecordingPreview(screenInfo)`
+Seçilen ekran için kayıt önizleme overlay'ini gösterir. Diğer ekranları siyah yapar, sadece seçili ekranı şeffaf bırakır.
+
+**Parameters:**
+- `screenInfo` (ScreenInfo) - Ekran bilgileri
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.showScreenRecordingPreview(selectedScreen);
+```
+
+##### `async hideScreenRecordingPreview()`
+Ekran kayıt önizleme overlay'ini gizler.
+
+**Returns:** `Promise<boolean>` - Başarı/başarısızlık
+
+```javascript
+const success = await selector.hideScreenRecordingPreview();
+```
+
 ##### `async cleanup()`
 Tüm kaynakları temizler ve seçimi durdurur.
 
@@ -267,6 +348,20 @@ selector.on('error', (error) => {
 }
 ```
 
+### ScreenInfo
+```javascript
+{
+    id: number,          // Ekran ID'si (0, 1, 2, ...)
+    name: string,        // Ekran adı ("Display 1", "Display 2", ...)
+    x: number,          // Global X pozisyonu
+    y: number,          // Global Y pozisyonu
+    width: number,      // Ekran genişliği
+    height: number,     // Ekran yüksekliği
+    resolution: string, // Çözünürlük string'i ("1920x1080")
+    isPrimary: boolean  // Ana ekran mı?
+}
+```
+
 ## 🎮 Test Etme
 
 ### Test Dosyasını Çalıştır
@@ -298,6 +393,7 @@ node examples/window-selector-example.js --help
 
 ## ⚡ Nasıl Çalışır?
 
+### Pencere Seçim Süreci
 1. **Window Detection**: macOS `CGWindowListCopyWindowInfo` API'si ile açık pencereleri tespit eder
 2. **Cursor Tracking**: Real-time olarak imleç pozisyonunu takip eder
 3. **Overlay Rendering**: NSWindow ile transparant overlay penceresi oluşturur
@@ -305,6 +401,29 @@ node examples/window-selector-example.js --help
 5. **Visual Feedback**: Pencereyi highlight eden mavi kapsayıcı çizer
 6. **User Interaction**: Merkeze yerleştirilen button ile seçim yapar
 7. **Data Collection**: Seçilen pencerenin tüm bilgilerini toplar
+
+### Kayıt Önizleme Sistemi (Pencere)
+1. **Full Screen Overlay**: Tüm ekranı kaplayan siyah transparan katman oluşturur
+2. **Window Cutout**: Seçilen pencere alanını şeffaf hale getirir (cut-out effect)
+3. **Coordinate Conversion**: CGWindow koordinatlarını NSView koordinatlarına dönüştürür  
+4. **Multi-Display Support**: Çoklu ekran kurulumlarında doğru pozisyonlama yapar
+5. **Non-Interactive**: Mouse events'leri geçirir, kullanıcı etkileşimini engellemeZ
+6. **Clean Management**: Programatik açma/kapama kontrolü sağlar
+
+### Ekran Seçim Sistemi
+1. **Multi-Screen Detection**: NSScreen.screens ile tüm ekranları tespit eder
+2. **Full Screen Coverage**: Her ekran için tam kaplama overlay oluşturur (menu bar dahil)
+3. **Interactive Overlays**: Her ekranda merkezi "Select Screen" butonu
+4. **Screen Information Display**: Ekran adı ve çözünürlük bilgilerini gösterir
+5. **Automatic Assignment**: Her overlay'i kendi ekranına otomatik atar
+6. **Selection Feedback**: Seçim yapıldığında anında geri bildirim
+
+### Ekran Kayıt Önizleme Sistemi
+1. **Multi-Screen Management**: Birden fazla ekranı aynı anda yönetir
+2. **Selective Darkening**: Sadece seçilmeyen ekranları siyah overlay ile kaplar
+3. **Recording Area Highlight**: Seçilen ekran tamamen şeffaf kalır
+4. **Screen-Specific Overlays**: Her ekran için ayrı overlay penceresi
+5. **Coordinate Independence**: Her ekranın kendi koordinat sistemini kullanır
 
 ## 🔧 Troubleshooting
 
@@ -375,7 +494,157 @@ async function manualFocus() {
 }
 ```
 
-### Otomatik Pencere Kaydı
+### Ekran Seçimi ile Kayıt
+```javascript
+const WindowSelector = require('./window-selector');
+const MacRecorder = require('./index');
+
+async function recordScreenWithPreview() {
+    const selector = new WindowSelector();
+    const recorder = new MacRecorder();
+    
+    try {
+        // Ekran seç
+        const screen = await selector.selectScreen();
+        console.log(`Selected: ${screen.name} (${screen.resolution})`);
+        
+        // Kayıt önizlemesi göster (diğer ekranlar siyah, seçili ekran şeffaf)
+        await selector.showScreenRecordingPreview(screen);
+        console.log('🎬 Screen recording preview shown');
+        
+        // 3 saniye bekle
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Ekran kaydını başlat
+        const outputPath = `./recordings/screen-${screen.id}-${Date.now()}.mov`;
+        await recorder.startRecording(outputPath, {
+            displayId: screen.id,
+            captureCursor: true,
+            includeMicrophone: true
+        });
+        
+        console.log('🔴 Screen recording started...');
+        
+        // 10 saniye kaydet
+        setTimeout(async () => {
+            await recorder.stopRecording();
+            
+            // Önizleme overlay'ini gizle
+            await selector.hideScreenRecordingPreview();
+            console.log(`✅ Recording saved: ${outputPath}`);
+        }, 10000);
+        
+    } finally {
+        await selector.cleanup();
+    }
+}
+```
+
+### Kayıt Önizleme ile Pencere Kaydı
+```javascript
+const WindowSelector = require('./window-selector');
+const MacRecorder = require('./index');
+
+async function recordWithPreview() {
+    const selector = new WindowSelector();
+    const recorder = new MacRecorder();
+    
+    try {
+        // Pencere seç
+        const window = await selector.selectWindow();
+        console.log(`Selected: ${window.title}`);
+        
+        // Kayıt önizlemesi göster (siyah overlay + şeffaf pencere alanı)
+        await selector.showRecordingPreview(window);
+        console.log('🎬 Recording preview shown - you can see exact recording area');
+        
+        // 3 saniye bekle (kullanıcı görebilsin)
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Kaydı başlat
+        const outputPath = `./recordings/${window.appName}-${Date.now()}.mov`;
+        await recorder.startRecording(outputPath, {
+            windowId: window.id,
+            captureCursor: true,
+            includeMicrophone: true
+        });
+        
+        console.log('🔴 Recording started...');
+        
+        // 10 saniye kaydet
+        setTimeout(async () => {
+            await recorder.stopRecording();
+            
+            // Önizleme overlay'ini gizle
+            await selector.hideRecordingPreview();
+            console.log(`✅ Recording saved: ${outputPath}`);
+        }, 10000);
+        
+    } finally {
+        await selector.cleanup();
+    }
+}
+```
+
+### Basit Ekran Seçimi
+```javascript
+const WindowSelector = require('./window-selector');
+
+async function selectScreen() {
+    const selector = new WindowSelector();
+    
+    try {
+        console.log('Bir ekran seçin...');
+        const selectedScreen = await selector.selectScreen();
+        
+        console.log('Seçilen ekran:', {
+            name: selectedScreen.name,
+            resolution: selectedScreen.resolution,
+            position: `(${selectedScreen.x}, ${selectedScreen.y})`,
+            isPrimary: selectedScreen.isPrimary
+        });
+        
+        return selectedScreen;
+        
+    } catch (error) {
+        console.error('Hata:', error.message);
+    } finally {
+        await selector.cleanup();
+    }
+}
+```
+
+### Manuel Ekran Kontrolü
+```javascript
+const WindowSelector = require('./window-selector');
+
+async function manualScreenSelection() {
+    const selector = new WindowSelector();
+    
+    try {
+        // Ekran seçimini başlat
+        await selector.startScreenSelection();
+        console.log('🖥️ Screen overlays shown - click Select Screen button');
+        
+        // Polling ile seçim bekle
+        const checkSelection = () => {
+            const selected = selector.getSelectedScreen();
+            if (selected) {
+                console.log(`✅ Screen selected: ${selected.name}`);
+                return selected;
+            }
+            setTimeout(checkSelection, 100);
+        };
+        
+        checkSelection();
+        
+    } catch (error) {
+        console.error('Hata:', error.message);
+    }
+}
+```
+
+### Otomatik Pencere Kaydı (Basit)
 ```javascript
 const WindowSelector = require('./window-selector');
 const MacRecorder = require('./index');
@@ -450,12 +719,21 @@ Bu modül ana projenin lisansı altındadır.
 
 ## ⭐ Özellik İstekleri
 
+### Pencere Seçimi
 - [ ] Pencere gruplandırma
 - [ ] Hotkey desteği  
 - [ ] Pencere filtreleme
 - [ ] Çoklu seçim modu
 - [ ] Screenshot alma
 - [ ] Window history
+
+### Ekran Seçimi
+- [x] Tam ekran overlay (menu bar dahil) ✅
+- [x] Multi-display desteği ✅
+- [x] Kayıt önizleme sistemi ✅
+- [ ] Hotkey desteği
+- [ ] Çoklu ekran seçimi
+- [ ] Ekran thumbnail'ları
 
 ---
 

@@ -17,12 +17,32 @@ static NSMutableArray *g_allWindows = nil;
 static NSDictionary *g_currentWindowUnderCursor = nil;
 static bool g_bringToFrontEnabled = true; // Default enabled
 
+// Recording preview overlay state
+static NSWindow *g_recordingPreviewWindow = nil;
+static NSView *g_recordingPreviewView = nil;
+static NSDictionary *g_recordingWindowInfo = nil;
+
+// Screen selection overlay state
+static bool g_isScreenSelecting = false;
+static NSMutableArray *g_screenOverlayWindows = nil;
+static NSDictionary *g_selectedScreenInfo = nil;
+static NSArray *g_allScreens = nil;
+
 // Forward declarations
 void cleanupWindowSelector();
 void updateOverlay();
 NSDictionary* getWindowUnderCursor(CGPoint point);
 NSArray* getAllSelectableWindows();
 bool bringWindowToFront(int windowId);
+void cleanupRecordingPreview();
+bool showRecordingPreview(NSDictionary *windowInfo);
+bool hideRecordingPreview();
+void cleanupScreenSelector();
+bool startScreenSelection();
+bool stopScreenSelection();
+NSDictionary* getSelectedScreenInfo();
+bool showScreenRecordingPreview(NSDictionary *screenInfo);
+bool hideScreenRecordingPreview();
 
 // Custom overlay view class
 @interface WindowSelectorOverlayView : NSView
@@ -35,7 +55,7 @@ bool bringWindowToFront(int windowId);
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.6] CGColor];
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.45] CGColor];
         self.layer.borderColor = [[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor];
         self.layer.borderWidth = 5.0;
         self.layer.cornerRadius = 8.0;
@@ -49,7 +69,7 @@ bool bringWindowToFront(int windowId);
     if (!self.windowInfo) return;
     
     // Background with transparency
-    [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.6] setFill];
+    [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.45] setFill];
     NSRectFill(dirtyRect);
     
     // Border
@@ -80,9 +100,116 @@ bool bringWindowToFront(int windowId);
 
 @end
 
+// Recording preview overlay view - full screen with cutout
+@interface RecordingPreviewView : NSView
+@property (nonatomic, strong) NSDictionary *recordingWindowInfo;
+@end
+
+@implementation RecordingPreviewView
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+    }
+    return self;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    
+    if (!self.recordingWindowInfo) {
+        // No window info, fill with semi-transparent black
+        [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5] setFill];
+        NSRectFill(dirtyRect);
+        return;
+    }
+    
+    // Get window coordinates
+    int windowX = [[self.recordingWindowInfo objectForKey:@"x"] intValue];
+    int windowY = [[self.recordingWindowInfo objectForKey:@"y"] intValue];
+    int windowWidth = [[self.recordingWindowInfo objectForKey:@"width"] intValue];
+    int windowHeight = [[self.recordingWindowInfo objectForKey:@"height"] intValue];
+    
+    // Convert from CGWindow coordinates (top-left) to NSView coordinates (bottom-left)
+    NSScreen *mainScreen = [NSScreen mainScreen];
+    CGFloat screenHeight = [mainScreen frame].size.height;
+    CGFloat convertedY = screenHeight - windowY - windowHeight;
+    
+    NSRect windowRect = NSMakeRect(windowX, convertedY, windowWidth, windowHeight);
+    
+    // Fill entire view with semi-transparent black
+    [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5] setFill];
+    NSRectFill(self.bounds);
+    
+    // Cut out the window area (make it transparent)
+    [[NSColor clearColor] setFill];
+    NSRectFill(windowRect);
+}
+
+@end
+
+// Screen selection overlay view
+@interface ScreenSelectorOverlayView : NSView
+@property (nonatomic, strong) NSDictionary *screenInfo;
+@end
+
+@implementation ScreenSelectorOverlayView
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.45] CGColor];
+        self.layer.borderColor = [[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor];
+        self.layer.borderWidth = 5.0;
+        self.layer.cornerRadius = 8.0;
+    }
+    return self;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    
+    if (!self.screenInfo) return;
+    
+    // Background with transparency
+    [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.45] setFill];
+    NSRectFill(dirtyRect);
+    
+    // Border
+    [[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] setStroke];
+    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:8 yRadius:8];
+    [border setLineWidth:3.0];
+    [border stroke];
+    
+    // Screen info text
+    NSString *screenName = [self.screenInfo objectForKey:@"name"] ?: @"Unknown Screen";
+    NSString *resolution = [self.screenInfo objectForKey:@"resolution"] ?: @"Unknown Resolution";
+    NSString *infoText = [NSString stringWithFormat:@"%@\n%@", screenName, resolution];
+    
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    [style setAlignment:NSTextAlignmentCenter];
+    
+    NSDictionary *attributes = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:21 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: [NSColor whiteColor],
+        NSParagraphStyleAttributeName: style,
+        NSStrokeColorAttributeName: [NSColor blackColor],
+        NSStrokeWidthAttributeName: @(-2.0)
+    };
+    
+    NSRect textRect = NSMakeRect(10, self.bounds.size.height - 90, self.bounds.size.width - 20, 80);
+    [infoText drawInRect:textRect withAttributes:attributes];
+}
+
+@end
+
 // Button action handler and timer target
 @interface WindowSelectorDelegate : NSObject
 - (void)selectButtonClicked:(id)sender;
+- (void)screenSelectButtonClicked:(id)sender;
 - (void)timerUpdate:(NSTimer *)timer;
 @end
 
@@ -91,6 +218,18 @@ bool bringWindowToFront(int windowId);
     if (g_currentWindowUnderCursor) {
         g_selectedWindowInfo = [g_currentWindowUnderCursor retain];
         cleanupWindowSelector();
+    }
+}
+
+- (void)screenSelectButtonClicked:(id)sender {
+    // Get the screen info from the button's superview
+    NSView *overlayView = [[sender superview] superview];
+    if ([overlayView isKindOfClass:[ScreenSelectorOverlayView class]]) {
+        ScreenSelectorOverlayView *screenView = (ScreenSelectorOverlayView *)overlayView;
+        if (screenView.screenInfo) {
+            g_selectedScreenInfo = [screenView.screenInfo retain];
+            cleanupScreenSelector();
+        }
     }
 }
 
@@ -313,7 +452,14 @@ void updateOverlay() {
             CGFloat screenHeight = [mainScreen frame].size.height;
             CGFloat adjustedY = screenHeight - y - height;
             
-            NSRect overlayFrame = NSMakeRect(x, adjustedY, width, height);
+            // Clamp overlay to screen bounds to avoid partial off-screen issues
+            NSRect screenFrame = [mainScreen frame];
+            CGFloat clampedX = MAX(screenFrame.origin.x, MIN(x, screenFrame.origin.x + screenFrame.size.width - width));
+            CGFloat clampedY = MAX(screenFrame.origin.y, MIN(adjustedY, screenFrame.origin.y + screenFrame.size.height - height));
+            CGFloat clampedWidth = MIN(width, screenFrame.size.width - (clampedX - screenFrame.origin.x));
+            CGFloat clampedHeight = MIN(height, screenFrame.size.height - (clampedY - screenFrame.origin.y));
+            
+            NSRect overlayFrame = NSMakeRect(clampedX, clampedY, clampedWidth, clampedHeight);
             
             NSString *windowTitle = [windowUnderCursor objectForKey:@"title"] ?: @"Untitled";
             NSString *appName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown";
@@ -407,6 +553,288 @@ void cleanupWindowSelector() {
     }
 }
 
+// Recording preview functions
+void cleanupRecordingPreview() {
+    if (g_recordingPreviewWindow) {
+        [g_recordingPreviewWindow close];
+        g_recordingPreviewWindow = nil;
+        g_recordingPreviewView = nil;
+    }
+    
+    if (g_recordingWindowInfo) {
+        [g_recordingWindowInfo release];
+        g_recordingWindowInfo = nil;
+    }
+}
+
+bool showRecordingPreview(NSDictionary *windowInfo) {
+    @try {
+        // Clean up any existing preview
+        cleanupRecordingPreview();
+        
+        if (!windowInfo) return false;
+        
+        // Store window info
+        g_recordingWindowInfo = [windowInfo retain];
+        
+        // Get main screen bounds for full screen overlay
+        NSScreen *mainScreen = [NSScreen mainScreen];
+        NSRect screenFrame = [mainScreen frame];
+        
+        // Create full-screen overlay window
+        g_recordingPreviewWindow = [[NSWindow alloc] initWithContentRect:screenFrame
+                                                              styleMask:NSWindowStyleMaskBorderless
+                                                                backing:NSBackingStoreBuffered
+                                                                  defer:NO];
+        
+        [g_recordingPreviewWindow setLevel:CGWindowLevelForKey(kCGOverlayWindowLevelKey)]; // High level but below selection
+        [g_recordingPreviewWindow setOpaque:NO];
+        [g_recordingPreviewWindow setBackgroundColor:[NSColor clearColor]];
+        [g_recordingPreviewWindow setIgnoresMouseEvents:YES]; // Don't interfere with user interaction
+        [g_recordingPreviewWindow setAcceptsMouseMovedEvents:NO];
+        [g_recordingPreviewWindow setHasShadow:NO];
+        [g_recordingPreviewWindow setAlphaValue:1.0];
+        [g_recordingPreviewWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+        
+        // Create preview view
+        g_recordingPreviewView = [[RecordingPreviewView alloc] initWithFrame:screenFrame];
+        [(RecordingPreviewView *)g_recordingPreviewView setRecordingWindowInfo:windowInfo];
+        [g_recordingPreviewWindow setContentView:g_recordingPreviewView];
+        
+        // Show the preview
+        [g_recordingPreviewWindow orderFront:nil];
+        [g_recordingPreviewWindow makeKeyAndOrderFront:nil];
+        
+        NSLog(@"🎬 RECORDING PREVIEW: Showing overlay for %@ - \"%@\"", 
+              [windowInfo objectForKey:@"appName"],
+              [windowInfo objectForKey:@"title"]);
+        
+        return true;
+        
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Error showing recording preview: %@", exception);
+        cleanupRecordingPreview();
+        return false;
+    }
+}
+
+bool hideRecordingPreview() {
+    @try {
+        if (g_recordingPreviewWindow) {
+            NSLog(@"🎬 RECORDING PREVIEW: Hiding overlay");
+            cleanupRecordingPreview();
+            return true;
+        }
+        return false;
+        
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Error hiding recording preview: %@", exception);
+        return false;
+    }
+}
+
+// Screen selection functions
+void cleanupScreenSelector() {
+    g_isScreenSelecting = false;
+    
+    // Close all screen overlay windows
+    if (g_screenOverlayWindows) {
+        for (NSWindow *overlayWindow in g_screenOverlayWindows) {
+            [overlayWindow close];
+        }
+        [g_screenOverlayWindows release];
+        g_screenOverlayWindows = nil;
+    }
+    
+    // Clean up screen data
+    if (g_allScreens) {
+        [g_allScreens release];
+        g_allScreens = nil;
+    }
+}
+
+bool startScreenSelection() {
+    @try {
+        if (g_isScreenSelecting) return false;
+        
+        // Get all available screens
+        NSArray *screens = [NSScreen screens];
+        if (!screens || [screens count] == 0) return false;
+        
+        // Create screen info array
+        NSMutableArray *screenInfoArray = [[NSMutableArray alloc] init];
+        g_screenOverlayWindows = [[NSMutableArray alloc] init];
+        
+        for (NSInteger i = 0; i < [screens count]; i++) {
+            NSScreen *screen = [screens objectAtIndex:i];
+            NSRect screenFrame = [screen frame];
+            
+            // Create screen info dictionary
+            NSMutableDictionary *screenInfo = [[NSMutableDictionary alloc] init];
+            [screenInfo setObject:[NSNumber numberWithInteger:i] forKey:@"id"];
+            [screenInfo setObject:[NSString stringWithFormat:@"Display %ld", (long)(i + 1)] forKey:@"name"];
+            [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.origin.x] forKey:@"x"];
+            [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.origin.y] forKey:@"y"];
+            [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.size.width] forKey:@"width"];
+            [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.size.height] forKey:@"height"];
+            [screenInfo setObject:[NSString stringWithFormat:@"%.0fx%.0f", screenFrame.size.width, screenFrame.size.height] forKey:@"resolution"];
+            [screenInfo setObject:[NSNumber numberWithBool:(i == 0)] forKey:@"isPrimary"]; // First screen is primary
+            [screenInfoArray addObject:screenInfo];
+            
+            // Create overlay window for this screen (FULL screen including menu bar)
+            NSWindow *overlayWindow = [[NSWindow alloc] initWithContentRect:screenFrame
+                                                                  styleMask:NSWindowStyleMaskBorderless
+                                                                    backing:NSBackingStoreBuffered
+                                                                      defer:NO
+                                                                      screen:screen];
+            
+            [overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)];
+            [overlayWindow setOpaque:NO];
+            [overlayWindow setBackgroundColor:[NSColor clearColor]];
+            [overlayWindow setIgnoresMouseEvents:NO];
+            [overlayWindow setAcceptsMouseMovedEvents:YES];
+            [overlayWindow setHasShadow:NO];
+            [overlayWindow setAlphaValue:1.0];
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+            
+            // Create overlay view
+            ScreenSelectorOverlayView *overlayView = [[ScreenSelectorOverlayView alloc] initWithFrame:screenFrame];
+            [overlayView setScreenInfo:screenInfo];
+            [overlayWindow setContentView:overlayView];
+            
+            // Create select button
+            NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 180, 60)];
+            [selectButton setTitle:@"Select Screen"];
+            [selectButton setButtonType:NSButtonTypeMomentaryPushIn];
+            [selectButton setBezelStyle:NSBezelStyleRounded];
+            [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
+            [selectButton setWantsLayer:NO]; // Use system default
+            
+            // Add shadow for better visibility
+            [selectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
+            [selectButton.layer setShadowOffset:NSMakeSize(0, -2)];
+            [selectButton.layer setShadowRadius:4.0];
+            [selectButton.layer setShadowOpacity:0.3];
+            
+            // Set button target and action
+            WindowSelectorDelegate *delegate = [[WindowSelectorDelegate alloc] init];
+            [selectButton setTarget:delegate];
+            [selectButton setAction:@selector(screenSelectButtonClicked:)];
+            
+            // Position button in center of screen
+            NSPoint buttonCenter = NSMakePoint(
+                (screenFrame.size.width - [selectButton frame].size.width) / 2,
+                (screenFrame.size.height - [selectButton frame].size.height) / 2
+            );
+            [selectButton setFrameOrigin:buttonCenter];
+            
+            [overlayView addSubview:selectButton];
+            [overlayWindow orderFront:nil];
+            [overlayWindow makeKeyAndOrderFront:nil];
+            
+            [g_screenOverlayWindows addObject:overlayWindow];
+            [screenInfo release];
+        }
+        
+        g_allScreens = [screenInfoArray retain];
+        [screenInfoArray release];
+        g_isScreenSelecting = true;
+        
+        NSLog(@"🖥️ SCREEN SELECTION: Started with %lu screens", (unsigned long)[screens count]);
+        
+        return true;
+        
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Error starting screen selection: %@", exception);
+        cleanupScreenSelector();
+        return false;
+    }
+}
+
+bool stopScreenSelection() {
+    @try {
+        if (!g_isScreenSelecting) return false;
+        
+        cleanupScreenSelector();
+        NSLog(@"🖥️ SCREEN SELECTION: Stopped");
+        return true;
+        
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Error stopping screen selection: %@", exception);
+        return false;
+    }
+}
+
+NSDictionary* getSelectedScreenInfo() {
+    if (!g_selectedScreenInfo) return nil;
+    
+    NSDictionary *result = [g_selectedScreenInfo retain];
+    [g_selectedScreenInfo release];
+    g_selectedScreenInfo = nil;
+    
+    return [result autorelease];
+}
+
+bool showScreenRecordingPreview(NSDictionary *screenInfo) {
+    @try {
+        // Clean up any existing preview
+        cleanupRecordingPreview();
+        
+        if (!screenInfo) return false;
+        
+        // For screen recording preview, we show all OTHER screens as black overlay
+        // and keep the selected screen transparent
+        NSArray *screens = [NSScreen screens];
+        if (!screens || [screens count] == 0) return false;
+        
+        int selectedScreenId = [[screenInfo objectForKey:@"id"] intValue];
+        
+        // Create overlay for each screen except the selected one
+        for (NSInteger i = 0; i < [screens count]; i++) {
+            if (i == selectedScreenId) continue; // Skip selected screen
+            
+            NSScreen *screen = [screens objectAtIndex:i];
+            NSRect screenFrame = [screen frame];
+            
+            // Create full-screen black overlay for non-selected screens
+            NSWindow *overlayWindow = [[NSWindow alloc] initWithContentRect:screenFrame
+                                                                  styleMask:NSWindowStyleMaskBorderless
+                                                                    backing:NSBackingStoreBuffered
+                                                                      defer:NO
+                                                                      screen:screen];
+            
+            [overlayWindow setLevel:CGWindowLevelForKey(kCGOverlayWindowLevelKey)];
+            [overlayWindow setOpaque:NO];
+            [overlayWindow setBackgroundColor:[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5]];
+            [overlayWindow setIgnoresMouseEvents:YES];
+            [overlayWindow setAcceptsMouseMovedEvents:NO];
+            [overlayWindow setHasShadow:NO];
+            [overlayWindow setAlphaValue:1.0];
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+            
+            [overlayWindow orderFront:nil];
+            [overlayWindow makeKeyAndOrderFront:nil];
+            
+            // Store for cleanup (reuse recording preview window variable)
+            if (!g_recordingPreviewWindow) {
+                g_recordingPreviewWindow = overlayWindow;
+            }
+        }
+        
+        NSLog(@"🎬 SCREEN RECORDING PREVIEW: Showing overlay for Screen %d", selectedScreenId);
+        
+        return true;
+        
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Error showing screen recording preview: %@", exception);
+        return false;
+    }
+}
+
+bool hideScreenRecordingPreview() {
+    return hideRecordingPreview(); // Reuse existing function
+}
+
 // NAPI Function: Start Window Selection
 Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -446,19 +874,14 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setContentView:g_overlayView];
         
         // Create select button with blue theme
-        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 140, 50)];
+        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 160, 60)];
         [g_selectButton setTitle:@"Select Window"];
         [g_selectButton setButtonType:NSButtonTypeMomentaryPushIn];
         [g_selectButton setBezelStyle:NSBezelStyleRounded];
         [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
         
-        // Blue themed button styling
-        [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor]];
-        [g_selectButton.layer setCornerRadius:8.0];
-        [g_selectButton.layer setBorderColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:1.0] CGColor]];
-        [g_selectButton.layer setBorderWidth:2.0];
-        [g_selectButton setContentTintColor:[NSColor whiteColor]];
+        // Remove custom button styling to use system default
+        [g_selectButton setWantsLayer:NO];
         
         // Add shadow for better visibility
         [g_selectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
@@ -641,6 +1064,193 @@ Napi::Value GetWindowSelectionStatus(const Napi::CallbackInfo& info) {
     return result;
 }
 
+// NAPI Function: Show Recording Preview
+Napi::Value ShowRecordingPreview(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Window info object required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    if (!info[0].IsObject()) {
+        Napi::TypeError::New(env, "Window info must be an object").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    @try {
+        Napi::Object windowInfoObj = info[0].As<Napi::Object>();
+        
+        // Convert NAPI object to NSDictionary
+        NSMutableDictionary *windowInfo = [[NSMutableDictionary alloc] init];
+        
+        if (windowInfoObj.Has("id")) {
+            [windowInfo setObject:[NSNumber numberWithInt:windowInfoObj.Get("id").As<Napi::Number>().Int32Value()] forKey:@"id"];
+        }
+        if (windowInfoObj.Has("title")) {
+            [windowInfo setObject:[NSString stringWithUTF8String:windowInfoObj.Get("title").As<Napi::String>().Utf8Value().c_str()] forKey:@"title"];
+        }
+        if (windowInfoObj.Has("appName")) {
+            [windowInfo setObject:[NSString stringWithUTF8String:windowInfoObj.Get("appName").As<Napi::String>().Utf8Value().c_str()] forKey:@"appName"];
+        }
+        if (windowInfoObj.Has("x")) {
+            [windowInfo setObject:[NSNumber numberWithInt:windowInfoObj.Get("x").As<Napi::Number>().Int32Value()] forKey:@"x"];
+        }
+        if (windowInfoObj.Has("y")) {
+            [windowInfo setObject:[NSNumber numberWithInt:windowInfoObj.Get("y").As<Napi::Number>().Int32Value()] forKey:@"y"];
+        }
+        if (windowInfoObj.Has("width")) {
+            [windowInfo setObject:[NSNumber numberWithInt:windowInfoObj.Get("width").As<Napi::Number>().Int32Value()] forKey:@"width"];
+        }
+        if (windowInfoObj.Has("height")) {
+            [windowInfo setObject:[NSNumber numberWithInt:windowInfoObj.Get("height").As<Napi::Number>().Int32Value()] forKey:@"height"];
+        }
+        
+        bool success = showRecordingPreview(windowInfo);
+        [windowInfo release];
+        
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Hide Recording Preview
+Napi::Value HideRecordingPreview(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        bool success = hideRecordingPreview();
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Start Screen Selection
+Napi::Value StartScreenSelection(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        bool success = startScreenSelection();
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Stop Screen Selection
+Napi::Value StopScreenSelection(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        bool success = stopScreenSelection();
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Get Selected Screen Info
+Napi::Value GetSelectedScreenInfo(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        NSDictionary *screenInfo = getSelectedScreenInfo();
+        if (!screenInfo) {
+            return env.Null();
+        }
+        
+        Napi::Object result = Napi::Object::New(env);
+        result.Set("id", Napi::Number::New(env, [[screenInfo objectForKey:@"id"] intValue]));
+        result.Set("name", Napi::String::New(env, [[screenInfo objectForKey:@"name"] UTF8String]));
+        result.Set("x", Napi::Number::New(env, [[screenInfo objectForKey:@"x"] intValue]));
+        result.Set("y", Napi::Number::New(env, [[screenInfo objectForKey:@"y"] intValue]));
+        result.Set("width", Napi::Number::New(env, [[screenInfo objectForKey:@"width"] intValue]));
+        result.Set("height", Napi::Number::New(env, [[screenInfo objectForKey:@"height"] intValue]));
+        result.Set("resolution", Napi::String::New(env, [[screenInfo objectForKey:@"resolution"] UTF8String]));
+        result.Set("isPrimary", Napi::Boolean::New(env, [[screenInfo objectForKey:@"isPrimary"] boolValue]));
+        
+        NSLog(@"🖥️ SCREEN SELECTED: %@ (%@)", 
+              [screenInfo objectForKey:@"name"],
+              [screenInfo objectForKey:@"resolution"]);
+        
+        return result;
+        
+    } @catch (NSException *exception) {
+        return env.Null();
+    }
+}
+
+// NAPI Function: Show Screen Recording Preview
+Napi::Value ShowScreenRecordingPreview(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Screen info object required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    if (!info[0].IsObject()) {
+        Napi::TypeError::New(env, "Screen info must be an object").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    @try {
+        Napi::Object screenInfoObj = info[0].As<Napi::Object>();
+        
+        // Convert NAPI object to NSDictionary
+        NSMutableDictionary *screenInfo = [[NSMutableDictionary alloc] init];
+        
+        if (screenInfoObj.Has("id")) {
+            [screenInfo setObject:[NSNumber numberWithInt:screenInfoObj.Get("id").As<Napi::Number>().Int32Value()] forKey:@"id"];
+        }
+        if (screenInfoObj.Has("name")) {
+            [screenInfo setObject:[NSString stringWithUTF8String:screenInfoObj.Get("name").As<Napi::String>().Utf8Value().c_str()] forKey:@"name"];
+        }
+        if (screenInfoObj.Has("resolution")) {
+            [screenInfo setObject:[NSString stringWithUTF8String:screenInfoObj.Get("resolution").As<Napi::String>().Utf8Value().c_str()] forKey:@"resolution"];
+        }
+        if (screenInfoObj.Has("x")) {
+            [screenInfo setObject:[NSNumber numberWithInt:screenInfoObj.Get("x").As<Napi::Number>().Int32Value()] forKey:@"x"];
+        }
+        if (screenInfoObj.Has("y")) {
+            [screenInfo setObject:[NSNumber numberWithInt:screenInfoObj.Get("y").As<Napi::Number>().Int32Value()] forKey:@"y"];
+        }
+        if (screenInfoObj.Has("width")) {
+            [screenInfo setObject:[NSNumber numberWithInt:screenInfoObj.Get("width").As<Napi::Number>().Int32Value()] forKey:@"width"];
+        }
+        if (screenInfoObj.Has("height")) {
+            [screenInfo setObject:[NSNumber numberWithInt:screenInfoObj.Get("height").As<Napi::Number>().Int32Value()] forKey:@"height"];
+        }
+        
+        bool success = showScreenRecordingPreview(screenInfo);
+        [screenInfo release];
+        
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// NAPI Function: Hide Screen Recording Preview
+Napi::Value HideScreenRecordingPreview(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    @try {
+        bool success = hideScreenRecordingPreview();
+        return Napi::Boolean::New(env, success);
+        
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
 // Export functions
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports) {
     exports.Set("startWindowSelection", Napi::Function::New(env, StartWindowSelection));
@@ -649,6 +1259,13 @@ Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports) {
     exports.Set("getWindowSelectionStatus", Napi::Function::New(env, GetWindowSelectionStatus));
     exports.Set("bringWindowToFront", Napi::Function::New(env, BringWindowToFront));
     exports.Set("setBringToFrontEnabled", Napi::Function::New(env, SetBringToFrontEnabled));
+    exports.Set("showRecordingPreview", Napi::Function::New(env, ShowRecordingPreview));
+    exports.Set("hideRecordingPreview", Napi::Function::New(env, HideRecordingPreview));
+    exports.Set("startScreenSelection", Napi::Function::New(env, StartScreenSelection));
+    exports.Set("stopScreenSelection", Napi::Function::New(env, StopScreenSelection));
+    exports.Set("getSelectedScreenInfo", Napi::Function::New(env, GetSelectedScreenInfo));
+    exports.Set("showScreenRecordingPreview", Napi::Function::New(env, ShowScreenRecordingPreview));
+    exports.Set("hideScreenRecordingPreview", Napi::Function::New(env, HideScreenRecordingPreview));
     
     return exports;
 }
