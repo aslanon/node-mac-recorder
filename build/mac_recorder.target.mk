@@ -25,7 +25,7 @@ CFLAGS_Debug := \
 	-fno-strict-aliasing \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	arm64 \
+	x86_64 \
 	-Wall \
 	-Wendif-labels \
 	-W \
@@ -37,7 +37,6 @@ CFLAGS_C_Debug := \
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Debug := \
-	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
 	-ObjC++
@@ -49,13 +48,13 @@ CFLAGS_OBJC_Debug :=
 CFLAGS_OBJCC_Debug :=
 
 INCS_Debug := \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/v8/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
@@ -79,7 +78,7 @@ CFLAGS_Release := \
 	-fno-strict-aliasing \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	arm64 \
+	x86_64 \
 	-Wall \
 	-Wendif-labels \
 	-W \
@@ -91,7 +90,6 @@ CFLAGS_C_Release := \
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Release := \
-	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
 	-ObjC++
@@ -103,18 +101,19 @@ CFLAGS_OBJC_Release :=
 CFLAGS_OBJCC_Release :=
 
 INCS_Release := \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/v8/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \
 	$(obj).target/$(TARGET)/src/mac_recorder.o \
 	$(obj).target/$(TARGET)/src/screen_capture.o \
+	$(obj).target/$(TARGET)/src/screen_capture_kit.o \
 	$(obj).target/$(TARGET)/src/audio_capture.o \
 	$(obj).target/$(TARGET)/src/cursor_tracker.o \
 	$(obj).target/$(TARGET)/src/window_selector.o
@@ -153,7 +152,7 @@ LDFLAGS_Debug := \
 	-Wl,-search_paths_first \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	arm64 \
+	x86_64 \
 	-L$(builddir) \
 	-stdlib=libc++
 
@@ -166,7 +165,7 @@ LDFLAGS_Release := \
 	-Wl,-search_paths_first \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	arm64 \
+	x86_64 \
 	-L$(builddir) \
 	-stdlib=libc++
 

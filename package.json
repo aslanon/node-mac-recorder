@@ -38,14 +38,19 @@
 		"build": "node-gyp build",
 		"rebuild": "node-gyp rebuild",
 		"clean": "node-gyp clean",
+		"prebuild:darwin:arm64": "prebuildify --napi --strip --platform darwin --arch arm64",
+		"prebuild:darwin:x64": "prebuildify --napi --strip --platform darwin --arch x64",
+		"prebuild": "npm run prebuild:darwin:arm64 && npm run prebuild:darwin:x64",
 		"test:window-selector": "node window-selector-test.js",
 		"example:window-selector": "node examples/window-selector-example.js"
 	},
 	"dependencies": {
-		"node-addon-api": "^7.0.0"
+		"node-addon-api": "^7.0.0",
+		"node-gyp-build": "^4.6.0"
 	},
 	"devDependencies": {
-		"node-gyp": "^10.0.0"
+		"node-gyp": "^10.0.0",
+		"prebuildify": "^5.0.0"
 	},
 	"gypfile": true
 }

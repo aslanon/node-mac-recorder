@@ -9,6 +9,7 @@
 
 // Import screen capture
 #import "screen_capture.h"
+#import "screen_capture_kit.h"
 
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
@@ -67,7 +68,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     
     std::string outputPath = info[0].As<Napi::String>().Utf8Value();
     
-    // Options parsing
+    // Options parsing (shared)
     CGRect captureRect = CGRectNull;
     bool captureCursor = false; // Default olarak cursor gizli
     bool includeMicrophone = false; // Default olarak mikrofon kapalı
@@ -75,6 +76,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     CGDirectDisplayID displayID = CGMainDisplayID(); // Default ana ekran
     NSString *audioDeviceId = nil; // Default audio device ID
     NSString *systemAudioDeviceId = nil; // System audio device ID
+    bool forceUseSC = false;
+    // Exclude options for ScreenCaptureKit (optional, backward compatible)
+    NSMutableArray<NSString*> *excludedAppBundleIds = [NSMutableArray array];
+    NSMutableArray<NSNumber*> *excludedPIDs = [NSMutableArray array];
+    NSMutableArray<NSNumber*> *excludedWindowIds = [NSMutableArray array];
+    bool autoExcludeSelf = false;
     
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
@@ -118,6 +125,43 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             std::string sysDeviceId = options.Get("systemAudioDeviceId").As<Napi::String>().Utf8Value();
             systemAudioDeviceId = [NSString stringWithUTF8String:sysDeviceId.c_str()];
         }
+
+        // ScreenCaptureKit toggle (optional)
+        if (options.Has("useScreenCaptureKit")) {
+            forceUseSC = options.Get("useScreenCaptureKit").As<Napi::Boolean>();
+        }
+
+        // Exclusion lists (optional)
+        if (options.Has("excludedAppBundleIds") && options.Get("excludedAppBundleIds").IsArray()) {
+            Napi::Array arr = options.Get("excludedAppBundleIds").As<Napi::Array>();
+            for (uint32_t i = 0; i < arr.Length(); i++) {
+                if (!arr.Get(i).IsUndefined() && !arr.Get(i).IsNull()) {
+                    std::string s = arr.Get(i).As<Napi::String>().Utf8Value();
+                    [excludedAppBundleIds addObject:[NSString stringWithUTF8String:s.c_str()]];
+                }
+            }
+        }
+        if (options.Has("excludedPIDs") && options.Get("excludedPIDs").IsArray()) {
+            Napi::Array arr = options.Get("excludedPIDs").As<Napi::Array>();
+            for (uint32_t i = 0; i < arr.Length(); i++) {
+                if (!arr.Get(i).IsUndefined() && !arr.Get(i).IsNull()) {
+                    double v = arr.Get(i).As<Napi::Number>().DoubleValue();
+                    [excludedPIDs addObject:@( (pid_t)v )];
+                }
+            }
+        }
+        if (options.Has("excludedWindowIds") && options.Get("excludedWindowIds").IsArray()) {
+            Napi::Array arr = options.Get("excludedWindowIds").As<Napi::Array>();
+            for (uint32_t i = 0; i < arr.Length(); i++) {
+                if (!arr.Get(i).IsUndefined() && !arr.Get(i).IsNull()) {
+                    double v = arr.Get(i).As<Napi::Number>().DoubleValue();
+                    [excludedWindowIds addObject:@( (uint32_t)v )];
+                }
+            }
+        }
+        if (options.Has("autoExcludeSelf")) {
+            autoExcludeSelf = options.Get("autoExcludeSelf").As<Napi::Boolean>();
+        }
         
         // Display ID
         if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
@@ -159,6 +203,43 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
+        // Prefer ScreenCaptureKit if requested or if exclusion lists provided and available
+        bool wantsSC = forceUseSC || excludedAppBundleIds.count > 0 || excludedPIDs.count > 0 || excludedWindowIds.count > 0 || autoExcludeSelf;
+        if (wantsSC && [ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
+            NSMutableDictionary *scConfig = [@{} mutableCopy];
+            scConfig[@"displayId"] = @(displayID);
+            if (!CGRectIsNull(captureRect)) {
+                scConfig[@"captureArea"] = @{ @"x": @(captureRect.origin.x),
+                                               @"y": @(captureRect.origin.y),
+                                               @"width": @(captureRect.size.width),
+                                               @"height": @(captureRect.size.height) };
+            }
+            scConfig[@"captureCursor"] = @(captureCursor);
+            scConfig[@"includeMicrophone"] = @(includeMicrophone);
+            scConfig[@"includeSystemAudio"] = @(includeSystemAudio);
+            if (excludedAppBundleIds.count) scConfig[@"excludedAppBundleIds"] = excludedAppBundleIds;
+            if (excludedPIDs.count) scConfig[@"excludedPIDs"] = excludedPIDs;
+            if (excludedWindowIds.count) scConfig[@"excludedWindowIds"] = excludedWindowIds;
+            // Auto exclude current app by PID if requested
+            if (autoExcludeSelf) {
+                pid_t pid = getpid();
+                NSMutableArray *arr = [NSMutableArray arrayWithArray:scConfig[@"excludedPIDs"] ?: @[]];
+                [arr addObject:@(pid)];
+                scConfig[@"excludedPIDs"] = arr;
+            }
+
+            // Output path for SC
+            std::string outputPathStr = info[0].As<Napi::String>().Utf8Value();
+            scConfig[@"outputPath"] = [NSString stringWithUTF8String:outputPathStr.c_str()];
+
+            NSError *scErr = nil;
+            BOOL ok = [ScreenCaptureKitRecorder startRecordingWithConfiguration:scConfig delegate:nil error:&scErr];
+            if (ok) {
+                g_isRecording = true;
+                return Napi::Boolean::New(env, true);
+            }
+            // If SC failed, fall through to AVFoundation as fallback
+        }
         // Create capture session
         g_captureSession = [[AVCaptureSession alloc] init];
         [g_captureSession beginConfiguration];
@@ -325,14 +406,19 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
 Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    if (!g_isRecording || !g_movieFileOutput) {
+    if (!g_isRecording) {
         return Napi::Boolean::New(env, false);
     }
     
     @try {
-        [g_movieFileOutput stopRecording];
-        [g_captureSession stopRunning];
-        
+        if (g_movieFileOutput) {
+            [g_movieFileOutput stopRecording];
+            [g_captureSession stopRunning];
+            g_isRecording = false;
+            return Napi::Boolean::New(env, true);
+        }
+        // Try ScreenCaptureKit stop
+        [ScreenCaptureKitRecorder stopRecording];
         g_isRecording = false;
         return Napi::Boolean::New(env, true);
         
@@ -812,6 +898,12 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
     exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
     exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));
+    // ScreenCaptureKit availability (optional for clients)
+    exports.Set(Napi::String::New(env, "isScreenCaptureKitAvailable"), Napi::Function::New(env, [](const Napi::CallbackInfo& info){
+        Napi::Env env = info.Env();
+        bool available = [ScreenCaptureKitRecorder isScreenCaptureKitAvailable];
+        return Napi::Boolean::New(env, available);
+    }));
     
     // Thumbnail functions
     exports.Set(Napi::String::New(env, "getWindowThumbnail"), Napi::Function::New(env, GetWindowThumbnail));

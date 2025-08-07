@@ -2,19 +2,24 @@ const { EventEmitter } = require("events");
 const path = require("path");
 const fs = require("fs");
 
-// Native modülü yükle
+// Native modülü yükle (prebuilt > local build fallback)
 let nativeBinding;
 try {
-	nativeBinding = require("./build/Release/mac_recorder.node");
-} catch (error) {
+	// Prebuilt
+	nativeBinding = require("node-gyp-build")(__dirname);
+} catch (e) {
 	try {
-		nativeBinding = require("./build/Debug/mac_recorder.node");
-	} catch (debugError) {
-		throw new Error(
-			'Native module not found. Please run "npm run build" to compile the native module.\n' +
-				"Original error: " +
-				error.message
-		);
+		nativeBinding = require("./build/Release/mac_recorder.node");
+	} catch (error) {
+		try {
+			nativeBinding = require("./build/Debug/mac_recorder.node");
+		} catch (debugError) {
+			throw new Error(
+				'Native module not found. Please run "npm run build" to compile the native module.\n' +
+					"Original error: " +
+					(error?.message || e?.message)
+			);
+		}
 	}
 }
 
@@ -45,6 +50,12 @@ class MacRecorder extends EventEmitter {
 			showClicks: false,
 			displayId: null, // Hangi ekranı kaydedeceği (null = ana ekran)
 			windowId: null, // Hangi pencereyi kaydedeceği (null = tam ekran)
+			// SC (gizli, opsiyonel) - mevcut kullanıcıları bozmaz
+			useScreenCaptureKit: false,
+			excludedAppBundleIds: [],
+			excludedPIDs: [],
+			excludedWindowIds: [],
+			autoExcludeSelf: !!(process.versions && process.versions.electron),
 		};
 
 		// Display cache için async initialization
@@ -118,6 +129,14 @@ class MacRecorder extends EventEmitter {
 			audioDeviceId: options.audioDeviceId || null, // null = default device
 			systemAudioDeviceId: options.systemAudioDeviceId || null, // null = auto-detect system audio device
 			captureArea: options.captureArea || null,
+			useScreenCaptureKit: options.useScreenCaptureKit || false,
+			excludedAppBundleIds: options.excludedAppBundleIds || [],
+			excludedPIDs: options.excludedPIDs || [],
+			excludedWindowIds: options.excludedWindowIds || [],
+			autoExcludeSelf:
+				typeof options.autoExcludeSelf === "boolean"
+					? options.autoExcludeSelf
+					: !!(process.versions && process.versions.electron),
 		};
 	}
 
@@ -167,11 +186,12 @@ class MacRecorder extends EventEmitter {
 							targetDisplayId = display.id; // Use actual display ID, not array index
 							// Koordinatları display'e göre normalize et
 							adjustedX = targetWindow.x - display.x;
-							
+
 							// Y coordinate conversion: CGWindow (top-left) to AVFoundation (bottom-left)
 							// Overlay'deki dönüşümle aynı mantık: screenHeight - windowY - windowHeight
 							const displayHeight = parseInt(display.resolution.split("x")[1]);
-							const convertedY = displayHeight - targetWindow.y - targetWindow.height;
+							const convertedY =
+								displayHeight - targetWindow.y - targetWindow.height;
 							adjustedY = Math.max(0, convertedY - display.y);
 							break;
 						}
@@ -206,7 +226,9 @@ class MacRecorder extends EventEmitter {
 						this.options.displayId = targetDisplayId;
 
 						// Recording için display bilgisini sakla (cursor capture için)
-						const targetDisplay = displays.find(d => d.id === targetDisplayId);
+						const targetDisplay = displays.find(
+							(d) => d.id === targetDisplayId
+						);
 						this.recordingDisplayInfo = {
 							displayId: targetDisplayId,
 							x: targetDisplay.x,
@@ -239,7 +261,9 @@ class MacRecorder extends EventEmitter {
 		if (this.options.displayId !== null && !this.recordingDisplayInfo) {
 			try {
 				const displays = await this.getDisplays();
-				const targetDisplay = displays.find(d => d.id === this.options.displayId);
+				const targetDisplay = displays.find(
+					(d) => d.id === this.options.displayId
+				);
 				if (targetDisplay) {
 					this.recordingDisplayInfo = {
 						displayId: this.options.displayId,
@@ -273,6 +297,11 @@ class MacRecorder extends EventEmitter {
 					windowId: this.options.windowId || null, // null = tam ekran
 					audioDeviceId: this.options.audioDeviceId || null, // null = default device
 					systemAudioDeviceId: this.options.systemAudioDeviceId || null, // null = auto-detect system audio device
+					useScreenCaptureKit: this.options.useScreenCaptureKit || false,
+					excludedAppBundleIds: this.options.excludedAppBundleIds || [],
+					excludedPIDs: this.options.excludedPIDs || [],
+					excludedWindowIds: this.options.excludedWindowIds || [],
+					autoExcludeSelf: this.options.autoExcludeSelf === true,
 				};
 
 				// Manuel captureArea varsa onu kullan
@@ -285,10 +314,34 @@ class MacRecorder extends EventEmitter {
 					};
 				}
 
-				const success = nativeBinding.startRecording(
-					outputPath,
-					recordingOptions
-				);
+				// SC yolu: kullanıcıdan SC talebi varsa veya exclude listeleri doluysa ve SC mevcutsa otomatik kullan
+				let success;
+				try {
+					const wantsSC = !!(
+						this.options.useScreenCaptureKit ||
+						this.options.excludedAppBundleIds?.length ||
+						this.options.excludedPIDs?.length ||
+						this.options.excludedWindowIds?.length
+					);
+					const scAvailable =
+						typeof nativeBinding.isScreenCaptureKitAvailable === "function" &&
+						nativeBinding.isScreenCaptureKitAvailable();
+					if (wantsSC && scAvailable) {
+						const scOptions = {
+							...recordingOptions,
+							useScreenCaptureKit: true,
+						};
+						success = nativeBinding.startRecording(outputPath, scOptions);
+					} else {
+						success = nativeBinding.startRecording(
+							outputPath,
+							recordingOptions
+						);
+					}
+				} catch (e) {
+					// Fallback AVFoundation
+					success = nativeBinding.startRecording(outputPath, recordingOptions);
+				}
 
 				if (success) {
 					this.isRecording = true;
@@ -310,13 +363,13 @@ class MacRecorder extends EventEmitter {
 							if (nativeStatus && !recordingStartedEmitted) {
 								recordingStartedEmitted = true;
 								clearInterval(checkRecordingStatus);
-								
+
 								// Kayıt gerçekten başladığı anda event emit et
 								this.emit("recordingStarted", {
 									outputPath: this.outputPath,
 									timestamp: Date.now(), // Gerçek başlangıç zamanı
 									options: this.options,
-									nativeConfirmed: true
+									nativeConfirmed: true,
 								});
 							}
 						} catch (error) {
@@ -328,12 +381,12 @@ class MacRecorder extends EventEmitter {
 									outputPath: this.outputPath,
 									timestamp: this.recordingStartTime,
 									options: this.options,
-									nativeConfirmed: false
+									nativeConfirmed: false,
 								});
 							}
 						}
 					}, 50); // Her 50ms kontrol et
-					
+
 					// Timeout fallback - 5 saniye sonra hala başlamamışsa emit et
 					setTimeout(() => {
 						if (!recordingStartedEmitted) {
@@ -343,11 +396,11 @@ class MacRecorder extends EventEmitter {
 								outputPath: this.outputPath,
 								timestamp: this.recordingStartTime,
 								options: this.options,
-								nativeConfirmed: false
+								nativeConfirmed: false,
 							});
 						}
 					}, 5000);
-					
+
 					this.emit("started", this.outputPath);
 					resolve(this.outputPath);
 				} else {
@@ -588,7 +641,7 @@ class MacRecorder extends EventEmitter {
 				width: options.windowInfo.width,
 				height: options.windowInfo.height,
 				windowRelative: true,
-				windowInfo: options.windowInfo
+				windowInfo: options.windowInfo,
 			};
 		} else if (this.recordingDisplayInfo) {
 			// Recording başlatılmışsa o display'i kullan
@@ -644,7 +697,7 @@ class MacRecorder extends EventEmitter {
 							if (this.cursorDisplayInfo.windowRelative) {
 								// Window-relative koordinatlar
 								coordinateSystem = "window-relative";
-								
+
 								// Window bounds kontrolü - cursor window dışındaysa kaydetme
 								if (
 									x < 0 ||
@@ -657,7 +710,7 @@ class MacRecorder extends EventEmitter {
 							} else {
 								// Display-relative koordinatlar
 								coordinateSystem = "display-relative";
-								
+
 								// Display bounds kontrolü
 								if (
 									x < 0 ||
@@ -682,9 +735,9 @@ class MacRecorder extends EventEmitter {
 								windowInfo: {
 									width: this.cursorDisplayInfo.width,
 									height: this.cursorDisplayInfo.height,
-									originalWindow: this.cursorDisplayInfo.windowInfo
-								}
-							})
+									originalWindow: this.cursorDisplayInfo.windowInfo,
+								},
+							}),
 						};
 
 						// Sadece eventType değiştiğinde veya pozisyon değiştiğinde kaydet
@@ -931,6 +984,6 @@ class MacRecorder extends EventEmitter {
 }
 
 // WindowSelector modülünü de export edelim
-MacRecorder.WindowSelector = require('./window-selector');
+MacRecorder.WindowSelector = require("./window-selector");
 
 module.exports = MacRecorder;

@@ -5,6 +5,7 @@
       "sources": [
         "src/mac_recorder.mm",
         "src/screen_capture.mm",
+        "src/screen_capture_kit.mm",
         "src/audio_capture.mm",
         "src/cursor_tracker.mm",
         "src/window_selector.mm"
