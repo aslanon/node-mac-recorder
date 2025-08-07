@@ -25,11 +25,32 @@
     CGDirectDisplayID *displayList = (CGDirectDisplayID *)malloc(displayCount * sizeof(CGDirectDisplayID));
     CGGetActiveDisplayList(displayCount, displayList, &displayCount);
     
+    // Get NSScreen list for consistent coordinate system
+    NSArray<NSScreen *> *screens = [NSScreen screens];
+    
     for (uint32_t i = 0; i < displayCount; i++) {
         CGDirectDisplayID displayID = displayList[i];
         
-        // Get display bounds
-        CGRect bounds = CGDisplayBounds(displayID);
+        // Find corresponding NSScreen for this display ID
+        NSScreen *matchingScreen = nil;
+        for (NSScreen *screen in screens) {
+            // Match by display ID (requires screen.deviceDescription lookup)
+            NSDictionary *deviceDescription = [screen deviceDescription];
+            NSNumber *screenDisplayID = [deviceDescription objectForKey:@"NSScreenNumber"];
+            if (screenDisplayID && [screenDisplayID unsignedIntValue] == displayID) {
+                matchingScreen = screen;
+                break;
+            }
+        }
+        
+        // Use NSScreen.frame if found, fallback to CGDisplayBounds
+        CGRect bounds;
+        if (matchingScreen) {
+            NSRect screenFrame = [matchingScreen frame];
+            bounds = CGRectMake(screenFrame.origin.x, screenFrame.origin.y, screenFrame.size.width, screenFrame.size.height);
+        } else {
+            bounds = CGDisplayBounds(displayID);
+        }
         
         // Create display info dictionary
         NSDictionary *displayInfo = @{
