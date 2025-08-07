@@ -167,7 +167,13 @@ class MacRecorder extends EventEmitter {
 							targetDisplayId = display.id; // Use actual display ID, not array index
 							// Koordinatları display'e göre normalize et
 							adjustedX = targetWindow.x - display.x;
-							adjustedY = targetWindow.y - display.y;
+							
+							// Y coordinate fix: Window selector uses NSScreen.frame (excludes menu bar)
+							// but recording uses CGDisplayBounds (includes menu bar)
+							// For primary display, add menu bar height (~22-25px) to Y coordinate
+							const isMainDisplay = display.isPrimary;
+							const menuBarHeight = isMainDisplay ? 25 : 0; // Menu bar height adjustment
+							adjustedY = targetWindow.y - display.y + menuBarHeight;
 							break;
 						}
 					}
