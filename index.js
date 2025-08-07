@@ -302,12 +302,51 @@ class MacRecorder extends EventEmitter {
 						this.emit("timeUpdate", elapsed);
 					}, 1000);
 
-					// Kayıt tam başladığı anda event emit et
-					this.emit("recordingStarted", {
-						outputPath: this.outputPath,
-						timestamp: this.recordingStartTime,
-						options: this.options
-					});
+					// Native kayıt gerçekten başladığını kontrol etmek için polling başlat
+					let recordingStartedEmitted = false;
+					const checkRecordingStatus = setInterval(() => {
+						try {
+							const nativeStatus = nativeBinding.getRecordingStatus();
+							if (nativeStatus && !recordingStartedEmitted) {
+								recordingStartedEmitted = true;
+								clearInterval(checkRecordingStatus);
+								
+								// Kayıt gerçekten başladığı anda event emit et
+								this.emit("recordingStarted", {
+									outputPath: this.outputPath,
+									timestamp: Date.now(), // Gerçek başlangıç zamanı
+									options: this.options,
+									nativeConfirmed: true
+								});
+							}
+						} catch (error) {
+							// Native status check error - fallback
+							if (!recordingStartedEmitted) {
+								recordingStartedEmitted = true;
+								clearInterval(checkRecordingStatus);
+								this.emit("recordingStarted", {
+									outputPath: this.outputPath,
+									timestamp: this.recordingStartTime,
+									options: this.options,
+									nativeConfirmed: false
+								});
+							}
+						}
+					}, 50); // Her 50ms kontrol et
+					
+					// Timeout fallback - 5 saniye sonra hala başlamamışsa emit et
+					setTimeout(() => {
+						if (!recordingStartedEmitted) {
+							recordingStartedEmitted = true;
+							clearInterval(checkRecordingStatus);
+							this.emit("recordingStarted", {
+								outputPath: this.outputPath,
+								timestamp: this.recordingStartTime,
+								options: this.options,
+								nativeConfirmed: false
+							});
+						}
+					}, 5000);
 					
 					this.emit("started", this.outputPath);
 					resolve(this.outputPath);
