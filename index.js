@@ -302,6 +302,13 @@ class MacRecorder extends EventEmitter {
 						this.emit("timeUpdate", elapsed);
 					}, 1000);
 
+					// Kayıt tam başladığı anda event emit et
+					this.emit("recordingStarted", {
+						outputPath: this.outputPath,
+						timestamp: this.recordingStartTime,
+						options: this.options
+					});
+					
 					this.emit("started", this.outputPath);
 					resolve(this.outputPath);
 				} else {
@@ -506,9 +513,12 @@ class MacRecorder extends EventEmitter {
 	/**
 	 * Cursor capture başlatır - otomatik olarak dosyaya yazmaya başlar
 	 * Recording başlatılmışsa otomatik olarak display-relative koordinatlar kullanır
-	 * @param {string} filepath - Cursor data JSON dosya yolu
+	 * @param {string|number} intervalOrFilepath - Cursor data JSON dosya yolu veya interval
+	 * @param {Object} options - Cursor capture seçenekleri
+	 * @param {Object} options.windowInfo - Pencere bilgileri (window-relative koordinatlar için)
+	 * @param {boolean} options.windowRelative - Koordinatları pencereye göre relative yap
 	 */
-	async startCursorCapture(intervalOrFilepath = 100) {
+	async startCursorCapture(intervalOrFilepath = 100, options = {}) {
 		let filepath;
 		let interval = 20; // Default 50 FPS
 
@@ -528,8 +538,20 @@ class MacRecorder extends EventEmitter {
 			throw new Error("Cursor capture is already running");
 		}
 
-		// Recording başlatılmışsa o display'i kullan, yoksa main display kullan
-		if (this.recordingDisplayInfo) {
+		// Koordinat sistemi belirle: window-relative, display-relative veya global
+		if (options.windowRelative && options.windowInfo) {
+			// Window-relative koordinatlar için pencere bilgilerini kullan
+			this.cursorDisplayInfo = {
+				displayId: options.windowInfo.displayId || null,
+				x: options.windowInfo.x || 0,
+				y: options.windowInfo.y || 0,
+				width: options.windowInfo.width,
+				height: options.windowInfo.height,
+				windowRelative: true,
+				windowInfo: options.windowInfo
+			};
+		} else if (this.recordingDisplayInfo) {
+			// Recording başlatılmışsa o display'i kullan
 			this.cursorDisplayInfo = this.recordingDisplayInfo;
 		} else {
 			// Main display bilgisini al (her zaman relative koordinatlar için)
@@ -568,23 +590,42 @@ class MacRecorder extends EventEmitter {
 						const position = nativeBinding.getCursorPosition();
 						const timestamp = Date.now() - this.cursorCaptureStartTime;
 
-						// Global koordinatları display-relative'e çevir
+						// Global koordinatları relative koordinatlara çevir
 						let x = position.x;
 						let y = position.y;
+						let coordinateSystem = "global";
 
 						if (this.cursorDisplayInfo) {
-							// Display offset'lerini çıkar
+							// Offset'leri çıkar (display veya window)
 							x = position.x - this.cursorDisplayInfo.x;
 							y = position.y - this.cursorDisplayInfo.y;
 
-							// Display bounds kontrolü - cursor display dışındaysa kaydetme
-							if (
-								x < 0 ||
-								y < 0 ||
-								x >= this.cursorDisplayInfo.width ||
-								y >= this.cursorDisplayInfo.height
-							) {
-								return; // Bu frame'i skip et
+							if (this.cursorDisplayInfo.windowRelative) {
+								// Window-relative koordinatlar
+								coordinateSystem = "window-relative";
+								
+								// Window bounds kontrolü - cursor window dışındaysa kaydetme
+								if (
+									x < 0 ||
+									y < 0 ||
+									x >= this.cursorDisplayInfo.width ||
+									y >= this.cursorDisplayInfo.height
+								) {
+									return; // Bu frame'i skip et - cursor pencere dışında
+								}
+							} else {
+								// Display-relative koordinatlar
+								coordinateSystem = "display-relative";
+								
+								// Display bounds kontrolü
+								if (
+									x < 0 ||
+									y < 0 ||
+									x >= this.cursorDisplayInfo.width ||
+									y >= this.cursorDisplayInfo.height
+								) {
+									return; // Bu frame'i skip et - cursor display dışında
+								}
 							}
 						}
 
@@ -595,6 +636,14 @@ class MacRecorder extends EventEmitter {
 							unixTimeMs: Date.now(),
 							cursorType: position.cursorType,
 							type: position.eventType || "move",
+							coordinateSystem: coordinateSystem,
+							...(this.cursorDisplayInfo?.windowRelative && {
+								windowInfo: {
+									width: this.cursorDisplayInfo.width,
+									height: this.cursorDisplayInfo.height,
+									originalWindow: this.cursorDisplayInfo.windowInfo
+								}
+							})
 						};
 
 						// Sadece eventType değiştiğinde veya pozisyon değiştiğinde kaydet

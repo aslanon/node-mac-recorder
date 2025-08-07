@@ -73,9 +73,21 @@ The package handles complex multi-display coordinate transformations:
 - `checkPermissions()` - Verify macOS recording permissions
 
 ### Cursor Tracking
-- `startCursorCapture(filepath)` - Begin real-time cursor tracking to JSON
+- `startCursorCapture(filepath, options)` - Begin real-time cursor tracking to JSON
+  - `options.windowInfo` - Window information for window-relative coordinates
+  - `options.windowRelative` - Set to true for window-relative coordinates
 - `stopCursorCapture()` - Stop tracking and close output file
 - `getCursorPosition()` - Get current cursor position and state
+
+### Events
+The MacRecorder class emits the following events:
+- `recordingStarted` - Emitted immediately when recording starts with recording details
+- `started` - Emitted when recording is confirmed started (legacy event)
+- `stopped` - Emitted when recording stops
+- `completed` - Emitted when recording file is finalized
+- `timeUpdate` - Emitted every second with elapsed time
+- `cursorCaptureStarted` - Emitted when cursor capture begins
+- `cursorCaptureStopped` - Emitted when cursor capture ends
 
 ### Thumbnails
 - `getWindowThumbnail(windowId, options)` - Capture window preview image
@@ -90,9 +102,14 @@ The package handles complex multi-display coordinate transformations:
 
 ### Common Development Patterns
 - All recording operations are Promise-based
-- Event emission for recording state changes (`started`, `stopped`, `completed`)
+- Event emission for recording state changes (`recordingStarted`, `started`, `stopped`, `completed`)
+- `recordingStarted` event provides immediate notification with recording details
 - Automatic permission checking before operations
 - Error handling with descriptive messages for permission issues
+- Cursor tracking supports multiple coordinate systems:
+  - Global coordinates (default)
+  - Display-relative coordinates (when recording)
+  - Window-relative coordinates (with windowInfo parameter)
 
 ### Platform Requirements
 - macOS only (enforced in install.js)
@@ -102,6 +119,13 @@ The package handles complex multi-display coordinate transformations:
 ### File Outputs
 - Video recordings: `.mov` format (H.264/AAC)
 - Cursor data: JSON format with timestamped events
+  - `x`, `y`: Cursor coordinates (coordinate system dependent)
+  - `timestamp`: Time from capture start (ms)
+  - `unixTimeMs`: Unix timestamp
+  - `cursorType`: macOS cursor type
+  - `type`: Event type (move, click, etc.)
+  - `coordinateSystem`: "global", "display-relative", or "window-relative"
+  - `windowInfo`: Window metadata (when using window-relative coordinates)
 - Thumbnails: Base64-encoded PNG data URIs
 
 ## Troubleshooting
