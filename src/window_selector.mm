@@ -16,6 +16,7 @@ static NSDictionary *g_selectedWindowInfo = nil;
 static NSMutableArray *g_allWindows = nil;
 static NSDictionary *g_currentWindowUnderCursor = nil;
 static bool g_bringToFrontEnabled = true; // Default enabled
+static id g_windowKeyEventMonitor = nil;
 
 // Recording preview overlay state
 static NSWindow *g_recordingPreviewWindow = nil;
@@ -213,6 +214,7 @@ bool hideScreenRecordingPreview();
 @interface WindowSelectorDelegate : NSObject
 - (void)selectButtonClicked:(id)sender;
 - (void)screenSelectButtonClicked:(id)sender;
+- (void)cancelButtonClicked:(id)sender;
 - (void)timerUpdate:(NSTimer *)timer;
 @end
 
@@ -238,6 +240,16 @@ bool hideScreenRecordingPreview();
               [screenInfo objectForKey:@"resolution"]);
         
         cleanupScreenSelector();
+    }
+}
+
+- (void)cancelButtonClicked:(id)sender {
+    NSLog(@"🚫 CANCEL BUTTON CLICKED: Selection cancelled");
+    // Clean up without selecting anything
+    if (g_isScreenSelecting) {
+        cleanupScreenSelector();
+    } else {
+        cleanupWindowSelector();
     }
 }
 
@@ -495,14 +507,33 @@ void updateOverlay() {
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:windowUnderCursor];
             [g_overlayView setNeedsDisplay:YES];
             
-            // Position select button in center
+            // Position buttons - Start Record in center, Cancel below it
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
                 NSPoint buttonCenter = NSMakePoint(
                     (width - buttonSize.width) / 2,
-                    (height - buttonSize.height) / 2
+                    (height - buttonSize.height) / 2 + 30  // Slightly above center
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
+                
+                // Position cancel button below the main button
+                NSButton *cancelButton = nil;
+                for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+                    if ([subview isKindOfClass:[NSButton class]] && 
+                        [[(NSButton*)subview title] isEqualToString:@"Cancel"]) {
+                        cancelButton = (NSButton*)subview;
+                        break;
+                    }
+                }
+                
+                if (cancelButton) {
+                    NSSize cancelButtonSize = [cancelButton frame].size;
+                    NSPoint cancelButtonCenter = NSMakePoint(
+                        (width - cancelButtonSize.width) / 2,
+                        buttonCenter.y - buttonSize.height - 20  // 20px below main button
+                    );
+                    [cancelButton setFrameOrigin:cancelButtonCenter];
+                }
             }
             
             [g_overlayWindow orderFront:nil];
@@ -533,6 +564,12 @@ void cleanupWindowSelector() {
     if (g_trackingTimer) {
         [g_trackingTimer invalidate];
         g_trackingTimer = nil;
+    }
+    
+    // Remove key event monitor
+    if (g_windowKeyEventMonitor) {
+        [NSEvent removeMonitor:g_windowKeyEventMonitor];
+        g_windowKeyEventMonitor = nil;
     }
     
     // Close overlay window
@@ -752,14 +789,52 @@ bool startScreenSelection() {
             [selectButton setTarget:g_delegate];
             [selectButton setAction:@selector(screenSelectButtonClicked:)];
             
-            // Position button in center of screen
+            // Create cancel button for screen selection
+            NSButton *screenCancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
+            [screenCancelButton setTitle:@"Cancel"];
+            [screenCancelButton setButtonType:NSButtonTypeMomentaryPushIn];
+            [screenCancelButton setBezelStyle:NSBezelStyleRounded];
+            [screenCancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
+            
+            // Gray cancel button styling
+            [screenCancelButton setWantsLayer:YES];
+            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:0.8] CGColor]];
+            [screenCancelButton.layer setCornerRadius:6.0];
+            [screenCancelButton.layer setBorderColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:1.0] CGColor]];
+            [screenCancelButton.layer setBorderWidth:1.0];
+            
+            // White text for cancel button
+            NSMutableAttributedString *screenCancelTitleString = [[NSMutableAttributedString alloc] 
+                initWithString:[screenCancelButton title]];
+            [screenCancelTitleString addAttribute:NSForegroundColorAttributeName 
+                                value:[NSColor whiteColor] 
+                                range:NSMakeRange(0, [screenCancelTitleString length])];
+            [screenCancelButton setAttributedTitle:screenCancelTitleString];
+            
+            // Add shadow for cancel button
+            [screenCancelButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
+            [screenCancelButton.layer setShadowOffset:NSMakeSize(0, -1)];
+            [screenCancelButton.layer setShadowRadius:2.0];
+            [screenCancelButton.layer setShadowOpacity:0.2];
+            
+            [screenCancelButton setTarget:g_delegate];
+            [screenCancelButton setAction:@selector(cancelButtonClicked:)];
+            
+            // Position buttons - Start Record in center, Cancel below it
             NSPoint buttonCenter = NSMakePoint(
                 (screenFrame.size.width - [selectButton frame].size.width) / 2,
-                (screenFrame.size.height - [selectButton frame].size.height) / 2
+                (screenFrame.size.height - [selectButton frame].size.height) / 2 + 30  // Slightly above center
             );
             [selectButton setFrameOrigin:buttonCenter];
             
+            NSPoint cancelButtonCenter = NSMakePoint(
+                (screenFrame.size.width - [screenCancelButton frame].size.width) / 2,
+                buttonCenter.y - [selectButton frame].size.height - 20  // 20px below main button
+            );
+            [screenCancelButton setFrameOrigin:cancelButtonCenter];
+            
             [overlayView addSubview:selectButton];
+            [overlayView addSubview:screenCancelButton];
             [overlayWindow orderFront:nil];
             [overlayWindow makeKeyAndOrderFront:nil];
             
@@ -946,12 +1021,58 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_selectButton setTarget:g_delegate];
         [g_selectButton setAction:@selector(selectButtonClicked:)];
         
-        [g_overlayView addSubview:g_selectButton];
+        // Add select button directly to window (not view) for proper layering
+        [g_overlayWindow.contentView addSubview:g_selectButton];
+        
+        // Create cancel button
+        NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
+        [cancelButton setTitle:@"Cancel"];
+        [cancelButton setButtonType:NSButtonTypeMomentaryPushIn];
+        [cancelButton setBezelStyle:NSBezelStyleRounded];
+        [cancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
+        
+        // Gray cancel button styling
+        [cancelButton setWantsLayer:YES];
+        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:0.8] CGColor]];
+        [cancelButton.layer setCornerRadius:6.0];
+        [cancelButton.layer setBorderColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:1.0] CGColor]];
+        [cancelButton.layer setBorderWidth:1.0];
+        
+        // White text for cancel button
+        NSMutableAttributedString *cancelTitleString = [[NSMutableAttributedString alloc] 
+            initWithString:[cancelButton title]];
+        [cancelTitleString addAttribute:NSForegroundColorAttributeName 
+                            value:[NSColor whiteColor] 
+                            range:NSMakeRange(0, [cancelTitleString length])];
+        [cancelButton setAttributedTitle:cancelTitleString];
+        
+        // Add shadow for cancel button
+        [cancelButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
+        [cancelButton.layer setShadowOffset:NSMakeSize(0, -1)];
+        [cancelButton.layer setShadowRadius:2.0];
+        [cancelButton.layer setShadowOpacity:0.2];
+        
+        [cancelButton setTarget:g_delegate];
+        [cancelButton setAction:@selector(cancelButtonClicked:)];
+        
+        // Add cancel button to window
+        [g_overlayWindow.contentView addSubview:cancelButton];
+        
+        // Cancel button reference will be found dynamically in positioning code
         
         // Timer approach doesn't work well with Node.js
         // Instead, we'll use JavaScript polling via getWindowSelectionStatus
         // The JS side will call this function repeatedly to trigger overlay updates
         g_trackingTimer = nil; // No timer for now
+        
+        // Add ESC key event monitor to cancel selection
+        g_windowKeyEventMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                                      handler:^(NSEvent *event) {
+            if ([event keyCode] == 53) { // ESC key
+                NSLog(@"🪟 WINDOW SELECTION: ESC pressed - cancelling selection");
+                cleanupWindowSelector();
+            }
+        }];
         
         g_isWindowSelecting = true;
         g_selectedWindowInfo = nil;
