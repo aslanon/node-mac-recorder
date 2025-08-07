@@ -8,15 +8,16 @@ Bu modül, macOS'ta sistem imleci ile pencere seçimi yapabilmenizi sağlayan g�
 
 - **Real-time Window Detection**: İmleç hangi pencereye gelirse otomatik olarak tespit eder
 - **Visual Overlay**: Seçilebilir pencereleri mavi transparant kapsayıcı ile highlight eder
-- **Interactive Selection**: Merkeze yerleştirilen "Select Window" butonu ile kolay seçim
+- **Interactive Selection**: Merkeze yerleştirilen "Start Record" butonu ile kolay seçim
 - **Multi-display Support**: Çoklu ekran kurulumlarında çalışır
 - **Detailed Window Info**: Pencere pozisyonu, boyutu ve hangi ekranda olduğunu döndürür
 - **Event-driven API**: Pencere hover, seçim ve hata durumları için event'ler
 - **Window Focus Control**: Detect edilen pencereyi otomatik olarak en öne getirir
 - **Auto Bring-to-Front**: Cursor hangi pencereye gelirse otomatik focus yapar
 - **Recording Preview Overlay**: Kayıt alanını görselleştiren tam ekran overlay sistemi
-- **Screen Selection**: Tam ekran overlay ile ekran seçimi (menu bar dahil)
+- **Screen Selection**: Tam ekran overlay ile ekran seçimi (menu bar dahil, ESC ile iptal)
 - **Screen Recording Preview**: Seçilen ekran için kayıt önizleme sistemi
+- **ESC Key Support**: Tüm seçim modlarında ESC tuşu ile iptal
 - **Permission Management**: macOS izin kontrolü ve yönetimi
 
 ## 🚀 Kurulum
@@ -59,7 +60,7 @@ async function selectWindow() {
     const selector = new WindowSelector();
     
     try {
-        console.log('Bir pencere seçin...');
+        console.log('Bir pencere seçin (ESC ile iptal)...');
         const selectedWindow = await selector.selectWindow();
         
         console.log('Seçilen pencere:', {
@@ -594,7 +595,7 @@ async function selectScreen() {
     const selector = new WindowSelector();
     
     try {
-        console.log('Bir ekran seçin...');
+        console.log('Bir ekran seçin (ESC ile iptal)...');
         const selectedScreen = await selector.selectScreen();
         
         console.log('Seçilen ekran:', {
@@ -607,7 +608,11 @@ async function selectScreen() {
         return selectedScreen;
         
     } catch (error) {
-        console.error('Hata:', error.message);
+        if (error.message.includes('cancelled')) {
+            console.log('❌ Seçim iptal edildi');
+        } else {
+            console.error('Hata:', error.message);
+        }
     } finally {
         await selector.cleanup();
     }
@@ -624,7 +629,7 @@ async function manualScreenSelection() {
     try {
         // Ekran seçimini başlat
         await selector.startScreenSelection();
-        console.log('🖥️ Screen overlays shown - click Select Screen button');
+        console.log('🖥️ Screen overlays shown - click Start Record button (ESC to cancel)');
         
         // Polling ile seçim bekle
         const checkSelection = () => {

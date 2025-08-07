@@ -312,6 +312,9 @@ class WindowSelector extends EventEmitter {
 	async startScreenSelection() {
 		try {
 			const success = nativeBinding.startScreenSelection();
+			if (success) {
+				this._isScreenSelecting = true;
+			}
 			return success;
 		} catch (error) {
 			throw new Error(`Failed to start screen selection: ${error.message}`);
@@ -325,6 +328,7 @@ class WindowSelector extends EventEmitter {
 	async stopScreenSelection() {
 		try {
 			const success = nativeBinding.stopScreenSelection();
+			this._isScreenSelecting = false;
 			return success;
 		} catch (error) {
 			throw new Error(`Failed to stop screen selection: ${error.message}`);
@@ -337,10 +341,29 @@ class WindowSelector extends EventEmitter {
 	 */
 	getSelectedScreen() {
 		try {
-			return nativeBinding.getSelectedScreenInfo();
+			const selectedScreen = nativeBinding.getSelectedScreenInfo();
+			if (selectedScreen) {
+				// Screen selected, update status
+				this._isScreenSelecting = false;
+			}
+			return selectedScreen;
 		} catch (error) {
 			console.error(`Failed to get selected screen: ${error.message}`);
 			return null;
+		}
+	}
+
+	/**
+	 * Ekran seçim durumunu döndürür
+	 * @returns {boolean} Is selecting screens
+	 */
+	get isScreenSelecting() {
+		// Screen selection durum bilgisi için native taraftan status alalım
+		try {
+			// Bu fonksiyon henüz yok, eklemek gerekiyor
+			return this._isScreenSelecting || false;
+		} catch (error) {
+			return false;
 		}
 	}
 
@@ -356,13 +379,22 @@ class WindowSelector extends EventEmitter {
 			
 			// Poll for selection completion
 			return new Promise((resolve, reject) => {
+				let isResolved = false;
+				
 				const checkSelection = () => {
+					if (isResolved) return; // Prevent multiple resolutions
+					
 					const selectedScreen = this.getSelectedScreen();
 					if (selectedScreen) {
+						isResolved = true;
 						resolve(selectedScreen);
-					} else {
-						// Check again in 100ms
+					} else if (this.isScreenSelecting) {
+						// Still selecting, check again
 						setTimeout(checkSelection, 100);
+					} else {
+						// Selection was cancelled (probably ESC key)
+						isResolved = true;
+						reject(new Error('Screen selection was cancelled'));
 					}
 				};
 				
@@ -371,8 +403,11 @@ class WindowSelector extends EventEmitter {
 				
 				// Timeout after 60 seconds
 				setTimeout(() => {
-					this.stopScreenSelection();
-					reject(new Error('Screen selection timed out'));
+					if (!isResolved) {
+						isResolved = true;
+						this.stopScreenSelection();
+						reject(new Error('Screen selection timed out'));
+					}
 				}, 60000);
 			});
 		} catch (error) {

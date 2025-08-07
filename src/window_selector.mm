@@ -27,6 +27,7 @@ static bool g_isScreenSelecting = false;
 static NSMutableArray *g_screenOverlayWindows = nil;
 static NSDictionary *g_selectedScreenInfo = nil;
 static NSArray *g_allScreens = nil;
+static id g_screenKeyEventMonitor = nil;
 
 // Forward declarations
 void cleanupWindowSelector();
@@ -139,13 +140,15 @@ bool hideScreenRecordingPreview();
     
     NSRect windowRect = NSMakeRect(windowX, convertedY, windowWidth, windowHeight);
     
-    // Fill entire view with semi-transparent black
-    [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5] setFill];
-    NSRectFill(self.bounds);
+    // Create a path that covers the entire view but excludes the window area
+    NSBezierPath *maskPath = [NSBezierPath bezierPathWithRect:self.bounds];
+    NSBezierPath *windowPath = [NSBezierPath bezierPathWithRect:windowRect];
+    [maskPath appendBezierPath:windowPath];
+    [maskPath setWindingRule:NSWindingRuleEvenOdd]; // Creates hole effect
     
-    // Cut out the window area (make it transparent)
-    [[NSColor clearColor] setFill];
-    NSRectFill(windowRect);
+    // Fill with semi-transparent black, excluding window area
+    [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5] setFill];
+    [maskPath fill];
 }
 
 @end
@@ -222,14 +225,19 @@ bool hideScreenRecordingPreview();
 }
 
 - (void)screenSelectButtonClicked:(id)sender {
-    // Get the screen info from the button's superview
-    NSView *overlayView = [[sender superview] superview];
-    if ([overlayView isKindOfClass:[ScreenSelectorOverlayView class]]) {
-        ScreenSelectorOverlayView *screenView = (ScreenSelectorOverlayView *)overlayView;
-        if (screenView.screenInfo) {
-            g_selectedScreenInfo = [screenView.screenInfo retain];
-            cleanupScreenSelector();
-        }
+    NSButton *button = (NSButton *)sender;
+    NSInteger screenIndex = [button tag];
+    
+    // Get screen info from global array using button tag
+    if (g_allScreens && screenIndex >= 0 && screenIndex < [g_allScreens count]) {
+        NSDictionary *screenInfo = [g_allScreens objectAtIndex:screenIndex];
+        g_selectedScreenInfo = [screenInfo retain];
+        
+        NSLog(@"🖥️ SCREEN BUTTON CLICKED: %@ (%@)", 
+              [screenInfo objectForKey:@"name"],
+              [screenInfo objectForKey:@"resolution"]);
+        
+        cleanupScreenSelector();
     }
 }
 
@@ -637,6 +645,12 @@ bool hideRecordingPreview() {
 void cleanupScreenSelector() {
     g_isScreenSelecting = false;
     
+    // Remove key event monitor
+    if (g_screenKeyEventMonitor) {
+        [NSEvent removeMonitor:g_screenKeyEventMonitor];
+        g_screenKeyEventMonitor = nil;
+    }
+    
     // Close all screen overlay windows
     if (g_screenOverlayWindows) {
         for (NSWindow *overlayWindow in g_screenOverlayWindows) {
@@ -704,11 +718,26 @@ bool startScreenSelection() {
             
             // Create select button
             NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 180, 60)];
-            [selectButton setTitle:@"Select Screen"];
+            [selectButton setTitle:@"Start Record"];
             [selectButton setButtonType:NSButtonTypeMomentaryPushIn];
             [selectButton setBezelStyle:NSBezelStyleRounded];
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
-            [selectButton setWantsLayer:NO]; // Use system default
+            [selectButton setTag:i]; // Set screen index as tag
+            
+            // Blue background with white text
+            [selectButton setWantsLayer:YES];
+            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor]];
+            [selectButton.layer setCornerRadius:8.0];
+            [selectButton.layer setBorderColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:1.0] CGColor]];
+            [selectButton.layer setBorderWidth:2.0];
+            
+            // White text color
+            NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
+                initWithString:[selectButton title]];
+            [titleString addAttribute:NSForegroundColorAttributeName 
+                                value:[NSColor whiteColor] 
+                                range:NSMakeRange(0, [titleString length])];
+            [selectButton setAttributedTitle:titleString];
             
             // Add shadow for better visibility
             [selectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
@@ -716,9 +745,11 @@ bool startScreenSelection() {
             [selectButton.layer setShadowRadius:4.0];
             [selectButton.layer setShadowOpacity:0.3];
             
-            // Set button target and action
-            WindowSelectorDelegate *delegate = [[WindowSelectorDelegate alloc] init];
-            [selectButton setTarget:delegate];
+            // Set button target and action (reuse global delegate)
+            if (!g_delegate) {
+                g_delegate = [[WindowSelectorDelegate alloc] init];
+            }
+            [selectButton setTarget:g_delegate];
             [selectButton setAction:@selector(screenSelectButtonClicked:)];
             
             // Position button in center of screen
@@ -740,7 +771,16 @@ bool startScreenSelection() {
         [screenInfoArray release];
         g_isScreenSelecting = true;
         
-        NSLog(@"🖥️ SCREEN SELECTION: Started with %lu screens", (unsigned long)[screens count]);
+        // Add ESC key event monitor to cancel selection
+        g_screenKeyEventMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                                          handler:^(NSEvent *event) {
+            if ([event keyCode] == 53) { // ESC key
+                NSLog(@"🖥️ SCREEN SELECTION: ESC pressed - cancelling selection");
+                cleanupScreenSelector();
+            }
+        }];
+        
+        NSLog(@"🖥️ SCREEN SELECTION: Started with %lu screens (ESC to cancel)", (unsigned long)[screens count]);
         
         return true;
         
@@ -875,13 +915,25 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Create select button with blue theme
         g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 160, 60)];
-        [g_selectButton setTitle:@"Select Window"];
+        [g_selectButton setTitle:@"Start Record"];
         [g_selectButton setButtonType:NSButtonTypeMomentaryPushIn];
         [g_selectButton setBezelStyle:NSBezelStyleRounded];
         [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
         
-        // Remove custom button styling to use system default
-        [g_selectButton setWantsLayer:NO];
+        // Blue background with white text
+        [g_selectButton setWantsLayer:YES];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor]];
+        [g_selectButton.layer setCornerRadius:8.0];
+        [g_selectButton.layer setBorderColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:1.0] CGColor]];
+        [g_selectButton.layer setBorderWidth:2.0];
+        
+        // White text color
+        NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
+            initWithString:[g_selectButton title]];
+        [titleString addAttribute:NSForegroundColorAttributeName 
+                            value:[NSColor whiteColor] 
+                            range:NSMakeRange(0, [titleString length])];
+        [g_selectButton setAttributedTitle:titleString];
         
         // Add shadow for better visibility
         [g_selectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
