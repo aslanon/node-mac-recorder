@@ -541,10 +541,27 @@ class MacRecorder extends EventEmitter {
 		// Koordinat sistemi belirle: window-relative, display-relative veya global
 		if (options.windowRelative && options.windowInfo) {
 			// Window-relative koordinatlar için pencere bilgilerini kullan
+			// Y koordinat dönüşümü - pencere kaydındaki gibi
+			const displays = await this.getDisplays();
+			const display = displays.find(d => d.id === options.windowInfo.displayId) || displays[0];
+			
+			let adjustedX = options.windowInfo.x || 0;
+			let adjustedY = options.windowInfo.y || 0;
+			
+			if (display) {
+				// Pencere koordinatlarını display-relative yapmak için display offset'ini çıkar
+				adjustedX = (options.windowInfo.x || 0) - display.x;
+				
+				// Y koordinat dönüşümü: CGWindow (top-left) to AVFoundation (bottom-left)
+				const displayHeight = parseInt(display.resolution.split("x")[1]);
+				const convertedY = displayHeight - (options.windowInfo.y || 0) - options.windowInfo.height;
+				adjustedY = Math.max(0, convertedY - display.y);
+			}
+			
 			this.cursorDisplayInfo = {
 				displayId: options.windowInfo.displayId || null,
-				x: options.windowInfo.x || 0,
-				y: options.windowInfo.y || 0,
+				x: adjustedX,
+				y: adjustedY,
 				width: options.windowInfo.width,
 				height: options.windowInfo.height,
 				windowRelative: true,
@@ -597,6 +614,7 @@ class MacRecorder extends EventEmitter {
 
 						if (this.cursorDisplayInfo) {
 							// Offset'leri çıkar (display veya window)
+							// Y koordinat dönüşümü başlangıçta yapıldı
 							x = position.x - this.cursorDisplayInfo.x;
 							y = position.y - this.cursorDisplayInfo.y;
 
