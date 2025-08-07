@@ -334,15 +334,15 @@ if (!permissions.screenRecording) {
 
 ## 🌟 Gelişmiş Örnekler
 
-### Auto Bring-to-Front (Otomatik Focus)
+### Auto Bring-to-Front (DEFAULT - Otomatik Focus)
 ```javascript
 const WindowSelector = require('./window-selector');
 
 async function autoBringToFront() {
     const selector = new WindowSelector();
     
-    // Otomatik focus modunu aktif et
-    selector.setBringToFrontEnabled(true);
+    // Auto bring-to-front varsayılan olarak AÇIK
+    // (Kapatmak için: selector.setBringToFrontEnabled(false))
     
     selector.on('windowEntered', (window) => {
         console.log(`🔝 Auto-focused: ${window.appName} - "${window.title}"`);
@@ -350,6 +350,7 @@ async function autoBringToFront() {
     
     await selector.startSelection();
     console.log('🖱️ Move cursor over windows - they will come to front automatically!');
+    console.log('💡 Only the specific window focuses, not all windows of the app');
 }
 ```
 

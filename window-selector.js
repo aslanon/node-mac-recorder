@@ -240,7 +240,10 @@ class WindowSelector extends EventEmitter {
 	setBringToFrontEnabled(enabled) {
 		try {
 			nativeBinding.setBringToFrontEnabled(enabled);
-			console.log(`🔄 Auto bring-to-front: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+			// Only log if explicitly setting, not on startup
+			if (arguments.length > 0) {
+				console.log(`🔄 Auto bring-to-front: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+			}
 		} catch (error) {
 			throw new Error(`Failed to set bring to front: ${error.message}`);
 		}

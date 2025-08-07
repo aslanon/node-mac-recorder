@@ -35,8 +35,8 @@ bool bringWindowToFront(int windowId);
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.5] CGColor];
-        self.layer.borderColor = [[NSColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.9] CGColor];
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.6] CGColor];
+        self.layer.borderColor = [[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor];
         self.layer.borderWidth = 5.0;
         self.layer.cornerRadius = 8.0;
     }
@@ -49,11 +49,11 @@ bool bringWindowToFront(int windowId);
     if (!self.windowInfo) return;
     
     // Background with transparency
-    [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.5] setFill];
+    [[NSColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.6] setFill];
     NSRectFill(dirtyRect);
     
     // Border
-    [[NSColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.9] setStroke];
+    [[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] setStroke];
     NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:8 yRadius:8];
     [border setLineWidth:3.0];
     [border stroke];
@@ -67,14 +67,14 @@ bool bringWindowToFront(int windowId);
     [style setAlignment:NSTextAlignmentCenter];
     
     NSDictionary *attributes = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:14 weight:NSFontWeightMedium],
+        NSFontAttributeName: [NSFont systemFontOfSize:21 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: [NSColor whiteColor],
         NSParagraphStyleAttributeName: style,
         NSStrokeColorAttributeName: [NSColor blackColor],
         NSStrokeWidthAttributeName: @(-2.0)
     };
     
-    NSRect textRect = NSMakeRect(10, self.bounds.size.height - 60, self.bounds.size.width - 20, 50);
+    NSRect textRect = NSMakeRect(10, self.bounds.size.height - 90, self.bounds.size.width - 20, 80);
     [infoText drawInRect:textRect withAttributes:attributes];
 }
 
@@ -445,12 +445,26 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:initialFrame];
         [g_overlayWindow setContentView:g_overlayView];
         
-        // Create select button
-        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
+        // Create select button with blue theme
+        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 140, 50)];
         [g_selectButton setTitle:@"Select Window"];
         [g_selectButton setButtonType:NSButtonTypeMomentaryPushIn];
         [g_selectButton setBezelStyle:NSBezelStyleRounded];
-        [g_selectButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
+        [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
+        
+        // Blue themed button styling
+        [g_selectButton setWantsLayer:YES];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor]];
+        [g_selectButton.layer setCornerRadius:8.0];
+        [g_selectButton.layer setBorderColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:1.0] CGColor]];
+        [g_selectButton.layer setBorderWidth:2.0];
+        [g_selectButton setContentTintColor:[NSColor whiteColor]];
+        
+        // Add shadow for better visibility
+        [g_selectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
+        [g_selectButton.layer setShadowOffset:NSMakeSize(0, -2)];
+        [g_selectButton.layer setShadowRadius:4.0];
+        [g_selectButton.layer setShadowOpacity:0.3];
         
         // Create delegate for button action and timer
         g_delegate = [[WindowSelectorDelegate alloc] init];
