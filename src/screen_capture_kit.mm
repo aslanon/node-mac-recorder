@@ -5,6 +5,9 @@
 static SCStream *g_scStream = nil;
 static SCRecordingOutput *g_scRecordingOutput = nil;
 static NSURL *g_outputURL = nil;
+static ScreenCaptureKitRecorder *g_scDelegate = nil;
+static NSArray<SCRunningApplication *> *g_appsToExclude = nil;
+static NSArray<SCWindow *> *g_windowsToExclude = nil;
 
 @interface ScreenCaptureKitRecorder () <SCRecordingOutputDelegate>
 @end
@@ -110,25 +113,41 @@ static NSURL *g_outputURL = nil;
             }
         }
 
+        // Keep strong references to excluded items for the lifetime of the stream
+        g_appsToExclude = [appsToExclude copy];
+        g_windowsToExclude = [windowsToExclude copy];
+
         SCContentFilter *filter = nil;
         if (appsToExclude.count > 0) {
             if (@available(macOS 13.0, *)) {
-                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingApplications:appsToExclude exceptingWindows:windowsToExclude];
+                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingApplications:(g_appsToExclude ?: @[]) exceptingWindows:(g_windowsToExclude ?: @[])];
             }
         }
         if (!filter) {
             if (@available(macOS 13.0, *)) {
-                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:windowsToExclude];
+                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:(g_windowsToExclude ?: @[])];
             }
         }
         if (!filter) { return NO; }
 
         SCStreamConfiguration *cfg = [[SCStreamConfiguration alloc] init];
         if (captureArea && captureArea[@"width"] && captureArea[@"height"]) {
-            CGRect src = CGRectMake([captureArea[@"x"] doubleValue],
-                                    [captureArea[@"y"] doubleValue],
-                                    [captureArea[@"width"] doubleValue],
-                                    [captureArea[@"height"] doubleValue]);
+            CGRect displayFrame = targetDisplay.frame;
+            double x = [captureArea[@"x"] doubleValue];
+            double yBottom = [captureArea[@"y"] doubleValue];
+            double w = [captureArea[@"width"] doubleValue];
+            double h = [captureArea[@"height"] doubleValue];
+
+            // Convert bottom-left origin (used by legacy path) to top-left for SC
+            double y = displayFrame.size.height - yBottom - h;
+
+            // Clamp to display bounds to avoid invalid sourceRect
+            if (w < 1) w = 1; if (h < 1) h = 1;
+            if (x < 0) x = 0; if (y < 0) y = 0;
+            if (x + w > displayFrame.size.width) w = MAX(1, displayFrame.size.width - x);
+            if (y + h > displayFrame.size.height) h = MAX(1, displayFrame.size.height - y);
+
+            CGRect src = CGRectMake(x, y, w, h);
             cfg.sourceRect = src;
             cfg.width = (int)src.size.width;
             cfg.height = (int)src.size.height;
@@ -139,38 +158,63 @@ static NSURL *g_outputURL = nil;
         }
         cfg.showsCursor = captureCursorNum.boolValue;
         if (includeMicNum || includeSystemAudioNum) {
-            cfg.capturesAudio = YES;
+            if (@available(macOS 13.0, *)) {
+                cfg.capturesAudio = YES;
+            }
         }
 
-        g_scStream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
+        __block NSError *startErr = nil;
+        __block BOOL startedOK = NO;
+        dispatch_semaphore_t startSem = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (@available(macOS 15.0, *)) {
+                g_scStream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
 
-        if (@available(macOS 14.0, *)) {
-            SCRecordingOutputConfiguration *recCfg = [[SCRecordingOutputConfiguration alloc] init];
-            g_outputURL = [NSURL fileURLWithPath:outputPath];
-            recCfg.outputURL = g_outputURL;
-            recCfg.outputFileType = AVFileTypeQuickTimeMovie;
-            g_scRecordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recCfg delegate:(id<SCRecordingOutputDelegate>)delegate ?: (id<SCRecordingOutputDelegate>)self];
-            NSError *addErr = nil;
-            BOOL added = [g_scStream addRecordingOutput:g_scRecordingOutput error:&addErr];
-            if (!added) {
-                if (error) { *error = addErr ?: [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-3 userInfo:nil]; }
-                g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
-                return NO;
-            }
+                SCRecordingOutputConfiguration *recCfg = [[SCRecordingOutputConfiguration alloc] init];
+                g_outputURL = [NSURL fileURLWithPath:outputPath];
+                recCfg.outputURL = g_outputURL;
+                recCfg.outputFileType = AVFileTypeQuickTimeMovie;
 
-            __block NSError *startErr = nil;
-            dispatch_semaphore_t startSem = dispatch_semaphore_create(0);
-            [g_scStream startCaptureWithCompletionHandler:^(NSError * _Nullable err) {
-                startErr = err;
+                id<SCRecordingOutputDelegate> delegateObject = (id<SCRecordingOutputDelegate>)delegate;
+                if (!delegateObject) {
+                    if (!g_scDelegate) {
+                        g_scDelegate = [[ScreenCaptureKitRecorder alloc] init];
+                    }
+                    delegateObject = (id<SCRecordingOutputDelegate>)g_scDelegate;
+                }
+                g_scRecordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recCfg delegate:delegateObject];
+
+                NSError *addErr = nil;
+                BOOL added = [g_scStream addRecordingOutput:g_scRecordingOutput error:&addErr];
+                if (!added) {
+                    startErr = addErr ?: [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-3 userInfo:nil];
+                    g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
+                    dispatch_semaphore_signal(startSem);
+                    return;
+                }
+
+                [g_scStream startCaptureWithCompletionHandler:^(NSError * _Nullable err) {
+                    startErr = err;
+                    startedOK = (err == nil);
+                    dispatch_semaphore_signal(startSem);
+                }];
+            } else {
+                startErr = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"Requires macOS 15+"}];
                 dispatch_semaphore_signal(startSem);
-            }];
-            dispatch_semaphore_wait(startSem, DISPATCH_TIME_FOREVER);
-            if (startErr) {
-                if (error) { *error = startErr; }
-                [g_scStream removeRecordingOutput:g_scRecordingOutput error:nil];
-                g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
-                return NO;
             }
+        });
+        dispatch_semaphore_wait(startSem, DISPATCH_TIME_FOREVER);
+        if (startErr) {
+            if (error) { *error = startErr; }
+            if (g_scRecordingOutput && g_scStream) {
+                if (@available(macOS 15.0, *)) {
+                    [g_scStream removeRecordingOutput:g_scRecordingOutput error:nil];
+                }
+            }
+            g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
+            return NO;
+        }
+        if (startedOK) {
             return YES;
         }
 
