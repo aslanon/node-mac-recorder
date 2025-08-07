@@ -167,23 +167,12 @@ class MacRecorder extends EventEmitter {
 							targetDisplayId = display.id; // Use actual display ID, not array index
 							// Koordinatları display'e göre normalize et
 							adjustedX = targetWindow.x - display.x;
-							// Dynamic Y coordinate offset calculation
-							// Get display bounds using both coordinate systems to calculate difference
-							const nativeBinding = require("./build/Release/mac_recorder.node") || require("./build/Debug/mac_recorder.node");
-							const displays = nativeBinding.getDisplays();
-							const nativeDisplay = displays.find(d => d.id === targetDisplayId);
 							
-							if (nativeDisplay && display) {
-								// Calculate Y height difference between coordinate systems
-								// display.y comes from NSScreen.frame (window selector)
-								// nativeDisplay.y comes from CGDisplayBounds (recording)
-								const yOffset = Math.abs(display.y - nativeDisplay.y);
-								console.log(`📏 Dynamic Y offset calculated: ${yOffset}px (NSScreen: ${display.y}, CGDisplay: ${nativeDisplay.y})`);
-								adjustedY = Math.max(0, targetWindow.y - display.y - yOffset);
-							} else {
-								// Fallback to fixed offset if dynamic calculation fails
-								adjustedY = Math.max(0, targetWindow.y - display.y - 25);
-							}
+							// Y coordinate conversion: CGWindow (top-left) to AVFoundation (bottom-left)
+							// Overlay'deki dönüşümle aynı mantık: screenHeight - windowY - windowHeight
+							const displayHeight = parseInt(display.resolution.split("x")[1]);
+							const convertedY = displayHeight - targetWindow.y - targetWindow.height;
+							adjustedY = Math.max(0, convertedY - display.y);
 							break;
 						}
 					}
