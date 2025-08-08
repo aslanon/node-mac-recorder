@@ -23,9 +23,9 @@ CFLAGS_Debug := \
 	-O0 \
 	-gdwarf-2 \
 	-fno-strict-aliasing \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-Wall \
 	-Wendif-labels \
 	-W \
@@ -49,13 +49,13 @@ CFLAGS_OBJC_Debug :=
 CFLAGS_OBJCC_Debug :=
 
 INCS_Debug := \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
@@ -77,9 +77,9 @@ CFLAGS_Release := \
 	-O3 \
 	-gdwarf-2 \
 	-fno-strict-aliasing \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-Wall \
 	-Wendif-labels \
 	-W \
@@ -103,13 +103,13 @@ CFLAGS_OBJC_Release :=
 CFLAGS_OBJCC_Release :=
 
 INCS_Release := \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \
@@ -152,9 +152,9 @@ $(obj).$(TOOLSET)/$(TARGET)/%.o: $(obj)/%.mm FORCE_DO_CMD
 LDFLAGS_Debug := \
 	-undefined dynamic_lookup \
 	-Wl,-search_paths_first \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-L$(builddir) \
 	-stdlib=libc++
 
@@ -165,9 +165,9 @@ LIBTOOLFLAGS_Debug := \
 LDFLAGS_Release := \
 	-undefined dynamic_lookup \
 	-Wl,-search_paths_first \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-L$(builddir) \
 	-stdlib=libc++
 
@@ -176,15 +176,16 @@ LIBTOOLFLAGS_Release := \
 	-Wl,-search_paths_first
 
 LIBS := \
-	-framework AVFoundation \
-	-framework CoreMedia \
-	-framework CoreVideo \
 	-framework Foundation \
 	-framework AppKit \
 	-framework ScreenCaptureKit \
 	-framework ApplicationServices \
 	-framework Carbon \
-	-framework Accessibility
+	-framework Accessibility \
+	-framework CoreAudio \
+	-framework AVFoundation \
+	-framework CoreMedia \
+	-framework CoreVideo
 
 $(builddir)/mac_recorder.node: GYP_LDFLAGS := $(LDFLAGS_$(BUILDTYPE))
 $(builddir)/mac_recorder.node: LIBS := $(LIBS)

@@ -1,4 +1,3 @@
-#import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <AppKit/AppKit.h>
 
@@ -84,7 +83,7 @@
     NSURL *fileURL = [NSURL fileURLWithPath:filePath];
     CGImageDestinationRef destination = CGImageDestinationCreateWithURL(
         (__bridge CFURLRef)fileURL, 
-        kUTTypePNG, 
+        CFSTR("public.png"),
         1, 
         NULL
     );
@@ -149,7 +148,6 @@
 
 + (CGImageRef)createScreenshotFromDisplay:(CGDirectDisplayID)displayID 
                                      rect:(CGRect)rect {
-    
     if (CGRectIsNull(rect)) {
         // Capture entire display
         return CGDisplayCreateImage(displayID);

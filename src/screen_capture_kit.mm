@@ -44,25 +44,14 @@ static NSArray<SCWindow *> *g_windowsToExclude = nil;
     }
 
     @try {
-        __block SCShareableContent *content = nil;
-        __block NSError *contentErr = nil;
-
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        SCShareableContent *content = nil;
         if (@available(macOS 13.0, *)) {
-            [SCShareableContent getShareableContentExcludingDesktopWindows:NO
-                                                    onScreenWindowsOnly:YES
-                                                          completionHandler:^(SCShareableContent * _Nullable shareableContent, NSError * _Nullable err) {
-                content = shareableContent;
-                contentErr = err;
-                dispatch_semaphore_signal(sem);
-            }];
-        } else {
-            dispatch_semaphore_signal(sem);
+            NSLog(@"[SCK] Fetching shareable content...");
+            content = [SCShareableContent currentShareableContent];
         }
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-
-        if (!content || contentErr) {
-            if (error) { *error = contentErr ?: [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-2 userInfo:nil]; }
+        if (!content) {
+            if (error) { *error = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-2 userInfo:@{NSLocalizedDescriptionKey:@"Failed to get shareable content"}]; }
+            NSLog(@"[SCK] Failed to get shareable content");
             return NO;
         }
 
@@ -85,8 +74,9 @@ static NSArray<SCWindow *> *g_windowsToExclude = nil;
         }
         if (!targetDisplay) {
             targetDisplay = content.displays.firstObject;
-            if (!targetDisplay) { return NO; }
+            if (!targetDisplay) { NSLog(@"[SCK] No displays found"); return NO; }
         }
+        NSLog(@"[SCK] Using displayID=%u", targetDisplay.displayID);
 
         NSMutableArray<SCRunningApplication*> *appsToExclude = [NSMutableArray array];
         if (excludedBundleIds.count > 0) {
@@ -128,7 +118,7 @@ static NSArray<SCWindow *> *g_windowsToExclude = nil;
                 filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:(g_windowsToExclude ?: @[])];
             }
         }
-        if (!filter) { return NO; }
+        if (!filter) { NSLog(@"[SCK] Failed to create filter"); return NO; }
 
         SCStreamConfiguration *cfg = [[SCStreamConfiguration alloc] init];
         if (captureArea && captureArea[@"width"] && captureArea[@"height"]) {
@@ -163,58 +153,43 @@ static NSArray<SCWindow *> *g_windowsToExclude = nil;
             }
         }
 
-        __block NSError *startErr = nil;
-        __block BOOL startedOK = NO;
-        dispatch_semaphore_t startSem = dispatch_semaphore_create(0);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (@available(macOS 15.0, *)) {
-                g_scStream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
+        if (@available(macOS 15.0, *)) {
+            g_scStream = [[SCStream alloc] initWithFilter:filter configuration:cfg delegate:nil];
+            NSLog(@"[SCK] Stream created. w=%d h=%d cursor=%@ audio=%@", cfg.width, cfg.height, cfg.showsCursor?@"YES":@"NO", (@available(macOS 13.0, *) ? (cfg.capturesAudio?@"YES":@"NO") : @"N/A"));
 
-                SCRecordingOutputConfiguration *recCfg = [[SCRecordingOutputConfiguration alloc] init];
-                g_outputURL = [NSURL fileURLWithPath:outputPath];
-                recCfg.outputURL = g_outputURL;
-                recCfg.outputFileType = AVFileTypeQuickTimeMovie;
+            SCRecordingOutputConfiguration *recCfg = [[SCRecordingOutputConfiguration alloc] init];
+            g_outputURL = [NSURL fileURLWithPath:outputPath];
+            recCfg.outputURL = g_outputURL;
+            recCfg.outputFileType = AVFileTypeQuickTimeMovie;
 
-                id<SCRecordingOutputDelegate> delegateObject = (id<SCRecordingOutputDelegate>)delegate;
-                if (!delegateObject) {
-                    if (!g_scDelegate) {
-                        g_scDelegate = [[ScreenCaptureKitRecorder alloc] init];
-                    }
-                    delegateObject = (id<SCRecordingOutputDelegate>)g_scDelegate;
+            id<SCRecordingOutputDelegate> delegateObject = (id<SCRecordingOutputDelegate>)delegate;
+            if (!delegateObject) {
+                if (!g_scDelegate) {
+                    g_scDelegate = [[ScreenCaptureKitRecorder alloc] init];
                 }
-                g_scRecordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recCfg delegate:delegateObject];
-
-                NSError *addErr = nil;
-                BOOL added = [g_scStream addRecordingOutput:g_scRecordingOutput error:&addErr];
-                if (!added) {
-                    startErr = addErr ?: [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-3 userInfo:nil];
-                    g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
-                    dispatch_semaphore_signal(startSem);
-                    return;
-                }
-
-                [g_scStream startCaptureWithCompletionHandler:^(NSError * _Nullable err) {
-                    startErr = err;
-                    startedOK = (err == nil);
-                    dispatch_semaphore_signal(startSem);
-                }];
-            } else {
-                startErr = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"Requires macOS 15+"}];
-                dispatch_semaphore_signal(startSem);
+                delegateObject = (id<SCRecordingOutputDelegate>)g_scDelegate;
             }
-        });
-        dispatch_semaphore_wait(startSem, DISPATCH_TIME_FOREVER);
-        if (startErr) {
-            if (error) { *error = startErr; }
-            if (g_scRecordingOutput && g_scStream) {
-                if (@available(macOS 15.0, *)) {
+            g_scRecordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recCfg delegate:delegateObject];
+
+            NSError *addErr = nil;
+            BOOL added = [g_scStream addRecordingOutput:g_scRecordingOutput error:&addErr];
+            if (!added) {
+                NSLog(@"[SCK] addRecordingOutput failed: %@", addErr.localizedDescription);
+                if (error) { *error = addErr ?: [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-3 userInfo:nil]; }
+                g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
+                return NO;
+            }
+
+            [g_scStream startCaptureWithCompletionHandler:^(NSError * _Nullable err) {
+                if (err) {
+                    NSLog(@"[SCK] startCapture error: %@", err.localizedDescription);
                     [g_scStream removeRecordingOutput:g_scRecordingOutput error:nil];
+                    g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
+                } else {
+                    NSLog(@"[SCK] startCapture OK");
                 }
-            }
-            g_scRecordingOutput = nil; g_scStream = nil; g_outputURL = nil;
-            return NO;
-        }
-        if (startedOK) {
+            }];
+            // Return immediately; capture will start asynchronously
             return YES;
         }
 

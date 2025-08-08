@@ -15,7 +15,9 @@
     "default_configuration": "Release",
     "defines": [],
     "include_dirs": [],
-    "libraries": []
+    "libraries": [],
+    "msvs_configuration_platform": "ARM64",
+    "xcode_configuration_platform": "arm64"
   },
   "variables": {
     "arm_fpu": "neon",
@@ -419,7 +421,7 @@
     "ossfuzz": "false",
     "shlib_suffix": "131.dylib",
     "single_executable_application": "true",
-    "target_arch": "x64",
+    "target_arch": "arm64",
     "ubsan": 0,
     "use_prefix_to_find_headers": "false",
     "v8_enable_31bit_smis_on_64bit_arch": 0,
@@ -443,19 +445,8 @@
     "v8_use_siphash": 1,
     "want_separate_host_toolset": 0,
     "xcode_version": "14.0",
-    "nodedir": "/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0",
+    "nodedir": "/Users/onur/Library/Caches/node-gyp/23.5.0",
     "python": "/usr/local/opt/python@3.13/bin/python3.13",
-    "standalone_static_library": 1,
-    "target": "24.0.0",
-    "global_prefix": "/Users/onur/.nvm/versions/node/v23.5.0",
-    "local_prefix": "/Users/onur/codes/node-mac-recorder",
-    "globalconfig": "/Users/onur/.nvm/versions/node/v23.5.0/etc/npmrc",
-    "init_module": "/Users/onur/.npm-init.js",
-    "userconfig": "/Users/onur/.npmrc",
-    "npm_version": "10.9.2",
-    "node_gyp": "/Users/onur/.nvm/versions/node/v23.5.0/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js",
-    "cache": "/Users/onur/.npm",
-    "user_agent": "npm/10.9.2 node/v23.5.0 darwin arm64 workspaces/false",
-    "prefix": "/Users/onur/.nvm/versions/node/v23.5.0"
+    "standalone_static_library": 1
   }
 }

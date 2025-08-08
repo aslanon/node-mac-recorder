@@ -1,6 +1,5 @@
 #import <napi.h>
-#import <AVFoundation/AVFoundation.h>
-#import <CoreMedia/CoreMedia.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -17,38 +16,32 @@ Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 // Window selector function declarations
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
 
-@interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
+@interface MacRecorderDelegate : NSObject
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
 @end
 
 @implementation MacRecorderDelegate
-- (void)captureOutput:(AVCaptureFileOutput *)output
-didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
-      fromConnections:(NSArray<AVCaptureConnection *> *)connections
-                error:(NSError *)error {
+- (void)recordingDidStart {
+    NSLog(@"[mac_recorder] ScreenCaptureKit recording started");
+}
+- (void)recordingDidFinish:(NSURL *)outputURL error:(NSError *)error {
+    if (error) {
+        NSLog(@"[mac_recorder] ScreenCaptureKit recording finished with error: %@", error.localizedDescription);
+    } else {
+        NSLog(@"[mac_recorder] ScreenCaptureKit recording finished OK → %@", outputURL.path);
+    }
     if (self.completionHandler) {
-        self.completionHandler(outputFileURL, error);
+        self.completionHandler(outputURL, error);
     }
 }
 @end
 
 // Global state for recording
-static AVCaptureSession *g_captureSession = nil;
-static AVCaptureMovieFileOutput *g_movieFileOutput = nil;
-static AVCaptureScreenInput *g_screenInput = nil;
-static AVCaptureDeviceInput *g_audioInput = nil;
 static MacRecorderDelegate *g_delegate = nil;
 static bool g_isRecording = false;
 
 // Helper function to cleanup recording resources
 void cleanupRecording() {
-    if (g_captureSession) {
-        [g_captureSession stopRunning];
-        g_captureSession = nil;
-    }
-    g_movieFileOutput = nil;
-    g_screenInput = nil;
-    g_audioInput = nil;
     g_delegate = nil;
     g_isRecording = false;
 }
@@ -67,6 +60,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     std::string outputPath = info[0].As<Napi::String>().Utf8Value();
+    NSLog(@"[mac_recorder] StartRecording: output=%@", [NSString stringWithUTF8String:outputPath.c_str()]);
     
     // Options parsing (shared)
     CGRect captureRect = CGRectNull;
@@ -203,9 +197,10 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // Prefer ScreenCaptureKit if requested or if exclusion lists provided and available
-        bool wantsSC = forceUseSC || excludedAppBundleIds.count > 0 || excludedPIDs.count > 0 || excludedWindowIds.count > 0 || autoExcludeSelf;
-        if (wantsSC && [ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
+        // Always prefer ScreenCaptureKit if available
+        NSLog(@"[mac_recorder] Checking ScreenCaptureKit availability");
+        if (@available(macOS 12.3, *)) {
+            if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
             NSMutableDictionary *scConfig = [@{} mutableCopy];
             scConfig[@"displayId"] = @(displayID);
             if (!CGRectIsNull(captureRect)) {
@@ -233,168 +228,26 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             scConfig[@"outputPath"] = [NSString stringWithUTF8String:outputPathStr.c_str()];
 
             NSError *scErr = nil;
-            BOOL ok = [ScreenCaptureKitRecorder startRecordingWithConfiguration:scConfig delegate:nil error:&scErr];
+            NSLog(@"[mac_recorder] Using ScreenCaptureKit path (displayId=%u)", displayID);
+            
+            // Create and set up delegate
+            g_delegate = [[MacRecorderDelegate alloc] init];
+            
+            BOOL ok = [ScreenCaptureKitRecorder startRecordingWithConfiguration:scConfig delegate:g_delegate error:&scErr];
             if (ok) {
                 g_isRecording = true;
+                NSLog(@"[mac_recorder] ScreenCaptureKit startRecording → OK");
                 return Napi::Boolean::New(env, true);
             }
-            // If SC failed, fall through to AVFoundation as fallback
-        }
-        // Create capture session
-        g_captureSession = [[AVCaptureSession alloc] init];
-        [g_captureSession beginConfiguration];
-        
-        // Set session preset
-        g_captureSession.sessionPreset = AVCaptureSessionPresetHigh;
-        
-        // Create screen input with selected display
-        g_screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:displayID];
-        
-        if (!CGRectIsNull(captureRect)) {
-            g_screenInput.cropRect = captureRect;
-        }
-        
-        // Set cursor capture
-        g_screenInput.capturesCursor = captureCursor;
-        
-        if ([g_captureSession canAddInput:g_screenInput]) {
-            [g_captureSession addInput:g_screenInput];
+            NSLog(@"[mac_recorder] ScreenCaptureKit startRecording → FAIL: %@", scErr.localizedDescription);
+            cleanupRecording();
+            return Napi::Boolean::New(env, false);
+            }
         } else {
+            NSLog(@"[mac_recorder] ScreenCaptureKit not available");
             cleanupRecording();
             return Napi::Boolean::New(env, false);
         }
-        
-        // Add microphone input if requested
-        if (includeMicrophone) {
-            AVCaptureDevice *audioDevice = nil;
-            
-            if (audioDeviceId) {
-                // Try to find the specified device
-                NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-                NSLog(@"[DEBUG] Looking for audio device with ID: %@", audioDeviceId);
-                NSLog(@"[DEBUG] Available audio devices:");
-                for (AVCaptureDevice *device in devices) {
-                    NSLog(@"[DEBUG] - Device: %@ (ID: %@)", device.localizedName, device.uniqueID);
-                    if ([device.uniqueID isEqualToString:audioDeviceId]) {
-                        NSLog(@"[DEBUG] Found matching device: %@", device.localizedName);
-                        audioDevice = device;
-                        break;
-                    }
-                }
-                
-                if (!audioDevice) {
-                    NSLog(@"[DEBUG] Specified audio device not found, falling back to default");
-                }
-            }
-            
-            // Fallback to default device if specified device not found
-            if (!audioDevice) {
-                audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
-                NSLog(@"[DEBUG] Using default audio device: %@ (ID: %@)", audioDevice.localizedName, audioDevice.uniqueID);
-            }
-            
-            if (audioDevice) {
-                NSError *error;
-                g_audioInput = [[AVCaptureDeviceInput alloc] initWithDevice:audioDevice error:&error];
-                if (g_audioInput && [g_captureSession canAddInput:g_audioInput]) {
-                    [g_captureSession addInput:g_audioInput];
-                    NSLog(@"[DEBUG] Successfully added audio input device");
-                } else {
-                    NSLog(@"[DEBUG] Failed to add audio input device: %@", error);
-                }
-            }
-        }
-        
-        // System audio configuration
-        if (includeSystemAudio) {
-            // Enable audio capture in screen input
-            g_screenInput.capturesMouseClicks = YES;
-            
-            // Try to add system audio input using Core Audio
-            // This approach captures system audio by creating a virtual audio device
-            if (@available(macOS 10.15, *)) {
-                // Configure screen input for better audio capture
-                g_screenInput.capturesCursor = captureCursor;
-                g_screenInput.capturesMouseClicks = YES;
-                
-                // Try to find and add system audio device (like Soundflower, BlackHole, etc.)
-                NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-                AVCaptureDevice *systemAudioDevice = nil;
-                
-                // If specific system audio device ID is provided, try to find it first
-                if (systemAudioDeviceId) {
-                    for (AVCaptureDevice *device in audioDevices) {
-                        if ([device.uniqueID isEqualToString:systemAudioDeviceId]) {
-                            systemAudioDevice = device;
-                            NSLog(@"[DEBUG] Found specified system audio device: %@ (ID: %@)", device.localizedName, device.uniqueID);
-                            break;
-                        }
-                    }
-                }
-                
-                // If no specific device found or specified, look for known system audio devices
-                if (!systemAudioDevice) {
-                    for (AVCaptureDevice *device in audioDevices) {
-                        NSString *deviceName = [device.localizedName lowercaseString];
-                        // Check for common system audio capture devices
-                        if ([deviceName containsString:@"soundflower"] || 
-                            [deviceName containsString:@"blackhole"] ||
-                            [deviceName containsString:@"loopback"] ||
-                            [deviceName containsString:@"system audio"] ||
-                            [deviceName containsString:@"aggregate"]) {
-                            systemAudioDevice = device;
-                            NSLog(@"[DEBUG] Auto-detected system audio device: %@", device.localizedName);
-                            break;
-                        }
-                    }
-                }
-                
-                // If we found a system audio device, add it as an additional input
-                if (systemAudioDevice && !includeMicrophone) {
-                    // Only add system audio device if microphone is not already added
-                    NSError *error;
-                    AVCaptureDeviceInput *systemAudioInput = [[AVCaptureDeviceInput alloc] initWithDevice:systemAudioDevice error:&error];
-                    if (systemAudioInput && [g_captureSession canAddInput:systemAudioInput]) {
-                        [g_captureSession addInput:systemAudioInput];
-                        NSLog(@"[DEBUG] Successfully added system audio device: %@", systemAudioDevice.localizedName);
-                    } else if (error) {
-                        NSLog(@"[DEBUG] Failed to add system audio device: %@", error.localizedDescription);
-                    }
-                } else if (includeSystemAudio && !systemAudioDevice) {
-                    NSLog(@"[DEBUG] System audio requested but no suitable device found. Available devices:");
-                    for (AVCaptureDevice *device in audioDevices) {
-                        NSLog(@"[DEBUG] - %@ (ID: %@)", device.localizedName, device.uniqueID);
-                    }
-                }
-            }
-        } else {
-            // Explicitly disable audio capture if not requested
-            g_screenInput.capturesMouseClicks = NO;
-        }
-        
-        // Create movie file output
-        g_movieFileOutput = [[AVCaptureMovieFileOutput alloc] init];
-        if ([g_captureSession canAddOutput:g_movieFileOutput]) {
-            [g_captureSession addOutput:g_movieFileOutput];
-        } else {
-            cleanupRecording();
-            return Napi::Boolean::New(env, false);
-        }
-        
-        [g_captureSession commitConfiguration];
-        
-        // Start session
-        [g_captureSession startRunning];
-        
-        // Create delegate
-        g_delegate = [[MacRecorderDelegate alloc] init];
-        
-        // Start recording
-        NSURL *outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outputPath.c_str()]];
-        [g_movieFileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:g_delegate];
-        
-        g_isRecording = true;
-        return Napi::Boolean::New(env, true);
         
     } @catch (NSException *exception) {
         cleanupRecording();
@@ -411,15 +264,16 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        if (g_movieFileOutput) {
-            [g_movieFileOutput stopRecording];
-            [g_captureSession stopRunning];
-            g_isRecording = false;
-            return Napi::Boolean::New(env, true);
+        NSLog(@"[mac_recorder] StopRecording called");
+        
+        // Stop ScreenCaptureKit recording
+        NSLog(@"[mac_recorder] Stopping ScreenCaptureKit stream");
+        if (@available(macOS 12.3, *)) {
+            [ScreenCaptureKitRecorder stopRecording];
         }
-        // Try ScreenCaptureKit stop
-        [ScreenCaptureKitRecorder stopRecording];
         g_isRecording = false;
+        cleanupRecording();
+        NSLog(@"[mac_recorder] ScreenCaptureKit stopped");
         return Napi::Boolean::New(env, true);
         
     } @catch (NSException *exception) {
@@ -536,17 +390,101 @@ Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
     @try {
         NSMutableArray *devices = [NSMutableArray array];
         
-        // Get all audio devices
-        NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+        // Use CoreAudio to get audio devices since we're removing AVFoundation
+        AudioObjectPropertyAddress propertyAddress = {
+            kAudioHardwarePropertyDevices,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        };
         
-        for (AVCaptureDevice *device in audioDevices) {
-            [devices addObject:@{
-                @"id": device.uniqueID,
-                @"name": device.localizedName,
-                @"manufacturer": device.manufacturer ?: @"Unknown",
-                @"isDefault": @([device isEqual:[AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio]])
-            }];
+        UInt32 dataSize = 0;
+        OSStatus status = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize);
+        if (status != noErr) {
+            return Napi::Array::New(env, 0);
         }
+        
+        UInt32 deviceCount = dataSize / sizeof(AudioDeviceID);
+        AudioDeviceID *audioDevices = (AudioDeviceID *)malloc(dataSize);
+        
+        status = AudioObjectGetPropertyData(kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize, audioDevices);
+        if (status != noErr) {
+            free(audioDevices);
+            return Napi::Array::New(env, 0);
+        }
+        
+        for (UInt32 i = 0; i < deviceCount; i++) {
+            AudioDeviceID deviceID = audioDevices[i];
+            
+            // Check if device has input streams
+            AudioObjectPropertyAddress streamsAddress = {
+                kAudioDevicePropertyStreams,
+                kAudioDevicePropertyScopeInput,
+                kAudioObjectPropertyElementMain
+            };
+            
+            UInt32 streamsSize = 0;
+            status = AudioObjectGetPropertyDataSize(deviceID, &streamsAddress, 0, NULL, &streamsSize);
+            if (status != noErr || streamsSize == 0) {
+                continue; // Skip output-only devices
+            }
+            
+            // Get device name
+            AudioObjectPropertyAddress nameAddress = {
+                kAudioDevicePropertyDeviceNameCFString,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            
+            CFStringRef deviceNameRef = NULL;
+            UInt32 nameSize = sizeof(CFStringRef);
+            status = AudioObjectGetPropertyData(deviceID, &nameAddress, 0, NULL, &nameSize, &deviceNameRef);
+            
+            NSString *deviceName = @"Unknown Device";
+            if (status == noErr && deviceNameRef) {
+                deviceName = (__bridge NSString *)deviceNameRef;
+            }
+            
+            // Get device UID
+            AudioObjectPropertyAddress uidAddress = {
+                kAudioDevicePropertyDeviceUID,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            
+            CFStringRef deviceUIDRef = NULL;
+            UInt32 uidSize = sizeof(CFStringRef);
+            status = AudioObjectGetPropertyData(deviceID, &uidAddress, 0, NULL, &uidSize, &deviceUIDRef);
+            
+            NSString *deviceUID = [NSString stringWithFormat:@"%u", deviceID];
+            if (status == noErr && deviceUIDRef) {
+                deviceUID = (__bridge NSString *)deviceUIDRef;
+            }
+            
+            // Check if this is the default input device
+            AudioObjectPropertyAddress defaultAddress = {
+                kAudioHardwarePropertyDefaultInputDevice,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            
+            AudioDeviceID defaultDeviceID = kAudioDeviceUnknown;
+            UInt32 defaultSize = sizeof(AudioDeviceID);
+            AudioObjectGetPropertyData(kAudioObjectSystemObject, &defaultAddress, 0, NULL, &defaultSize, &defaultDeviceID);
+            
+            BOOL isDefault = (deviceID == defaultDeviceID);
+            
+            [devices addObject:@{
+                @"id": deviceUID,
+                @"name": deviceName,
+                @"manufacturer": @"Unknown",
+                @"isDefault": @(isDefault)
+            }];
+            
+            if (deviceNameRef) CFRelease(deviceNameRef);
+            if (deviceUIDRef) CFRelease(deviceUIDRef);
+        }
+        
+        free(audioDevices);
         
         // Convert to NAPI array
         Napi::Array result = Napi::Array::New(env, devices.count);
@@ -851,35 +789,42 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     @try {
-        // Check screen recording permission
+        // Check screen recording permission using ScreenCaptureKit
         bool hasScreenPermission = true;
         
-        if (@available(macOS 10.15, *)) {
-            // Try to create a display stream to test permissions
-            CGDisplayStreamRef stream = CGDisplayStreamCreate(
-                CGMainDisplayID(), 
-                1, 1, 
-                kCVPixelFormatType_32BGRA, 
-                nil, 
-                ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
-                    // Empty handler
-                }
-            );
-            
-            if (stream) {
-                CFRelease(stream);
-                hasScreenPermission = true;
-            } else {
+        if (@available(macOS 12.3, *)) {
+            // Try to get shareable content to test ScreenCaptureKit permissions
+            @try {
+                SCShareableContent *content = [SCShareableContent currentShareableContent];
+                hasScreenPermission = (content != nil && content.displays.count > 0);
+            } @catch (NSException *exception) {
                 hasScreenPermission = false;
+            }
+        } else {
+            // Fallback for older macOS versions
+            if (@available(macOS 10.15, *)) {
+                // Try to create a display stream to test permissions
+                CGDisplayStreamRef stream = CGDisplayStreamCreate(
+                    CGMainDisplayID(), 
+                    1, 1, 
+                    kCVPixelFormatType_32BGRA, 
+                    nil, 
+                    ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
+                        // Empty handler
+                    }
+                );
+                
+                if (stream) {
+                    CFRelease(stream);
+                    hasScreenPermission = true;
+                } else {
+                    hasScreenPermission = false;
+                }
             }
         }
         
-        // Check audio permission
+        // For audio permission, we'll use a simpler check since we're using CoreAudio
         bool hasAudioPermission = true;
-        if (@available(macOS 10.14, *)) {
-            AVAuthorizationStatus audioStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-            hasAudioPermission = (audioStatus == AVAuthorizationStatusAuthorized);
-        }
         
         return Napi::Boolean::New(env, hasScreenPermission && hasAudioPermission);
         
@@ -901,8 +846,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // ScreenCaptureKit availability (optional for clients)
     exports.Set(Napi::String::New(env, "isScreenCaptureKitAvailable"), Napi::Function::New(env, [](const Napi::CallbackInfo& info){
         Napi::Env env = info.Env();
-        bool available = [ScreenCaptureKitRecorder isScreenCaptureKitAvailable];
-        return Napi::Boolean::New(env, available);
+        if (@available(macOS 12.3, *)) {
+            bool available = [ScreenCaptureKitRecorder isScreenCaptureKitAvailable];
+            return Napi::Boolean::New(env, available);
+        }
+        return Napi::Boolean::New(env, false);
     }));
     
     // Thumbnail functions
