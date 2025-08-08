@@ -129,6 +129,7 @@ class MacRecorder extends EventEmitter {
 			audioDeviceId: options.audioDeviceId || null, // null = default device
 			systemAudioDeviceId: options.systemAudioDeviceId || null, // null = auto-detect system audio device
 			captureArea: options.captureArea || null,
+<<<<<<< HEAD
 			useScreenCaptureKit: options.useScreenCaptureKit || false,
 			excludedAppBundleIds: options.excludedAppBundleIds || [],
 			excludedPIDs: options.excludedPIDs || [],
@@ -137,6 +138,13 @@ class MacRecorder extends EventEmitter {
 				typeof options.autoExcludeSelf === "boolean"
 					? options.autoExcludeSelf
 					: !!(process.versions && process.versions.electron),
+=======
+			// Exclusion options
+			excludeCurrentApp: options.excludeCurrentApp || false,
+			excludeWindowIds: Array.isArray(options.excludeWindowIds)
+				? options.excludeWindowIds
+				: [],
+>>>>>>> screencapture
 		};
 	}
 
@@ -297,11 +305,17 @@ class MacRecorder extends EventEmitter {
 					windowId: this.options.windowId || null, // null = tam ekran
 					audioDeviceId: this.options.audioDeviceId || null, // null = default device
 					systemAudioDeviceId: this.options.systemAudioDeviceId || null, // null = auto-detect system audio device
+<<<<<<< HEAD
 					useScreenCaptureKit: this.options.useScreenCaptureKit || false,
 					excludedAppBundleIds: this.options.excludedAppBundleIds || [],
 					excludedPIDs: this.options.excludedPIDs || [],
 					excludedWindowIds: this.options.excludedWindowIds || [],
 					autoExcludeSelf: this.options.autoExcludeSelf === true,
+=======
+					// Exclusion options passthrough
+					excludeCurrentApp: this.options.excludeCurrentApp || false,
+					excludeWindowIds: this.options.excludeWindowIds || [],
+>>>>>>> screencapture
 				};
 
 				// Manuel captureArea varsa onu kullan

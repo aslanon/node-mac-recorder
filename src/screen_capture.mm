@@ -1,17 +1,11 @@
+<<<<<<< HEAD
+=======
+#import "screen_capture.h"
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
+#import <AVFoundation/AVFoundation.h>
+>>>>>>> screencapture
 #import <CoreGraphics/CoreGraphics.h>
 #import <AppKit/AppKit.h>
-
-@interface ScreenCapture : NSObject
-
-+ (NSArray *)getAvailableDisplays;
-+ (BOOL)captureDisplay:(CGDirectDisplayID)displayID 
-                toFile:(NSString *)filePath 
-                  rect:(CGRect)rect
-           includeCursor:(BOOL)includeCursor;
-+ (CGImageRef)createScreenshotFromDisplay:(CGDirectDisplayID)displayID 
-                                     rect:(CGRect)rect;
-
-@end
 
 @implementation ScreenCapture
 
@@ -83,7 +77,11 @@
     NSURL *fileURL = [NSURL fileURLWithPath:filePath];
     CGImageDestinationRef destination = CGImageDestinationCreateWithURL(
         (__bridge CFURLRef)fileURL, 
+<<<<<<< HEAD
         CFSTR("public.png"),
+=======
+        (__bridge CFStringRef)@"public.png", 
+>>>>>>> screencapture
         1, 
         NULL
     );
@@ -95,51 +93,15 @@
     
     // Add cursor if requested
     if (includeCursor) {
-        // Get cursor position
-        CGPoint cursorPos = CGEventGetLocation(CGEventCreate(NULL));
-        
-        // Create mutable image context
-        size_t width = CGImageGetWidth(screenshot);
-        size_t height = CGImageGetHeight(screenshot);
-        
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-        CGContextRef context = CGBitmapContextCreate(
-            NULL, width, height, 8, width * 4,
-            colorSpace, kCGImageAlphaPremultipliedFirst
-        );
-        
-        if (context) {
-            // Draw original screenshot
-            CGContextDrawImage(context, CGRectMake(0, 0, width, height), screenshot);
-            
-            // Draw cursor (simplified - just a small circle)
-            CGRect displayBounds = CGDisplayBounds(displayID);
-            CGFloat relativeX = cursorPos.x - displayBounds.origin.x;
-            CGFloat relativeY = height - (cursorPos.y - displayBounds.origin.y);
-            
-            if (!CGRectIsNull(rect)) {
-                relativeX -= rect.origin.x;
-                relativeY -= rect.origin.y;
-            }
-            
-            if (relativeX >= 0 && relativeX < width && relativeY >= 0 && relativeY < height) {
-                CGContextSetRGBFillColor(context, 1.0, 0.0, 0.0, 0.8); // Red cursor
-                CGContextFillEllipseInRect(context, CGRectMake(relativeX - 5, relativeY - 5, 10, 10));
-            }
-            
-            CGImageRef finalImage = CGBitmapContextCreateImage(context);
-            CGContextRelease(context);
-            CGImageRelease(screenshot);
-            screenshot = finalImage;
-        }
-        
-        CGColorSpaceRelease(colorSpace);
+        // For simplicity, we'll just save the image without cursor compositing
+        // Cursor compositing would require more complex image manipulation
     }
     
-    // Save image
+    // Write the image
     CGImageDestinationAddImage(destination, screenshot, NULL);
     BOOL success = CGImageDestinationFinalize(destination);
     
+    // Cleanup
     CFRelease(destination);
     CGImageRelease(screenshot);
     
@@ -148,13 +110,148 @@
 
 + (CGImageRef)createScreenshotFromDisplay:(CGDirectDisplayID)displayID 
                                      rect:(CGRect)rect {
+<<<<<<< HEAD
     if (CGRectIsNull(rect)) {
         // Capture entire display
         return CGDisplayCreateImage(displayID);
     } else {
         // Capture specific rect
         return CGDisplayCreateImageForRect(displayID, rect);
+=======
+    if (CGRectIsNull(rect) || CGRectIsEmpty(rect)) {
+        rect = CGDisplayBounds(displayID);
     }
+    
+    return CGDisplayCreateImageForRect(displayID, rect);
 }
 
-@end 
+@end
+
+// NAPI Functions for Legacy Fallback
+
+// NAPI Function: Get Available Displays (Legacy)
+Napi::Value GetAvailableDisplays(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    NSArray *displays = [ScreenCapture getAvailableDisplays];
+    Napi::Array displaysArray = Napi::Array::New(env);
+    
+    for (NSUInteger i = 0; i < [displays count]; i++) {
+        NSDictionary *displayInfo = displays[i];
+        
+        Napi::Object displayObj = Napi::Object::New(env);
+        displayObj.Set("id", Napi::Number::New(env, [[displayInfo objectForKey:@"id"] unsignedIntValue]));
+        displayObj.Set("name", Napi::String::New(env, [[displayInfo objectForKey:@"name"] UTF8String]));
+        displayObj.Set("width", Napi::Number::New(env, [[displayInfo objectForKey:@"width"] doubleValue]));
+        displayObj.Set("height", Napi::Number::New(env, [[displayInfo objectForKey:@"height"] doubleValue]));
+        
+        // Create frame object
+        Napi::Object frameObj = Napi::Object::New(env);
+        frameObj.Set("x", Napi::Number::New(env, [[displayInfo objectForKey:@"x"] doubleValue]));
+        frameObj.Set("y", Napi::Number::New(env, [[displayInfo objectForKey:@"y"] doubleValue]));
+        frameObj.Set("width", Napi::Number::New(env, [[displayInfo objectForKey:@"width"] doubleValue]));
+        frameObj.Set("height", Napi::Number::New(env, [[displayInfo objectForKey:@"height"] doubleValue]));
+        
+        displayObj.Set("frame", frameObj);
+        displayObj.Set("isPrimary", Napi::Boolean::New(env, [[displayInfo objectForKey:@"isPrimary"] boolValue]));
+        
+        displaysArray.Set(static_cast<uint32_t>(i), displayObj);
+>>>>>>> screencapture
+    }
+    
+    return displaysArray;
+}
+
+// NAPI Function: Get Window List (Legacy)
+Napi::Value GetWindowList(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    // Get window list using CGWindowList
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, 
+        kCGNullWindowID
+    );
+    
+    if (!windowList) {
+        return Napi::Array::New(env);
+    }
+    
+    Napi::Array windowsArray = Napi::Array::New(env);
+    CFIndex count = CFArrayGetCount(windowList);
+    uint32_t index = 0;
+    
+    for (CFIndex i = 0; i < count; i++) {
+        CFDictionaryRef windowInfo = (CFDictionaryRef)CFArrayGetValueAtIndex(windowList, i);
+        
+        // Get window ID
+        CFNumberRef windowIDRef = (CFNumberRef)CFDictionaryGetValue(windowInfo, kCGWindowNumber);
+        uint32_t windowID;
+        CFNumberGetValue(windowIDRef, kCFNumberSInt32Type, &windowID);
+        
+        // Get window title
+        CFStringRef windowTitleRef = (CFStringRef)CFDictionaryGetValue(windowInfo, kCGWindowName);
+        std::string windowTitle = "";
+        if (windowTitleRef) {
+            const char *titleCStr = CFStringGetCStringPtr(windowTitleRef, kCFStringEncodingUTF8);
+            if (titleCStr) {
+                windowTitle = std::string(titleCStr);
+            } else {
+                // Fallback for when CFStringGetCStringPtr returns NULL
+                CFIndex length = CFStringGetLength(windowTitleRef);
+                CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                char *buffer = (char *)malloc(maxSize);
+                if (CFStringGetCString(windowTitleRef, buffer, maxSize, kCFStringEncodingUTF8)) {
+                    windowTitle = std::string(buffer);
+                }
+                free(buffer);
+            }
+        }
+        
+        // Get owner name
+        CFStringRef ownerNameRef = (CFStringRef)CFDictionaryGetValue(windowInfo, kCGWindowOwnerName);
+        std::string ownerName = "";
+        if (ownerNameRef) {
+            const char *ownerCStr = CFStringGetCStringPtr(ownerNameRef, kCFStringEncodingUTF8);
+            if (ownerCStr) {
+                ownerName = std::string(ownerCStr);
+            } else {
+                CFIndex length = CFStringGetLength(ownerNameRef);
+                CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+                char *buffer = (char *)malloc(maxSize);
+                if (CFStringGetCString(ownerNameRef, buffer, maxSize, kCFStringEncodingUTF8)) {
+                    ownerName = std::string(buffer);
+                }
+                free(buffer);
+            }
+        }
+        
+        // Get window bounds
+        CFDictionaryRef boundsRef = (CFDictionaryRef)CFDictionaryGetValue(windowInfo, kCGWindowBounds);
+        CGRect bounds = CGRectNull;
+        if (boundsRef) {
+            CGRectMakeWithDictionaryRepresentation(boundsRef, &bounds);
+        }
+        
+        // Filter out small/invalid windows
+        if (bounds.size.width > 50 && bounds.size.height > 50 && !windowTitle.empty()) {
+            Napi::Object windowObj = Napi::Object::New(env);
+            windowObj.Set("id", Napi::Number::New(env, windowID));
+            windowObj.Set("title", Napi::String::New(env, windowTitle));
+            windowObj.Set("ownerName", Napi::String::New(env, ownerName));
+            
+            // Create bounds object
+            Napi::Object boundsObj = Napi::Object::New(env);
+            boundsObj.Set("x", Napi::Number::New(env, bounds.origin.x));
+            boundsObj.Set("y", Napi::Number::New(env, bounds.origin.y));
+            boundsObj.Set("width", Napi::Number::New(env, bounds.size.width));
+            boundsObj.Set("height", Napi::Number::New(env, bounds.size.height));
+            
+            windowObj.Set("bounds", boundsObj);
+            
+            windowsArray.Set(index++, windowObj);
+        }
+    }
+    
+    CFRelease(windowList);
+    return windowsArray;
+}
