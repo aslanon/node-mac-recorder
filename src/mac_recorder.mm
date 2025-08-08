@@ -26,6 +26,7 @@ API_AVAILABLE(macos(12.3))
 @property (nonatomic, strong) AVAssetWriter *assetWriter;
 @property (nonatomic, strong) AVAssetWriterInput *videoInput;
 @property (nonatomic, strong) AVAssetWriterInput *audioInput;
+@property (nonatomic, strong) AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor;
 @property (nonatomic, strong) NSURL *outputURL;
 @property (nonatomic, assign) BOOL isWriting;
 @property (nonatomic, assign) CMTime startTime;
@@ -63,6 +64,13 @@ API_AVAILABLE(macos(12.3))
         return;
     }
     
+    // Check asset writer status before processing
+    if (self.assetWriter.status == AVAssetWriterStatusFailed) {
+        NSLog(@"❌ Asset writer has failed status: %@", self.assetWriter.error.localizedDescription);
+        self.startFailed = YES;
+        return;
+    }
+    
     // Start asset writer on first sample buffer
     if (!self.hasStartTime) {
         NSLog(@"🚀 Starting asset writer with first sample buffer");
@@ -88,10 +96,62 @@ API_AVAILABLE(macos(12.3))
         case SCStreamOutputTypeScreen: {
             NSLog(@"📺 Processing screen sample buffer");
             if (self.videoInput && self.videoInput.isReadyForMoreMediaData) {
-                BOOL success = [self.videoInput appendSampleBuffer:sampleBuffer];
-                NSLog(@"📺 Video sample buffer appended: %@", success ? @"SUCCESS" : @"FAILED");
+                // Check sample buffer validity
+                if (!CMSampleBufferIsValid(sampleBuffer)) {
+                    NSLog(@"⚠️ Invalid sample buffer received");
+                    return;
+                }
+                
+                // Check timing - ensure presentation time is advancing
+                CMTime currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+                NSLog(@"📺 Sample buffer PTS: %lld", currentTime.value);
+                
+                BOOL success = NO;
+                
+                // Try using pixel buffer adaptor for better compatibility
+                if (self.pixelBufferAdaptor && self.pixelBufferAdaptor.assetWriterInput.isReadyForMoreMediaData) {
+                    // Extract pixel buffer from sample buffer
+                    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+                    if (pixelBuffer) {
+                        success = [self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:currentTime];
+                        NSLog(@"📺 Pixel buffer appended via adaptor: %@", success ? @"SUCCESS" : @"FAILED");
+                    } else {
+                        // Fallback to direct sample buffer append
+                        success = [self.videoInput appendSampleBuffer:sampleBuffer];
+                        NSLog(@"📺 Sample buffer appended directly: %@", success ? @"SUCCESS" : @"FAILED");
+                    }
+                } else {
+                    // Fallback to direct sample buffer append
+                    success = [self.videoInput appendSampleBuffer:sampleBuffer];
+                    NSLog(@"📺 Video sample buffer appended (fallback): %@", success ? @"SUCCESS" : @"FAILED");
+                }
+                
+                if (!success) {
+                    // Log detailed error information
+                    NSLog(@"❌ Video input append failed - Asset Writer Status: %ld", (long)self.assetWriter.status);
+                    if (self.assetWriter.error) {
+                        NSLog(@"❌ Asset Writer Error: %@", self.assetWriter.error.localizedDescription);
+                    }
+                    
+                    // Check if asset writer has failed and mark for cleanup
+                    if (self.assetWriter.status == AVAssetWriterStatusFailed) {
+                        self.startFailed = YES;
+                    }
+                }
             } else {
-                NSLog(@"⚠️ Video input not ready for more data");
+                NSLog(@"⚠️ Video input not ready for more data - isReadyForMoreMediaData: %@", 
+                      self.videoInput.isReadyForMoreMediaData ? @"YES" : @"NO");
+                
+                // Also check pixel buffer adaptor readiness
+                if (self.pixelBufferAdaptor) {
+                    NSLog(@"📊 Pixel buffer adaptor ready: %@", 
+                          self.pixelBufferAdaptor.assetWriterInput.isReadyForMoreMediaData ? @"YES" : @"NO");
+                }
+                
+                // Log asset writer input status
+                NSLog(@"📊 Asset Writer Status: %ld, Video Input Status: readyForMoreMediaData=%@", 
+                      (long)self.assetWriter.status, 
+                      self.videoInput.isReadyForMoreMediaData ? @"YES" : @"NO");
             }
             break;
         }
@@ -100,6 +160,10 @@ API_AVAILABLE(macos(12.3))
             if (self.audioInput && self.audioInput.isReadyForMoreMediaData) {
                 BOOL success = [self.audioInput appendSampleBuffer:sampleBuffer];
                 NSLog(@"🔊 Audio sample buffer appended: %@", success ? @"SUCCESS" : @"FAILED");
+                
+                if (!success && self.assetWriter.error) {
+                    NSLog(@"❌ Audio append error: %@", self.assetWriter.error.localizedDescription);
+                }
             } else {
                 NSLog(@"⚠️ Audio input not ready for more data (or no audio input)");
             }
@@ -110,6 +174,10 @@ API_AVAILABLE(macos(12.3))
             if (self.audioInput && self.audioInput.isReadyForMoreMediaData) {
                 BOOL success = [self.audioInput appendSampleBuffer:sampleBuffer];
                 NSLog(@"🎤 Microphone sample buffer appended: %@", success ? @"SUCCESS" : @"FAILED");
+                
+                if (!success && self.assetWriter.error) {
+                    NSLog(@"❌ Microphone append error: %@", self.assetWriter.error.localizedDescription);
+                }
             } else {
                 NSLog(@"⚠️ Microphone input not ready for more data (or no audio input)");
             }
@@ -474,15 +542,30 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @((NSInteger)videoSize.width),
-        AVVideoHeightKey: @((NSInteger)videoSize.height)
+        AVVideoHeightKey: @((NSInteger)videoSize.height),
+        AVVideoCompressionPropertiesKey: @{
+            AVVideoAverageBitRateKey: @(2000000), // 2 Mbps
+            AVVideoMaxKeyFrameIntervalKey: @30
+        }
     };
     
     g_scDelegate.videoInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
     g_scDelegate.videoInput.expectsMediaDataInRealTime = YES;
     
+    // Create pixel buffer adaptor for more robust handling
+    NSDictionary *pixelBufferAttributes = @{
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString*)kCVPixelBufferWidthKey: @((NSInteger)videoSize.width),
+        (NSString*)kCVPixelBufferHeightKey: @((NSInteger)videoSize.height),
+    };
+    
+    g_scDelegate.pixelBufferAdaptor = [[AVAssetWriterInputPixelBufferAdaptor alloc] 
+        initWithAssetWriterInput:g_scDelegate.videoInput 
+        sourcePixelBufferAttributes:pixelBufferAttributes];
+    
     if ([g_scDelegate.assetWriter canAddInput:g_scDelegate.videoInput]) {
         [g_scDelegate.assetWriter addInput:g_scDelegate.videoInput];
-        NSLog(@"✅ Video input added to asset writer");
+        NSLog(@"✅ Video input added to asset writer with pixel buffer adaptor");
     } else {
         NSLog(@"❌ Cannot add video input to asset writer");
     }

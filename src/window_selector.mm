@@ -566,6 +566,8 @@ void cleanupWindowSelector() {
         dispatch_async(dispatch_get_main_queue(), ^{ cleanupWindowSelector(); });
         return;
     }
+    
+    NSLog(@"🧹 Cleaning up window selector resources");
     g_isWindowSelecting = false;
     
     // Stop tracking timer
@@ -972,9 +974,15 @@ bool hideScreenRecordingPreview() {
 Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
+    // Electron safety check - prevent crashes with overlay windows
+    if (getenv("ELECTRON_VERSION") || getenv("ELECTRON_RUN_AS_NODE")) {
+        NSLog(@"⚠️ Window selector disabled in Electron environment to prevent crashes");
+        return Napi::Boolean::New(env, false);
+    }
+    
     if (g_isWindowSelecting) {
-        Napi::TypeError::New(env, "Window selection already in progress").ThrowAsJavaScriptException();
-        return env.Null();
+        NSLog(@"⚠️ Window selection already in progress");
+        return Napi::Boolean::New(env, false);
     }
     
     @try {
@@ -1271,14 +1279,20 @@ Napi::Value GetWindowSelectionStatus(const Napi::CallbackInfo& info) {
 Napi::Value ShowRecordingPreview(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
+    // Electron safety check - prevent crashes with overlay windows
+    if (getenv("ELECTRON_VERSION") || getenv("ELECTRON_RUN_AS_NODE")) {
+        NSLog(@"⚠️ Recording preview disabled in Electron environment to prevent crashes");
+        return Napi::Boolean::New(env, false);
+    }
+    
     if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Window info object required").ThrowAsJavaScriptException();
-        return env.Null();
+        NSLog(@"⚠️ Window info object required");
+        return Napi::Boolean::New(env, false);
     }
     
     if (!info[0].IsObject()) {
-        Napi::TypeError::New(env, "Window info must be an object").ThrowAsJavaScriptException();
-        return env.Null();
+        NSLog(@"⚠️ Window info must be an object");
+        return Napi::Boolean::New(env, false);
     }
     
     @try {
@@ -1336,11 +1350,18 @@ Napi::Value HideRecordingPreview(const Napi::CallbackInfo& info) {
 Napi::Value StartScreenSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
+    // Electron safety check - prevent crashes with overlay windows
+    if (getenv("ELECTRON_VERSION") || getenv("ELECTRON_RUN_AS_NODE")) {
+        NSLog(@"⚠️ Screen selector disabled in Electron environment to prevent crashes");
+        return Napi::Boolean::New(env, false);
+    }
+    
     @try {
         bool success = startScreenSelection();
         return Napi::Boolean::New(env, success);
         
     } @catch (NSException *exception) {
+        NSLog(@"❌ Screen selection error: %@", exception);
         return Napi::Boolean::New(env, false);
     }
 }
