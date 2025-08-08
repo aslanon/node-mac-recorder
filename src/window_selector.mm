@@ -221,8 +221,10 @@ bool hideScreenRecordingPreview();
 @implementation WindowSelectorDelegate
 - (void)selectButtonClicked:(id)sender {
     if (g_currentWindowUnderCursor) {
-        g_selectedWindowInfo = g_currentWindowUnderCursor;
-        cleanupWindowSelector();
+        g_selectedWindowInfo = [g_currentWindowUnderCursor copy];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            cleanupWindowSelector();
+        });
     }
 }
 
@@ -233,23 +235,22 @@ bool hideScreenRecordingPreview();
     // Get screen info from global array using button tag
     if (g_allScreens && screenIndex >= 0 && screenIndex < [g_allScreens count]) {
         NSDictionary *screenInfo = [g_allScreens objectAtIndex:screenIndex];
-        g_selectedScreenInfo = screenInfo;
-        
-        NSLog(@"🖥️ SCREEN BUTTON CLICKED: %@ (%@)", 
-              [screenInfo objectForKey:@"name"],
-              [screenInfo objectForKey:@"resolution"]);
-        
-        cleanupScreenSelector();
+        g_selectedScreenInfo = [screenInfo copy];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            cleanupScreenSelector();
+        });
     }
 }
 
 - (void)cancelButtonClicked:(id)sender {
-    NSLog(@"🚫 CANCEL BUTTON CLICKED: Selection cancelled");
-    // Clean up without selecting anything
     if (g_isScreenSelecting) {
-        cleanupScreenSelector();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            cleanupScreenSelector();
+        });
     } else {
-        cleanupWindowSelector();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            cleanupWindowSelector();
+        });
     }
 }
 
