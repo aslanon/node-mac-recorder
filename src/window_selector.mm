@@ -974,12 +974,6 @@ bool hideScreenRecordingPreview() {
 Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    // Electron safety check - prevent crashes with overlay windows
-    if (getenv("ELECTRON_VERSION") || getenv("ELECTRON_RUN_AS_NODE")) {
-        NSLog(@"⚠️ Window selector disabled in Electron environment to prevent crashes");
-        return Napi::Boolean::New(env, false);
-    }
-    
     if (g_isWindowSelecting) {
         NSLog(@"⚠️ Window selection already in progress");
         return Napi::Boolean::New(env, false);
@@ -1279,12 +1273,6 @@ Napi::Value GetWindowSelectionStatus(const Napi::CallbackInfo& info) {
 Napi::Value ShowRecordingPreview(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    // Electron safety check - prevent crashes with overlay windows
-    if (getenv("ELECTRON_VERSION") || getenv("ELECTRON_RUN_AS_NODE")) {
-        NSLog(@"⚠️ Recording preview disabled in Electron environment to prevent crashes");
-        return Napi::Boolean::New(env, false);
-    }
-    
     if (info.Length() < 1) {
         NSLog(@"⚠️ Window info object required");
         return Napi::Boolean::New(env, false);
@@ -1349,12 +1337,6 @@ Napi::Value HideRecordingPreview(const Napi::CallbackInfo& info) {
 // NAPI Function: Start Screen Selection
 Napi::Value StartScreenSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    
-    // Electron safety check - prevent crashes with overlay windows
-    if (getenv("ELECTRON_VERSION") || getenv("ELECTRON_RUN_AS_NODE")) {
-        NSLog(@"⚠️ Screen selector disabled in Electron environment to prevent crashes");
-        return Napi::Boolean::New(env, false);
-    }
     
     @try {
         bool success = startScreenSelection();

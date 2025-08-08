@@ -33,13 +33,13 @@ class WindowSelector extends EventEmitter {
 		this.selectedWindow = null;
 		this.lastStatus = null;
 		
-		// Electron environment detection
+		// Electron environment detection (for logging only)
 		this.isElectron = !!(process.versions && process.versions.electron) || 
 		                 !!(process.env.ELECTRON_VERSION) ||
 		                 !!(process.env.ELECTRON_RUN_AS_NODE);
 		
 		if (this.isElectron) {
-			console.warn("⚠️ WindowSelector: Running in Electron - some features disabled to prevent crashes");
+			console.log("🔍 WindowSelector: Detected Electron environment");
 		}
 	}
 
@@ -49,10 +49,6 @@ class WindowSelector extends EventEmitter {
 	 * Select butonuna basılınca seçim tamamlanır
 	 */
 	async startSelection() {
-		if (this.isElectron) {
-			throw new Error("Window selection is not supported in Electron environment due to stability issues");
-		}
-		
 		if (this.isSelecting) {
 			throw new Error("Window selection is already in progress");
 		}
@@ -304,11 +300,6 @@ class WindowSelector extends EventEmitter {
 	 * @returns {Promise<boolean>} Success/failure
 	 */
 	async showRecordingPreview(windowInfo) {
-		if (this.isElectron) {
-			console.warn("⚠️ Recording preview disabled in Electron environment");
-			return false;
-		}
-		
 		if (!windowInfo) {
 			throw new Error("Window info is required");
 		}
@@ -340,10 +331,6 @@ class WindowSelector extends EventEmitter {
 	 * @returns {Promise<boolean>} Success/failure
 	 */
 	async startScreenSelection() {
-		if (this.isElectron) {
-			throw new Error("Screen selection is not supported in Electron environment due to stability issues");
-		}
-		
 		try {
 			const success = nativeBinding.startScreenSelection();
 			if (success) {
@@ -456,11 +443,6 @@ class WindowSelector extends EventEmitter {
 	 * @returns {Promise<boolean>} Success/failure
 	 */
 	async showScreenRecordingPreview(screenInfo) {
-		if (this.isElectron) {
-			console.warn("⚠️ Screen recording preview disabled in Electron environment");
-			return false;
-		}
-		
 		if (!screenInfo) {
 			throw new Error("Screen info is required");
 		}
