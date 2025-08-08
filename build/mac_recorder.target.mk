@@ -8,9 +8,9 @@ DEFS_Debug := \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
-	'-D_FILE_OFFSET_BITS=64' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
+	'-D_FILE_OFFSET_BITS=64' \
 	'-DOPENSSL_NO_PINSHARED' \
 	'-DOPENSSL_THREADS' \
 	'-DNAPI_DISABLE_CPP_EXCEPTIONS' \
@@ -54,13 +54,13 @@ CFLAGS_OBJCC_Debug := \
 	-fobjc-arc
 
 INCS_Debug := \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
@@ -69,9 +69,9 @@ DEFS_Release := \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
-	'-D_FILE_OFFSET_BITS=64' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
+	'-D_FILE_OFFSET_BITS=64' \
 	'-DOPENSSL_NO_PINSHARED' \
 	'-DOPENSSL_THREADS' \
 	'-DNAPI_DISABLE_CPP_EXCEPTIONS' \
@@ -113,13 +113,13 @@ CFLAGS_OBJCC_Release := \
 	-fobjc-arc
 
 INCS_Release := \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
+	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \
