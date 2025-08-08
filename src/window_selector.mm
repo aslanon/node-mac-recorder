@@ -974,6 +974,42 @@ bool hideScreenRecordingPreview() {
 Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
+    // Electron safety check - prevent NSWindow crashes
+    const char* electronVersion = getenv("ELECTRON_VERSION");
+    const char* electronRunAs = getenv("ELECTRON_RUN_AS_NODE");
+    
+    NSLog(@"🔍 Debug: electronVersion='%s', electronRunAs='%s'", 
+          electronVersion ? electronVersion : "null", 
+          electronRunAs ? electronRunAs : "null");
+    
+    if (electronVersion || electronRunAs) {
+        NSLog(@"🔍 Detected Electron environment - using safe mode");
+        
+        // In Electron, return window list without creating native NSWindow overlays
+        // The Electron app can handle UI selection itself
+        @try {
+            NSArray *windows = getAllSelectableWindows();
+            
+            if (!windows || [windows count] == 0) {
+                NSLog(@"❌ No selectable windows found");
+                return Napi::Boolean::New(env, false);
+            }
+            
+            // Store windows for later retrieval via getWindowSelectionStatus
+            g_allWindows = [windows mutableCopy];
+            g_isWindowSelecting = true;
+            
+            // Return true to indicate windows are available
+            // Electron app should call getWindowSelectionStatus to get the list
+            NSLog(@"✅ Electron-safe mode: %lu windows available for selection", (unsigned long)[windows count]);
+            return Napi::Boolean::New(env, true);
+            
+        } @catch (NSException *exception) {
+            NSLog(@"❌ Exception in Electron-safe window selection: %@", [exception reason]);
+            return Napi::Boolean::New(env, false);
+        }
+    }
+    
     if (g_isWindowSelecting) {
         NSLog(@"⚠️ Window selection already in progress");
         return Napi::Boolean::New(env, false);
@@ -1337,6 +1373,51 @@ Napi::Value HideRecordingPreview(const Napi::CallbackInfo& info) {
 // NAPI Function: Start Screen Selection
 Napi::Value StartScreenSelection(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    
+    // Electron safety check - prevent NSWindow crashes
+    const char* electronVersion = getenv("ELECTRON_VERSION");
+    const char* electronRunAs = getenv("ELECTRON_RUN_AS_NODE");
+    
+    NSLog(@"🔍 Screen Debug: electronVersion='%s', electronRunAs='%s'", 
+          electronVersion ? electronVersion : "null", 
+          electronRunAs ? electronRunAs : "null");
+    
+    if (electronVersion || electronRunAs) {
+        NSLog(@"🔍 Detected Electron environment - using safe screen selection");
+        
+        // In Electron, return screen list without creating native NSWindow overlays
+        @try {
+            NSArray *screens = [NSScreen screens];
+            
+            if (!screens || [screens count] == 0) {
+                NSLog(@"❌ No screens available");
+                return Napi::Boolean::New(env, false);
+            }
+            
+            // Store screens and select first one automatically for Electron
+            g_allScreens = screens;
+            g_isScreenSelecting = true;
+            
+            NSScreen *mainScreen = [screens firstObject];
+            g_selectedScreenInfo = @{
+                @"id": @((int)[screens indexOfObject:mainScreen]),
+                @"width": @((int)mainScreen.frame.size.width),
+                @"height": @((int)mainScreen.frame.size.height),
+                @"x": @((int)mainScreen.frame.origin.x),
+                @"y": @((int)mainScreen.frame.origin.y)
+            };
+            
+            // Mark as complete so getSelectedScreenInfo returns the selection
+            g_isScreenSelecting = false;
+            
+            NSLog(@"✅ Electron-safe screen selection: %lu screens available", (unsigned long)[screens count]);
+            return Napi::Boolean::New(env, true);
+            
+        } @catch (NSException *exception) {
+            NSLog(@"❌ Exception in Electron-safe screen selection: %@", [exception reason]);
+            return Napi::Boolean::New(env, false);
+        }
+    }
     
     @try {
         bool success = startScreenSelection();

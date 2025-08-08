@@ -33,13 +33,13 @@ class WindowSelector extends EventEmitter {
 		this.selectedWindow = null;
 		this.lastStatus = null;
 		
-		// Electron environment detection (for logging only)
+		// Electron environment detection
 		this.isElectron = !!(process.versions && process.versions.electron) || 
 		                 !!(process.env.ELECTRON_VERSION) ||
 		                 !!(process.env.ELECTRON_RUN_AS_NODE);
 		
 		if (this.isElectron) {
-			console.log("🔍 WindowSelector: Detected Electron environment");
+			console.log("🔍 WindowSelector: Detected Electron environment - using safe mode");
 		}
 	}
 
@@ -172,6 +172,59 @@ class WindowSelector extends EventEmitter {
 	 */
 	getSelectedWindow() {
 		return this.selectedWindow;
+	}
+
+	/**
+	 * Electron'da kullanmak için mevcut pencereleri döndürür
+	 * @returns {Array} Available windows for selection
+	 */
+	async getAvailableWindows() {
+		if (this.isElectron) {
+			try {
+				// Start selection to populate window list (safe mode)
+				const success = nativeBinding.startWindowSelection();
+				if (success) {
+					// Get the populated window list
+					const status = nativeBinding.getWindowSelectionStatus();
+					
+					// Stop selection immediately
+					nativeBinding.stopWindowSelection();
+					
+					// Return windows from native status
+					// In Electron safe mode, these will be available without overlay
+					const MacRecorder = require("./index.js");
+					const recorder = new MacRecorder();
+					return await recorder.getWindows();
+				}
+			} catch (error) {
+				console.error("Error getting available windows in Electron:", error.message);
+			}
+		}
+		
+		// Fallback to regular MacRecorder method
+		try {
+			const MacRecorder = require("./index.js");
+			const recorder = new MacRecorder();
+			return await recorder.getWindows();
+		} catch (error) {
+			console.error("Error getting windows:", error.message);
+			return [];
+		}
+	}
+
+	/**
+	 * Electron'da pencere seçmek için - overlay olmadan
+	 * @param {Object} windowInfo - Selected window from getAvailableWindows()
+	 */
+	selectWindowById(windowInfo) {
+		if (!windowInfo || !windowInfo.id) {
+			throw new Error("Valid window info required");
+		}
+		
+		this.selectedWindow = windowInfo;
+		this.emit('windowSelected', windowInfo);
+		
+		return windowInfo;
 	}
 
 	/**
