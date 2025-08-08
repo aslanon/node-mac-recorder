@@ -8,12 +8,13 @@ DEFS_Debug := \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
+	'-D_FILE_OFFSET_BITS=64' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
-	'-D_FILE_OFFSET_BITS=64' \
 	'-DOPENSSL_NO_PINSHARED' \
 	'-DOPENSSL_THREADS' \
 	'-DNAPI_DISABLE_CPP_EXCEPTIONS' \
+	'-DUSE_SCREENCAPTUREKIT=1' \
 	'-DBUILDING_NODE_EXTENSION' \
 	'-DDEBUG' \
 	'-D_DEBUG'
@@ -23,7 +24,7 @@ CFLAGS_Debug := \
 	-O0 \
 	-gdwarf-2 \
 	-fno-strict-aliasing \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
 	arm64 \
 	-Wall \
@@ -33,29 +34,33 @@ CFLAGS_Debug := \
 
 # Flags passed to only C files.
 CFLAGS_C_Debug := \
-	-ObjC++
+	-ObjC++ \
+	-fmodules
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Debug := \
 	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
-	-ObjC++
+	-ObjC++ \
+	-fmodules
 
 # Flags passed to only ObjC files.
-CFLAGS_OBJC_Debug :=
+CFLAGS_OBJC_Debug := \
+	-fobjc-arc
 
 # Flags passed to only ObjC++ files.
-CFLAGS_OBJCC_Debug :=
+CFLAGS_OBJCC_Debug := \
+	-fobjc-arc
 
 INCS_Debug := \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
@@ -64,12 +69,13 @@ DEFS_Release := \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
+	'-D_FILE_OFFSET_BITS=64' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
-	'-D_FILE_OFFSET_BITS=64' \
 	'-DOPENSSL_NO_PINSHARED' \
 	'-DOPENSSL_THREADS' \
 	'-DNAPI_DISABLE_CPP_EXCEPTIONS' \
+	'-DUSE_SCREENCAPTUREKIT=1' \
 	'-DBUILDING_NODE_EXTENSION'
 
 # Flags passed to all source files.
@@ -77,7 +83,7 @@ CFLAGS_Release := \
 	-O3 \
 	-gdwarf-2 \
 	-fno-strict-aliasing \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
 	arm64 \
 	-Wall \
@@ -87,29 +93,33 @@ CFLAGS_Release := \
 
 # Flags passed to only C files.
 CFLAGS_C_Release := \
-	-ObjC++
+	-ObjC++ \
+	-fmodules
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Release := \
 	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
-	-ObjC++
+	-ObjC++ \
+	-fmodules
 
 # Flags passed to only ObjC files.
-CFLAGS_OBJC_Release :=
+CFLAGS_OBJC_Release := \
+	-fobjc-arc
 
 # Flags passed to only ObjC++ files.
-CFLAGS_OBJCC_Release :=
+CFLAGS_OBJCC_Release := \
+	-fobjc-arc
 
 INCS_Release := \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/23.5.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \
@@ -151,7 +161,7 @@ $(obj).$(TOOLSET)/$(TARGET)/%.o: $(obj)/%.mm FORCE_DO_CMD
 LDFLAGS_Debug := \
 	-undefined dynamic_lookup \
 	-Wl,-search_paths_first \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
 	arm64 \
 	-L$(builddir) \
@@ -164,7 +174,7 @@ LIBTOOLFLAGS_Debug := \
 LDFLAGS_Release := \
 	-undefined dynamic_lookup \
 	-Wl,-search_paths_first \
-	-mmacosx-version-min=10.15 \
+	-mmacosx-version-min=12.3 \
 	-arch \
 	arm64 \
 	-L$(builddir) \
@@ -175,12 +185,12 @@ LIBTOOLFLAGS_Release := \
 	-Wl,-search_paths_first
 
 LIBS := \
+	-framework ScreenCaptureKit \
 	-framework AVFoundation \
 	-framework CoreMedia \
 	-framework CoreVideo \
 	-framework Foundation \
 	-framework AppKit \
-	-framework ScreenCaptureKit \
 	-framework ApplicationServices \
 	-framework Carbon \
 	-framework Accessibility

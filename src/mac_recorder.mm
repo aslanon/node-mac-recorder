@@ -1,4 +1,5 @@
 #import <napi.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <AppKit/AppKit.h>
@@ -9,6 +10,7 @@
 
 // Import screen capture
 #import "screen_capture.h"
+#import "screen_capture_kit.h"
 
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
@@ -16,70 +18,234 @@ Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 // Window selector function declarations
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
 
-@interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
+// ScreenCaptureKit Recording Delegate
+API_AVAILABLE(macos(12.3))
+@interface SCKRecorderDelegate : NSObject <SCStreamDelegate, SCStreamOutput>
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
+@property (nonatomic, copy) void (^startedHandler)(void);
+@property (nonatomic, strong) AVAssetWriter *assetWriter;
+@property (nonatomic, strong) AVAssetWriterInput *videoInput;
+@property (nonatomic, strong) AVAssetWriterInput *audioInput;
+@property (nonatomic, strong) NSURL *outputURL;
+@property (nonatomic, assign) BOOL isWriting;
+@property (nonatomic, assign) CMTime startTime;
+@property (nonatomic, assign) BOOL hasStartTime;
+@property (nonatomic, assign) BOOL startAttempted;
+@property (nonatomic, assign) BOOL startFailed;
 @end
 
-@implementation MacRecorderDelegate
-- (void)captureOutput:(AVCaptureFileOutput *)output
-didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
-      fromConnections:(NSArray<AVCaptureConnection *> *)connections
-                error:(NSError *)error {
+@implementation SCKRecorderDelegate
+
+// Standard SCStreamDelegate method - should be called automatically
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
+    NSLog(@"📹 SCStreamDelegate received sample buffer of type: %ld", (long)type);
+    [self handleSampleBuffer:sampleBuffer ofType:type fromStream:stream];
+}
+
+- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
+    NSLog(@"🛑 Stream stopped with error: %@", error ? error.localizedDescription : @"none");
     if (self.completionHandler) {
-        self.completionHandler(outputFileURL, error);
+        self.completionHandler(self.outputURL, error);
     }
 }
+
+
+// Main sample buffer handler (renamed to avoid conflicts)
+- (void)handleSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type fromStream:(SCStream *)stream {
+    NSLog(@"📹 Handling sample buffer of type: %ld", (long)type);
+    
+    if (!self.isWriting || !self.assetWriter) {
+        NSLog(@"⚠️ Not writing or no asset writer available");
+        return;
+    }
+    if (self.startFailed) {
+        NSLog(@"⚠️ Asset writer start previously failed; ignoring buffers");
+        return;
+    }
+    
+    // Start asset writer on first sample buffer
+    if (!self.hasStartTime) {
+        NSLog(@"🚀 Starting asset writer with first sample buffer");
+        if (self.startAttempted) {
+            // Another thread already attempted start; wait for success/fail flag to flip
+            return;
+        }
+        self.startAttempted = YES;
+        if (![self.assetWriter startWriting]) {
+            NSLog(@"❌ Failed to start asset writer: %@", self.assetWriter.error.localizedDescription);
+            self.startFailed = YES;
+            return;
+        }
+        
+        NSLog(@"✅ Asset writer started successfully");
+        self.startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+        self.hasStartTime = YES;
+        [self.assetWriter startSessionAtSourceTime:self.startTime];
+        NSLog(@"✅ Asset writer session started at time: %lld", self.startTime.value);
+    }
+    
+    switch (type) {
+        case SCStreamOutputTypeScreen: {
+            NSLog(@"📺 Processing screen sample buffer");
+            if (self.videoInput && self.videoInput.isReadyForMoreMediaData) {
+                BOOL success = [self.videoInput appendSampleBuffer:sampleBuffer];
+                NSLog(@"📺 Video sample buffer appended: %@", success ? @"SUCCESS" : @"FAILED");
+            } else {
+                NSLog(@"⚠️ Video input not ready for more data");
+            }
+            break;
+        }
+        case SCStreamOutputTypeAudio: {
+            NSLog(@"🔊 Processing audio sample buffer");
+            if (self.audioInput && self.audioInput.isReadyForMoreMediaData) {
+                BOOL success = [self.audioInput appendSampleBuffer:sampleBuffer];
+                NSLog(@"🔊 Audio sample buffer appended: %@", success ? @"SUCCESS" : @"FAILED");
+            } else {
+                NSLog(@"⚠️ Audio input not ready for more data (or no audio input)");
+            }
+            break;
+        }
+        case SCStreamOutputTypeMicrophone: {
+            NSLog(@"🎤 Processing microphone sample buffer");
+            if (self.audioInput && self.audioInput.isReadyForMoreMediaData) {
+                BOOL success = [self.audioInput appendSampleBuffer:sampleBuffer];
+                NSLog(@"🎤 Microphone sample buffer appended: %@", success ? @"SUCCESS" : @"FAILED");
+            } else {
+                NSLog(@"⚠️ Microphone input not ready for more data (or no audio input)");
+            }
+            break;
+        }
+    }
+}
+
 @end
 
-// Global state for recording
-static AVCaptureSession *g_captureSession = nil;
-static AVCaptureMovieFileOutput *g_movieFileOutput = nil;
-static AVCaptureScreenInput *g_screenInput = nil;
-static AVCaptureDeviceInput *g_audioInput = nil;
-static MacRecorderDelegate *g_delegate = nil;
+// Global state for ScreenCaptureKit recording
+static SCStream *g_scStream = nil;
+static SCKRecorderDelegate *g_scDelegate = nil;
 static bool g_isRecording = false;
 
-// Helper function to cleanup recording resources
-void cleanupRecording() {
-    if (g_captureSession) {
-        [g_captureSession stopRunning];
-        g_captureSession = nil;
+// Helper function to cleanup ScreenCaptureKit recording resources
+void cleanupSCKRecording() {
+    NSLog(@"🛑 Cleaning up ScreenCaptureKit recording");
+    
+    if (g_scStream) {
+        NSLog(@"🛑 Stopping SCStream");
+        [g_scStream stopCaptureWithCompletionHandler:^(NSError * _Nullable error) {
+            if (error) {
+                NSLog(@"❌ Error stopping SCStream: %@", error.localizedDescription);
+            } else {
+                NSLog(@"✅ SCStream stopped successfully");
+            }
+        }];
+        g_scStream = nil;
     }
-    g_movieFileOutput = nil;
-    g_screenInput = nil;
-    g_audioInput = nil;
-    g_delegate = nil;
+    
+    if (g_scDelegate) {
+        if (g_scDelegate.assetWriter && g_scDelegate.isWriting) {
+            NSLog(@"🛑 Finishing asset writer (status: %ld)", (long)g_scDelegate.assetWriter.status);
+            g_scDelegate.isWriting = NO;
+            
+            // Only mark inputs as finished if asset writer is actually writing
+            if (g_scDelegate.assetWriter.status == AVAssetWriterStatusWriting) {
+                if (g_scDelegate.videoInput) {
+                    [g_scDelegate.videoInput markAsFinished];
+                }
+                if (g_scDelegate.audioInput) {
+                    [g_scDelegate.audioInput markAsFinished];
+                }
+                
+                [g_scDelegate.assetWriter finishWritingWithCompletionHandler:^{
+                    NSLog(@"✅ Asset writer finished. Status: %ld", (long)g_scDelegate.assetWriter.status);
+                    if (g_scDelegate.assetWriter.error) {
+                        NSLog(@"❌ Asset writer error: %@", g_scDelegate.assetWriter.error.localizedDescription);
+                    }
+                }];
+            } else {
+                NSLog(@"⚠️ Asset writer not in writing status, cannot finish normally");
+                if (g_scDelegate.assetWriter.status == AVAssetWriterStatusFailed) {
+                    NSLog(@"❌ Asset writer failed: %@", g_scDelegate.assetWriter.error.localizedDescription);
+                }
+            }
+        }
+        g_scDelegate = nil;
+    }
     g_isRecording = false;
 }
 
-// NAPI Function: Start Recording
+// Check if ScreenCaptureKit is available
+bool isScreenCaptureKitAvailable() {
+    if (@available(macOS 12.3, *)) {
+        return true;
+    }
+    return false;
+}
+
+// NAPI Function: Start Recording with ScreenCaptureKit
 Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Output path required").ThrowAsJavaScriptException();
-        return env.Null();
-    }
-    
-    if (g_isRecording) {
+    if (!isScreenCaptureKitAvailable()) {
+        NSLog(@"ScreenCaptureKit requires macOS 12.3 or later");
         return Napi::Boolean::New(env, false);
     }
     
+    if (info.Length() < 1) {
+        NSLog(@"Output path required");
+        return Napi::Boolean::New(env, false);
+    }
+    
+    if (g_isRecording) {
+        NSLog(@"⚠️ Already recording");
+        return Napi::Boolean::New(env, false);
+    }
+    
+    // Verify permissions before starting
+    if (!CGPreflightScreenCaptureAccess()) {
+        NSLog(@"❌ Screen recording permission not granted - requesting access");
+        bool requestResult = CGRequestScreenCaptureAccess();
+        NSLog(@"📋 Permission request result: %@", requestResult ? @"SUCCESS" : @"FAILED");
+        
+        if (!CGPreflightScreenCaptureAccess()) {
+            NSLog(@"❌ Screen recording permission still not available");
+            return Napi::Boolean::New(env, false);
+        }
+    }
+    NSLog(@"✅ Screen recording permission verified");
+    
     std::string outputPath = info[0].As<Napi::String>().Utf8Value();
     
-    // Options parsing
+    // Default options
+    bool captureCursor = false;
+    bool includeSystemAudio = true;
+    CGDirectDisplayID displayID = 0; // Will be set to first available display
+    uint32_t windowID = 0;
     CGRect captureRect = CGRectNull;
-    bool captureCursor = false; // Default olarak cursor gizli
-    bool includeMicrophone = false; // Default olarak mikrofon kapalı
-    bool includeSystemAudio = true; // Default olarak sistem sesi açık
-    CGDirectDisplayID displayID = CGMainDisplayID(); // Default ana ekran
-    NSString *audioDeviceId = nil; // Default audio device ID
-    NSString *systemAudioDeviceId = nil; // System audio device ID
     
+    // Parse options
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
         
-        // Capture area
+        if (options.Has("captureCursor")) {
+            captureCursor = options.Get("captureCursor").As<Napi::Boolean>();
+        }
+        
+        
+        if (options.Has("includeSystemAudio")) {
+            includeSystemAudio = options.Get("includeSystemAudio").As<Napi::Boolean>();
+        }
+        
+        if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
+            uint32_t tempDisplayID = options.Get("displayId").As<Napi::Number>().Uint32Value();
+            if (tempDisplayID != 0) {
+                displayID = tempDisplayID;
+            }
+        }
+        
+        if (options.Has("windowId") && !options.Get("windowId").IsNull()) {
+            windowID = options.Get("windowId").As<Napi::Number>().Uint32Value();
+        }
+        
         if (options.Has("captureArea") && options.Get("captureArea").IsObject()) {
             Napi::Object rectObj = options.Get("captureArea").As<Napi::Object>();
             if (rectObj.Has("x") && rectObj.Has("y") && rectObj.Has("width") && rectObj.Has("height")) {
@@ -91,731 +257,494 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 );
             }
         }
-        
-        // Capture cursor
-        if (options.Has("captureCursor")) {
-            captureCursor = options.Get("captureCursor").As<Napi::Boolean>();
-        }
-        
-        // Microphone
-        if (options.Has("includeMicrophone")) {
-            includeMicrophone = options.Get("includeMicrophone").As<Napi::Boolean>();
-        }
-        
-        // Audio device ID
-        if (options.Has("audioDeviceId") && !options.Get("audioDeviceId").IsNull()) {
-            std::string deviceId = options.Get("audioDeviceId").As<Napi::String>().Utf8Value();
-            audioDeviceId = [NSString stringWithUTF8String:deviceId.c_str()];
-        }
-        
-        // System audio
-        if (options.Has("includeSystemAudio")) {
-            includeSystemAudio = options.Get("includeSystemAudio").As<Napi::Boolean>();
-        }
-        
-        // System audio device ID
-        if (options.Has("systemAudioDeviceId") && !options.Get("systemAudioDeviceId").IsNull()) {
-            std::string sysDeviceId = options.Get("systemAudioDeviceId").As<Napi::String>().Utf8Value();
-            systemAudioDeviceId = [NSString stringWithUTF8String:sysDeviceId.c_str()];
-        }
-        
-        // Display ID
-        if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
-            double displayIdNum = options.Get("displayId").As<Napi::Number>().DoubleValue();
-            
-            // Use the display ID directly (not as an index)
-            // The JavaScript layer passes the actual CGDirectDisplayID
-            displayID = (CGDirectDisplayID)displayIdNum;
-            
-            // Verify that this display ID is valid
-            uint32_t displayCount;
-            CGGetActiveDisplayList(0, NULL, &displayCount);
-            if (displayCount > 0) {
-                CGDirectDisplayID *displays = (CGDirectDisplayID*)malloc(displayCount * sizeof(CGDirectDisplayID));
-                CGGetActiveDisplayList(displayCount, displays, &displayCount);
-                
-                bool validDisplay = false;
-                for (uint32_t i = 0; i < displayCount; i++) {
-                    if (displays[i] == displayID) {
-                        validDisplay = true;
-                        break;
-                    }
-                }
-                
-                if (!validDisplay) {
-                    // Fallback to main display if invalid ID provided
-                    displayID = CGMainDisplayID();
-                }
-                
-                free(displays);
-            }
-        }
-        
-        // Window ID için gelecekte kullanım (şimdilik captureArea ile hallediliyor)
-        if (options.Has("windowId") && !options.Get("windowId").IsNull()) {
-            // WindowId belirtilmiş ama captureArea JavaScript tarafında ayarlanıyor
-            // Bu parametre gelecekte native level pencere seçimi için kullanılabilir
+    }
+    
+    // Create output URL
+    NSURL *outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outputPath.c_str()]];
+    NSLog(@"📁 Output URL: %@", outputURL.absoluteString);
+
+    // Remove existing file if present to avoid AVAssetWriter "Cannot Save" error
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:outputURL.path]) {
+        NSError *rmErr = nil;
+        [fm removeItemAtURL:outputURL error:&rmErr];
+        if (rmErr) {
+            NSLog(@"⚠️ Failed to remove existing output file (%@): %@", outputURL.path, rmErr.localizedDescription);
         }
     }
     
-    @try {
-        // Create capture session
-        g_captureSession = [[AVCaptureSession alloc] init];
-        [g_captureSession beginConfiguration];
-        
-        // Set session preset
-        g_captureSession.sessionPreset = AVCaptureSessionPresetHigh;
-        
-        // Create screen input with selected display
-        g_screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:displayID];
-        
-        if (!CGRectIsNull(captureRect)) {
-            g_screenInput.cropRect = captureRect;
-        }
-        
-        // Set cursor capture
-        g_screenInput.capturesCursor = captureCursor;
-        
-        if ([g_captureSession canAddInput:g_screenInput]) {
-            [g_captureSession addInput:g_screenInput];
-        } else {
-            cleanupRecording();
-            return Napi::Boolean::New(env, false);
-        }
-        
-        // Add microphone input if requested
-        if (includeMicrophone) {
-            AVCaptureDevice *audioDevice = nil;
-            
-            if (audioDeviceId) {
-                // Try to find the specified device
-                NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-                NSLog(@"[DEBUG] Looking for audio device with ID: %@", audioDeviceId);
-                NSLog(@"[DEBUG] Available audio devices:");
-                for (AVCaptureDevice *device in devices) {
-                    NSLog(@"[DEBUG] - Device: %@ (ID: %@)", device.localizedName, device.uniqueID);
-                    if ([device.uniqueID isEqualToString:audioDeviceId]) {
-                        NSLog(@"[DEBUG] Found matching device: %@", device.localizedName);
-                        audioDevice = device;
-                        break;
-                    }
-                }
-                
-                if (!audioDevice) {
-                    NSLog(@"[DEBUG] Specified audio device not found, falling back to default");
-                }
-            }
-            
-            // Fallback to default device if specified device not found
-            if (!audioDevice) {
-                audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
-                NSLog(@"[DEBUG] Using default audio device: %@ (ID: %@)", audioDevice.localizedName, audioDevice.uniqueID);
-            }
-            
-            if (audioDevice) {
-                NSError *error;
-                g_audioInput = [[AVCaptureDeviceInput alloc] initWithDevice:audioDevice error:&error];
-                if (g_audioInput && [g_captureSession canAddInput:g_audioInput]) {
-                    [g_captureSession addInput:g_audioInput];
-                    NSLog(@"[DEBUG] Successfully added audio input device");
-                } else {
-                    NSLog(@"[DEBUG] Failed to add audio input device: %@", error);
-                }
-            }
-        }
-        
-        // System audio configuration
-        if (includeSystemAudio) {
-            // Enable audio capture in screen input
-            g_screenInput.capturesMouseClicks = YES;
-            
-            // Try to add system audio input using Core Audio
-            // This approach captures system audio by creating a virtual audio device
-            if (@available(macOS 10.15, *)) {
-                // Configure screen input for better audio capture
-                g_screenInput.capturesCursor = captureCursor;
-                g_screenInput.capturesMouseClicks = YES;
-                
-                // Try to find and add system audio device (like Soundflower, BlackHole, etc.)
-                NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-                AVCaptureDevice *systemAudioDevice = nil;
-                
-                // If specific system audio device ID is provided, try to find it first
-                if (systemAudioDeviceId) {
-                    for (AVCaptureDevice *device in audioDevices) {
-                        if ([device.uniqueID isEqualToString:systemAudioDeviceId]) {
-                            systemAudioDevice = device;
-                            NSLog(@"[DEBUG] Found specified system audio device: %@ (ID: %@)", device.localizedName, device.uniqueID);
-                            break;
-                        }
-                    }
-                }
-                
-                // If no specific device found or specified, look for known system audio devices
-                if (!systemAudioDevice) {
-                    for (AVCaptureDevice *device in audioDevices) {
-                        NSString *deviceName = [device.localizedName lowercaseString];
-                        // Check for common system audio capture devices
-                        if ([deviceName containsString:@"soundflower"] || 
-                            [deviceName containsString:@"blackhole"] ||
-                            [deviceName containsString:@"loopback"] ||
-                            [deviceName containsString:@"system audio"] ||
-                            [deviceName containsString:@"aggregate"]) {
-                            systemAudioDevice = device;
-                            NSLog(@"[DEBUG] Auto-detected system audio device: %@", device.localizedName);
-                            break;
-                        }
-                    }
-                }
-                
-                // If we found a system audio device, add it as an additional input
-                if (systemAudioDevice && !includeMicrophone) {
-                    // Only add system audio device if microphone is not already added
-                    NSError *error;
-                    AVCaptureDeviceInput *systemAudioInput = [[AVCaptureDeviceInput alloc] initWithDevice:systemAudioDevice error:&error];
-                    if (systemAudioInput && [g_captureSession canAddInput:systemAudioInput]) {
-                        [g_captureSession addInput:systemAudioInput];
-                        NSLog(@"[DEBUG] Successfully added system audio device: %@", systemAudioDevice.localizedName);
-                    } else if (error) {
-                        NSLog(@"[DEBUG] Failed to add system audio device: %@", error.localizedDescription);
-                    }
-                } else if (includeSystemAudio && !systemAudioDevice) {
-                    NSLog(@"[DEBUG] System audio requested but no suitable device found. Available devices:");
-                    for (AVCaptureDevice *device in audioDevices) {
-                        NSLog(@"[DEBUG] - %@ (ID: %@)", device.localizedName, device.uniqueID);
-                    }
-                }
-            }
-        } else {
-            // Explicitly disable audio capture if not requested
-            g_screenInput.capturesMouseClicks = NO;
-        }
-        
-        // Create movie file output
-        g_movieFileOutput = [[AVCaptureMovieFileOutput alloc] init];
-        if ([g_captureSession canAddOutput:g_movieFileOutput]) {
-            [g_captureSession addOutput:g_movieFileOutput];
-        } else {
-            cleanupRecording();
-            return Napi::Boolean::New(env, false);
-        }
-        
-        [g_captureSession commitConfiguration];
-        
-        // Start session
-        [g_captureSession startRunning];
-        
-        // Create delegate
-        g_delegate = [[MacRecorderDelegate alloc] init];
-        
-        // Start recording
-        NSURL *outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outputPath.c_str()]];
-        [g_movieFileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:g_delegate];
-        
-        g_isRecording = true;
-        return Napi::Boolean::New(env, true);
-        
-    } @catch (NSException *exception) {
-        cleanupRecording();
+    // Get shareable content
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block NSError *contentError = nil;
+    __block SCShareableContent *shareableContent = nil;
+    
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent * _Nullable content, NSError * _Nullable error) {
+        shareableContent = content;
+        contentError = error;
+        dispatch_semaphore_signal(semaphore);
+    }];
+    
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    
+    if (contentError) {
+        NSLog(@"ScreenCaptureKit error: %@", contentError.localizedDescription);
+        NSLog(@"This is likely due to missing screen recording permissions");
         return Napi::Boolean::New(env, false);
     }
+    
+    // Find target display or window
+    SCContentFilter *contentFilter = nil;
+    
+    if (windowID > 0) {
+        // Window recording
+        SCWindow *targetWindow = nil;
+        for (SCWindow *window in shareableContent.windows) {
+            if (window.windowID == windowID) {
+                targetWindow = window;
+                break;
+            }
+        }
+        
+        if (!targetWindow) {
+            NSLog(@"Window not found with ID: %u", windowID);
+            return Napi::Boolean::New(env, false);
+        }
+        
+        contentFilter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
+    } else {
+        // Display recording
+        NSLog(@"🔍 Selecting display among %lu available displays", (unsigned long)shareableContent.displays.count);
+        
+        SCDisplay *targetDisplay = nil;
+        
+        // Log all available displays first
+        for (SCDisplay *display in shareableContent.displays) {
+            NSLog(@"📺 Available display: ID=%u, width=%d, height=%d", display.displayID, (int)display.width, (int)display.height);
+        }
+        
+        if (displayID != 0) {
+            // Look for specific display ID
+            for (SCDisplay *display in shareableContent.displays) {
+                if (display.displayID == displayID) {
+                    targetDisplay = display;
+                    break;
+                }
+            }
+            
+            if (!targetDisplay) {
+                NSLog(@"❌ Display not found with ID: %u", displayID);
+            }
+        }
+        
+        // If no specific display was requested or found, use the first available
+        if (!targetDisplay) {
+            if (shareableContent.displays.count > 0) {
+                targetDisplay = shareableContent.displays.firstObject;
+                NSLog(@"✅ Using first available display: ID=%u, %dx%d", targetDisplay.displayID, (int)targetDisplay.width, (int)targetDisplay.height);
+            } else {
+                NSLog(@"❌ No displays available at all");
+                return Napi::Boolean::New(env, false);
+            }
+        } else {
+            NSLog(@"✅ Using specified display: ID=%u, %dx%d", targetDisplay.displayID, (int)targetDisplay.width, (int)targetDisplay.height);
+        }
+        
+        // Update displayID for subsequent use
+        displayID = targetDisplay.displayID;
+        
+        // Build exclusion windows array if provided
+        NSMutableArray<SCWindow *> *excluded = [NSMutableArray array];
+        BOOL excludeCurrentApp = NO;
+        if (info.Length() > 1 && info[1].IsObject()) {
+            Napi::Object options = info[1].As<Napi::Object>();
+            if (options.Has("excludeCurrentApp")) {
+                excludeCurrentApp = options.Get("excludeCurrentApp").As<Napi::Boolean>();
+            }
+            if (options.Has("excludeWindowIds") && options.Get("excludeWindowIds").IsArray()) {
+                Napi::Array arr = options.Get("excludeWindowIds").As<Napi::Array>();
+                for (uint32_t i = 0; i < arr.Length(); i++) {
+                    Napi::Value v = arr.Get(i);
+                    if (v.IsNumber()) {
+                        uint32_t wid = v.As<Napi::Number>().Uint32Value();
+                        for (SCWindow *w in shareableContent.windows) {
+                            if (w.windowID == wid) {
+                                [excluded addObject:w];
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (excludeCurrentApp) {
+            pid_t pid = [[NSProcessInfo processInfo] processIdentifier];
+            for (SCWindow *w in shareableContent.windows) {
+                if (w.owningApplication && w.owningApplication.processID == pid) {
+                    [excluded addObject:w];
+                }
+            }
+        }
+        
+        contentFilter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:excluded];
+        NSLog(@"✅ Content filter created for display recording");
+    }
+    
+    // Get actual display dimensions for proper video configuration
+    CGRect displayBounds = CGDisplayBounds(displayID);
+    NSSize videoSize = NSMakeSize(displayBounds.size.width, displayBounds.size.height);
+    
+    // Create stream configuration
+    SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
+    config.width = videoSize.width;
+    config.height = videoSize.height;
+    config.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
+    
+    // Try a more compatible pixel format
+    config.pixelFormat = kCVPixelFormatType_32BGRA;
+    
+    NSLog(@"📐 Stream configuration: %dx%d, FPS=30, cursor=%@", (int)config.width, (int)config.height, captureCursor ? @"YES" : @"NO");
+    
+    if (@available(macOS 13.0, *)) {
+        config.capturesAudio = includeSystemAudio;
+        config.excludesCurrentProcessAudio = YES;
+        NSLog(@"🔊 Audio configuration: capture=%@, excludeProcess=%@", includeSystemAudio ? @"YES" : @"NO", @"YES");
+    } else {
+        NSLog(@"⚠️ macOS 13.0+ features not available");
+    }
+    config.showsCursor = captureCursor;
+    
+    if (!CGRectIsNull(captureRect)) {
+        config.sourceRect = captureRect;
+        // Update video size if capture rect is specified
+        videoSize = NSMakeSize(captureRect.size.width, captureRect.size.height);
+    }
+    
+    // Create delegate
+    g_scDelegate = [[SCKRecorderDelegate alloc] init];
+    g_scDelegate.outputURL = outputURL;
+    g_scDelegate.hasStartTime = NO;
+    g_scDelegate.startAttempted = NO;
+    g_scDelegate.startFailed = NO;
+    
+    // Setup AVAssetWriter
+    NSError *writerError = nil;
+    g_scDelegate.assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&writerError];
+    
+    if (writerError) {
+        NSLog(@"❌ Failed to create asset writer: %@", writerError.localizedDescription);
+        return Napi::Boolean::New(env, false);
+    }
+    
+    NSLog(@"✅ Asset writer created successfully");
+    
+    // Video input settings using actual dimensions
+    NSLog(@"📺 Setting up video input: %dx%d", (int)videoSize.width, (int)videoSize.height);
+    NSDictionary *videoSettings = @{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @((NSInteger)videoSize.width),
+        AVVideoHeightKey: @((NSInteger)videoSize.height)
+    };
+    
+    g_scDelegate.videoInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
+    g_scDelegate.videoInput.expectsMediaDataInRealTime = YES;
+    
+    if ([g_scDelegate.assetWriter canAddInput:g_scDelegate.videoInput]) {
+        [g_scDelegate.assetWriter addInput:g_scDelegate.videoInput];
+        NSLog(@"✅ Video input added to asset writer");
+    } else {
+        NSLog(@"❌ Cannot add video input to asset writer");
+    }
+    
+    // Audio input settings (if needed)
+    if (includeSystemAudio) {
+        NSDictionary *audioSettings = @{
+            AVFormatIDKey: @(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: @44100,
+            AVNumberOfChannelsKey: @2
+        };
+        
+        g_scDelegate.audioInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
+        g_scDelegate.audioInput.expectsMediaDataInRealTime = YES;
+        
+        if ([g_scDelegate.assetWriter canAddInput:g_scDelegate.audioInput]) {
+            [g_scDelegate.assetWriter addInput:g_scDelegate.audioInput];
+        }
+    }
+    
+    // Create callback queue for the delegate
+    dispatch_queue_t delegateQueue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    
+    // Create and start stream first
+    g_scStream = [[SCStream alloc] initWithFilter:contentFilter configuration:config delegate:g_scDelegate];
+    
+    // Attach outputs to actually receive sample buffers
+    NSLog(@"✅ Setting up stream output callback for sample buffers");
+    dispatch_queue_t outputQueue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    NSError *outputError = nil;
+    BOOL addedScreenOutput = [g_scStream addStreamOutput:g_scDelegate type:SCStreamOutputTypeScreen sampleHandlerQueue:outputQueue error:&outputError];
+    if (addedScreenOutput) {
+        NSLog(@"✅ Screen output attached to SCStream");
+    } else {
+        NSLog(@"❌ Failed to attach screen output to SCStream: %@", outputError.localizedDescription);
+    }
+    if (includeSystemAudio) {
+        outputError = nil;
+        BOOL addedAudioOutput = [g_scStream addStreamOutput:g_scDelegate type:SCStreamOutputTypeAudio sampleHandlerQueue:outputQueue error:&outputError];
+        if (addedAudioOutput) {
+            NSLog(@"✅ Audio output attached to SCStream");
+        } else {
+            NSLog(@"⚠️ Failed to attach audio output to SCStream (audio may be disabled): %@", outputError.localizedDescription);
+        }
+    }
+    
+    if (!g_scStream) {
+        NSLog(@"❌ Failed to create SCStream");
+        return Napi::Boolean::New(env, false);
+    }
+    
+    NSLog(@"✅ SCStream created successfully");
+    
+    // Add callback queue for sample buffers (this might be important)
+    if (@available(macOS 14.0, *)) {
+        // In macOS 14+, we can set a specific queue
+        // For now, we'll rely on the default behavior
+    }
+    
+    // Start capture and wait for it to begin
+    dispatch_semaphore_t startSemaphore = dispatch_semaphore_create(0);
+    __block NSError *startError = nil;
+    
+    NSLog(@"🚀 Starting ScreenCaptureKit capture");
+    [g_scStream startCaptureWithCompletionHandler:^(NSError * _Nullable error) {
+        startError = error;
+        dispatch_semaphore_signal(startSemaphore);
+    }];
+    
+    dispatch_semaphore_wait(startSemaphore, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    
+    if (startError) {
+        NSLog(@"❌ Failed to start capture: %@", startError.localizedDescription);
+        return Napi::Boolean::New(env, false);
+    }
+    
+    NSLog(@"✅ ScreenCaptureKit capture started successfully");
+    
+    // Mark that we're ready to write (asset writer will be started in first sample buffer)
+    g_scDelegate.isWriting = YES;
+    g_isRecording = true;
+    
+    // Wait a moment to see if we get any sample buffers
+    NSLog(@"⏱️ Waiting 1 second for sample buffers to arrive...");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (g_scDelegate && !g_scDelegate.hasStartTime) {
+            NSLog(@"⚠️ No sample buffers received after 1 second - this might indicate a permission or configuration issue");
+        } else if (g_scDelegate && g_scDelegate.hasStartTime) {
+            NSLog(@"✅ Sample buffers are being received successfully");
+        }
+    });
+    
+    NSLog(@"🎬 Recording initialized successfully");
+    return Napi::Boolean::New(env, true);
 }
 
 // NAPI Function: Stop Recording
 Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    if (!g_isRecording || !g_movieFileOutput) {
+    if (!g_isRecording) {
         return Napi::Boolean::New(env, false);
     }
     
-    @try {
-        [g_movieFileOutput stopRecording];
-        [g_captureSession stopRunning];
-        
-        g_isRecording = false;
-        return Napi::Boolean::New(env, true);
-        
-    } @catch (NSException *exception) {
-        cleanupRecording();
-        return Napi::Boolean::New(env, false);
-    }
+    cleanupSCKRecording();
+    return Napi::Boolean::New(env, true);
 }
 
-
-
-// NAPI Function: Get Windows List
-Napi::Value GetWindows(const Napi::CallbackInfo& info) {
+// NAPI Function: Get Recording Status
+Napi::Value IsRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    Napi::Array windowArray = Napi::Array::New(env);
-    
-    @try {
-        // Get window list
-        CFArrayRef windowList = CGWindowListCopyWindowInfo(
-            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-            kCGNullWindowID
-        );
-        
-        if (!windowList) {
-            return windowArray;
-        }
-        
-        CFIndex windowCount = CFArrayGetCount(windowList);
-        uint32_t arrayIndex = 0;
-        
-        for (CFIndex i = 0; i < windowCount; i++) {
-            CFDictionaryRef window = (CFDictionaryRef)CFArrayGetValueAtIndex(windowList, i);
-            
-            // Get window ID
-            CFNumberRef windowIDRef = (CFNumberRef)CFDictionaryGetValue(window, kCGWindowNumber);
-            if (!windowIDRef) continue;
-            
-            uint32_t windowID;
-            CFNumberGetValue(windowIDRef, kCFNumberSInt32Type, &windowID);
-            
-            // Get window name
-            CFStringRef windowNameRef = (CFStringRef)CFDictionaryGetValue(window, kCGWindowName);
-            std::string windowName = "";
-            if (windowNameRef) {
-                const char* windowNameCStr = CFStringGetCStringPtr(windowNameRef, kCFStringEncodingUTF8);
-                if (windowNameCStr) {
-                    windowName = std::string(windowNameCStr);
-                } else {
-                    // Fallback for non-ASCII characters
-                    CFIndex length = CFStringGetLength(windowNameRef);
-                    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-                    char* buffer = (char*)malloc(maxSize);
-                    if (CFStringGetCString(windowNameRef, buffer, maxSize, kCFStringEncodingUTF8)) {
-                        windowName = std::string(buffer);
-                    }
-                    free(buffer);
-                }
-            }
-            
-            // Get application name
-            CFStringRef appNameRef = (CFStringRef)CFDictionaryGetValue(window, kCGWindowOwnerName);
-            std::string appName = "";
-            if (appNameRef) {
-                const char* appNameCStr = CFStringGetCStringPtr(appNameRef, kCFStringEncodingUTF8);
-                if (appNameCStr) {
-                    appName = std::string(appNameCStr);
-                } else {
-                    CFIndex length = CFStringGetLength(appNameRef);
-                    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
-                    char* buffer = (char*)malloc(maxSize);
-                    if (CFStringGetCString(appNameRef, buffer, maxSize, kCFStringEncodingUTF8)) {
-                        appName = std::string(buffer);
-                    }
-                    free(buffer);
-                }
-            }
-            
-            // Get window bounds
-            CFDictionaryRef boundsRef = (CFDictionaryRef)CFDictionaryGetValue(window, kCGWindowBounds);
-            CGRect bounds = CGRectZero;
-            if (boundsRef) {
-                CGRectMakeWithDictionaryRepresentation(boundsRef, &bounds);
-            }
-            
-            // Skip windows without name or very small windows
-            if (windowName.empty() || bounds.size.width < 50 || bounds.size.height < 50) {
-                continue;
-            }
-            
-            // Create window object
-            Napi::Object windowObj = Napi::Object::New(env);
-            windowObj.Set("id", Napi::Number::New(env, windowID));
-            windowObj.Set("name", Napi::String::New(env, windowName));
-            windowObj.Set("appName", Napi::String::New(env, appName));
-            windowObj.Set("x", Napi::Number::New(env, bounds.origin.x));
-            windowObj.Set("y", Napi::Number::New(env, bounds.origin.y));
-            windowObj.Set("width", Napi::Number::New(env, bounds.size.width));
-            windowObj.Set("height", Napi::Number::New(env, bounds.size.height));
-            
-            windowArray.Set(arrayIndex++, windowObj);
-        }
-        
-        CFRelease(windowList);
-        return windowArray;
-        
-    } @catch (NSException *exception) {
-        return windowArray;
-    }
-}
-
-// NAPI Function: Get Audio Devices
-Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    
-    @try {
-        NSMutableArray *devices = [NSMutableArray array];
-        
-        // Get all audio devices
-        NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-        
-        for (AVCaptureDevice *device in audioDevices) {
-            [devices addObject:@{
-                @"id": device.uniqueID,
-                @"name": device.localizedName,
-                @"manufacturer": device.manufacturer ?: @"Unknown",
-                @"isDefault": @([device isEqual:[AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio]])
-            }];
-        }
-        
-        // Convert to NAPI array
-        Napi::Array result = Napi::Array::New(env, devices.count);
-        for (NSUInteger i = 0; i < devices.count; i++) {
-            NSDictionary *device = devices[i];
-            Napi::Object deviceObj = Napi::Object::New(env);
-            deviceObj.Set("id", Napi::String::New(env, [device[@"id"] UTF8String]));
-            deviceObj.Set("name", Napi::String::New(env, [device[@"name"] UTF8String]));
-            deviceObj.Set("manufacturer", Napi::String::New(env, [device[@"manufacturer"] UTF8String]));
-            deviceObj.Set("isDefault", Napi::Boolean::New(env, [device[@"isDefault"] boolValue]));
-            result[i] = deviceObj;
-        }
-        
-        return result;
-        
-    } @catch (NSException *exception) {
-        return Napi::Array::New(env, 0);
-    }
+    return Napi::Boolean::New(env, g_isRecording);
 }
 
 // NAPI Function: Get Displays
 Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    @try {
-        NSArray *displays = [ScreenCapture getAvailableDisplays];
-        Napi::Array result = Napi::Array::New(env, displays.count);
-        
-        NSLog(@"Found %lu displays", (unsigned long)displays.count);
-        
-        for (NSUInteger i = 0; i < displays.count; i++) {
-            NSDictionary *display = displays[i];
-            NSLog(@"Display %lu: ID=%u, Name=%@, Size=%@x%@", 
-                  (unsigned long)i,
-                  [display[@"id"] unsignedIntValue],
-                  display[@"name"],
-                  display[@"width"],
-                  display[@"height"]);
-                  
-            Napi::Object displayObj = Napi::Object::New(env);
-            displayObj.Set("id", Napi::Number::New(env, [display[@"id"] unsignedIntValue]));
-            displayObj.Set("name", Napi::String::New(env, [display[@"name"] UTF8String]));
-            displayObj.Set("width", Napi::Number::New(env, [display[@"width"] doubleValue]));
-            displayObj.Set("height", Napi::Number::New(env, [display[@"height"] doubleValue]));
-            displayObj.Set("x", Napi::Number::New(env, [display[@"x"] doubleValue]));
-            displayObj.Set("y", Napi::Number::New(env, [display[@"y"] doubleValue]));
-            displayObj.Set("isPrimary", Napi::Boolean::New(env, [display[@"isPrimary"] boolValue]));
-            result[i] = displayObj;
-        }
-        
-        return result;
-        
-    } @catch (NSException *exception) {
-        NSLog(@"Exception in GetDisplays: %@", exception);
+    if (!isScreenCaptureKitAvailable()) {
+        // Fallback to legacy method
+        return GetAvailableDisplays(info);
+    }
+    
+    // Use ScreenCaptureKit
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block SCShareableContent *shareableContent = nil;
+    __block NSError *error = nil;
+    
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent * _Nullable content, NSError * _Nullable err) {
+        shareableContent = content;
+        error = err;
+        dispatch_semaphore_signal(semaphore);
+    }];
+    
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    
+    if (error) {
+        NSLog(@"Failed to get displays: %@", error.localizedDescription);
         return Napi::Array::New(env, 0);
     }
+    
+    Napi::Array displaysArray = Napi::Array::New(env);
+    uint32_t index = 0;
+    
+    for (SCDisplay *display in shareableContent.displays) {
+        Napi::Object displayObj = Napi::Object::New(env);
+        displayObj.Set("id", Napi::Number::New(env, display.displayID));
+        displayObj.Set("width", Napi::Number::New(env, display.width));
+        displayObj.Set("height", Napi::Number::New(env, display.height));
+        displayObj.Set("frame", Napi::Object::New(env)); // TODO: Add frame details
+        
+        displaysArray.Set(index++, displayObj);
+    }
+    
+    return displaysArray;
 }
 
-// NAPI Function: Get Recording Status
-Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    return Napi::Boolean::New(env, g_isRecording);
-}
 
-// NAPI Function: Get Window Thumbnail
-Napi::Value GetWindowThumbnail(const Napi::CallbackInfo& info) {
+// NAPI Function: Get Windows
+Napi::Value GetWindows(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Window ID is required").ThrowAsJavaScriptException();
-        return env.Null();
+    if (!isScreenCaptureKitAvailable()) {
+        // Use legacy CGWindowList method
+        return GetWindowList(info);
     }
     
-    uint32_t windowID = info[0].As<Napi::Number>().Uint32Value();
+    // Use ScreenCaptureKit
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block SCShareableContent *shareableContent = nil;
+    __block NSError *error = nil;
     
-    // Optional parameters
-    int maxWidth = 300;  // Default thumbnail width
-    int maxHeight = 200; // Default thumbnail height
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent * _Nullable content, NSError * _Nullable err) {
+        shareableContent = content;
+        error = err;
+        dispatch_semaphore_signal(semaphore);
+    }];
     
-    if (info.Length() >= 2 && !info[1].IsNull()) {
-        maxWidth = info[1].As<Napi::Number>().Int32Value();
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    
+    if (error) {
+        NSLog(@"Failed to get windows: %@", error.localizedDescription);
+        return Napi::Array::New(env, 0);
     }
-    if (info.Length() >= 3 && !info[2].IsNull()) {
-        maxHeight = info[2].As<Napi::Number>().Int32Value();
-    }
     
-    @try {
-        // Create window image
-        CGImageRef windowImage = CGWindowListCreateImage(
-            CGRectNull,
-            kCGWindowListOptionIncludingWindow,
-            windowID,
-            kCGWindowImageBoundsIgnoreFraming | kCGWindowImageShouldBeOpaque
-        );
-        
-        if (!windowImage) {
-            return env.Null();
-        }
-        
-        // Get original dimensions
-        size_t originalWidth = CGImageGetWidth(windowImage);
-        size_t originalHeight = CGImageGetHeight(windowImage);
-        
-        // Calculate scaled dimensions maintaining aspect ratio
-        double scaleX = (double)maxWidth / originalWidth;
-        double scaleY = (double)maxHeight / originalHeight;
-        double scale = std::min(scaleX, scaleY);
-        
-        size_t thumbnailWidth = (size_t)(originalWidth * scale);
-        size_t thumbnailHeight = (size_t)(originalHeight * scale);
-        
-        // Create scaled image
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-        CGContextRef context = CGBitmapContextCreate(
-            NULL,
-            thumbnailWidth,
-            thumbnailHeight,
-            8,
-            thumbnailWidth * 4,
-            colorSpace,
-            kCGImageAlphaPremultipliedLast
-        );
-        
-        if (context) {
-            CGContextDrawImage(context, CGRectMake(0, 0, thumbnailWidth, thumbnailHeight), windowImage);
-            CGImageRef thumbnailImage = CGBitmapContextCreateImage(context);
+    Napi::Array windowsArray = Napi::Array::New(env);
+    uint32_t index = 0;
+    
+    for (SCWindow *window in shareableContent.windows) {
+        if (window.isOnScreen && window.frame.size.width > 50 && window.frame.size.height > 50) {
+            Napi::Object windowObj = Napi::Object::New(env);
+            windowObj.Set("id", Napi::Number::New(env, window.windowID));
+            windowObj.Set("title", Napi::String::New(env, window.title ? [window.title UTF8String] : ""));
+            windowObj.Set("ownerName", Napi::String::New(env, window.owningApplication.applicationName ? [window.owningApplication.applicationName UTF8String] : ""));
+            windowObj.Set("bounds", Napi::Object::New(env)); // TODO: Add bounds details
             
-            if (thumbnailImage) {
-                // Convert to PNG data
-                NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:thumbnailImage];
-                NSData *pngData = [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-                
-                if (pngData) {
-                    // Convert to Base64
-                    NSString *base64String = [pngData base64EncodedStringWithOptions:0];
-                    std::string base64Std = [base64String UTF8String];
-                    
-                    CGImageRelease(thumbnailImage);
-                    CGContextRelease(context);
-                    CGColorSpaceRelease(colorSpace);
-                    CGImageRelease(windowImage);
-                    
-                    return Napi::String::New(env, base64Std);
-                }
-                
-                CGImageRelease(thumbnailImage);
-            }
-            
-            CGContextRelease(context);
+            windowsArray.Set(index++, windowObj);
         }
-        
-        CGColorSpaceRelease(colorSpace);
-        CGImageRelease(windowImage);
-        
-        return env.Null();
-        
-    } @catch (NSException *exception) {
-        return env.Null();
-    }
-}
-
-// NAPI Function: Get Display Thumbnail
-Napi::Value GetDisplayThumbnail(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Display ID is required").ThrowAsJavaScriptException();
-        return env.Null();
     }
     
-    uint32_t displayID = info[0].As<Napi::Number>().Uint32Value();
-    
-    // Optional parameters
-    int maxWidth = 300;  // Default thumbnail width
-    int maxHeight = 200; // Default thumbnail height
-    
-    if (info.Length() >= 2 && !info[1].IsNull()) {
-        maxWidth = info[1].As<Napi::Number>().Int32Value();
-    }
-    if (info.Length() >= 3 && !info[2].IsNull()) {
-        maxHeight = info[2].As<Napi::Number>().Int32Value();
-    }
-    
-    @try {
-        // Verify display exists
-        CGDirectDisplayID activeDisplays[32];
-        uint32_t displayCount;
-        CGError err = CGGetActiveDisplayList(32, activeDisplays, &displayCount);
-        
-        if (err != kCGErrorSuccess) {
-            NSLog(@"Failed to get active display list: %d", err);
-            return env.Null();
-        }
-        
-        bool displayFound = false;
-        for (uint32_t i = 0; i < displayCount; i++) {
-            if (activeDisplays[i] == displayID) {
-                displayFound = true;
-                break;
-            }
-        }
-        
-        if (!displayFound) {
-            NSLog(@"Display ID %u not found in active displays", displayID);
-            return env.Null();
-        }
-        
-        // Create display image
-        CGImageRef displayImage = CGDisplayCreateImage(displayID);
-        
-        if (!displayImage) {
-            NSLog(@"CGDisplayCreateImage failed for display ID: %u", displayID);
-            return env.Null();
-        }
-        
-        // Get original dimensions
-        size_t originalWidth = CGImageGetWidth(displayImage);
-        size_t originalHeight = CGImageGetHeight(displayImage);
-        
-        NSLog(@"Original dimensions: %zux%zu", originalWidth, originalHeight);
-        
-        // Calculate scaled dimensions maintaining aspect ratio
-        double scaleX = (double)maxWidth / originalWidth;
-        double scaleY = (double)maxHeight / originalHeight;
-        double scale = std::min(scaleX, scaleY);
-        
-        size_t thumbnailWidth = (size_t)(originalWidth * scale);
-        size_t thumbnailHeight = (size_t)(originalHeight * scale);
-        
-        NSLog(@"Thumbnail dimensions: %zux%zu (scale: %f)", thumbnailWidth, thumbnailHeight, scale);
-        
-        // Create scaled image
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-        CGContextRef context = CGBitmapContextCreate(
-            NULL,
-            thumbnailWidth,
-            thumbnailHeight,
-            8,
-            thumbnailWidth * 4,
-            colorSpace,
-            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
-        );
-        
-        if (!context) {
-            NSLog(@"Failed to create bitmap context");
-            CGImageRelease(displayImage);
-            CGColorSpaceRelease(colorSpace);
-            return env.Null();
-        }
-        
-        // Set interpolation quality for better scaling
-        CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
-        
-        // Draw the image
-        CGContextDrawImage(context, CGRectMake(0, 0, thumbnailWidth, thumbnailHeight), displayImage);
-        CGImageRef thumbnailImage = CGBitmapContextCreateImage(context);
-        
-        if (!thumbnailImage) {
-            NSLog(@"Failed to create thumbnail image");
-            CGContextRelease(context);
-            CGImageRelease(displayImage);
-            CGColorSpaceRelease(colorSpace);
-            return env.Null();
-        }
-        
-        // Convert to PNG data
-        NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:thumbnailImage];
-        NSDictionary *properties = @{NSImageCompressionFactor: @0.8};
-        NSData *pngData = [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:properties];
-        
-        if (!pngData) {
-            NSLog(@"Failed to convert image to PNG data");
-            CGImageRelease(thumbnailImage);
-            CGContextRelease(context);
-            CGImageRelease(displayImage);
-            CGColorSpaceRelease(colorSpace);
-            return env.Null();
-        }
-        
-        // Convert to Base64
-        NSString *base64String = [pngData base64EncodedStringWithOptions:0];
-        std::string base64Std = [base64String UTF8String];
-        
-        NSLog(@"Successfully created thumbnail with base64 length: %lu", (unsigned long)base64Std.length());
-        
-        // Cleanup
-        CGImageRelease(thumbnailImage);
-        CGContextRelease(context);
-        CGColorSpaceRelease(colorSpace);
-        CGImageRelease(displayImage);
-        
-        return Napi::String::New(env, base64Std);
-        
-    } @catch (NSException *exception) {
-        NSLog(@"Exception in GetDisplayThumbnail: %@", exception);
-        return env.Null();
-    }
+    return windowsArray;
 }
 
 // NAPI Function: Check Permissions
 Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    @try {
-        // Check screen recording permission
-        bool hasScreenPermission = true;
+    // Check screen recording permission
+    bool hasPermission = CGPreflightScreenCaptureAccess();
+    
+    // If we don't have permission, try to request it
+    if (!hasPermission) {
+        NSLog(@"⚠️ Screen recording permission not granted, requesting access");
+        bool requestResult = CGRequestScreenCaptureAccess();
+        NSLog(@"📋 Permission request result: %@", requestResult ? @"SUCCESS" : @"FAILED");
         
-        if (@available(macOS 10.15, *)) {
-            // Try to create a display stream to test permissions
-            CGDisplayStreamRef stream = CGDisplayStreamCreate(
-                CGMainDisplayID(), 
-                1, 1, 
-                kCVPixelFormatType_32BGRA, 
-                nil, 
-                ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
-                    // Empty handler
-                }
-            );
-            
-            if (stream) {
-                CFRelease(stream);
-                hasScreenPermission = true;
-            } else {
-                hasScreenPermission = false;
-            }
-        }
-        
-        // Check audio permission
-        bool hasAudioPermission = true;
-        if (@available(macOS 10.14, *)) {
-            AVAuthorizationStatus audioStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-            hasAudioPermission = (audioStatus == AVAuthorizationStatusAuthorized);
-        }
-        
-        return Napi::Boolean::New(env, hasScreenPermission && hasAudioPermission);
-        
-    } @catch (NSException *exception) {
-        return Napi::Boolean::New(env, false);
+        // Check again after request
+        hasPermission = CGPreflightScreenCaptureAccess();
     }
+    
+    return Napi::Boolean::New(env, hasPermission);
 }
 
-// Initialize NAPI Module
-Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set(Napi::String::New(env, "startRecording"), Napi::Function::New(env, StartRecording));
-    exports.Set(Napi::String::New(env, "stopRecording"), Napi::Function::New(env, StopRecording));
-
-    exports.Set(Napi::String::New(env, "getAudioDevices"), Napi::Function::New(env, GetAudioDevices));
-    exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
-    exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
-    exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
-    exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));
+// NAPI Function: Get Audio Devices  
+Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
     
-    // Thumbnail functions
-    exports.Set(Napi::String::New(env, "getWindowThumbnail"), Napi::Function::New(env, GetWindowThumbnail));
-    exports.Set(Napi::String::New(env, "getDisplayThumbnail"), Napi::Function::New(env, GetDisplayThumbnail));
+    Napi::Array devices = Napi::Array::New(env);
+    uint32_t index = 0;
+    
+    AudioObjectPropertyAddress propertyAddress = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    
+    UInt32 dataSize = 0;
+    OSStatus status = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize);
+    
+    if (status != noErr) {
+        return devices;
+    }
+    
+    UInt32 deviceCount = dataSize / sizeof(AudioDeviceID);
+    AudioDeviceID *audioDevices = (AudioDeviceID *)malloc(dataSize);
+    
+    status = AudioObjectGetPropertyData(kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize, audioDevices);
+    
+    if (status == noErr) {
+        for (UInt32 i = 0; i < deviceCount; ++i) {
+            AudioDeviceID deviceID = audioDevices[i];
+            
+            // Get device name
+            CFStringRef deviceName = NULL;
+            UInt32 size = sizeof(deviceName);
+            AudioObjectPropertyAddress nameAddress = {
+                kAudioDevicePropertyDeviceNameCFString,
+                kAudioDevicePropertyScopeInput,
+                kAudioObjectPropertyElementMain
+            };
+            
+            status = AudioObjectGetPropertyData(deviceID, &nameAddress, 0, NULL, &size, &deviceName);
+            
+            if (status == noErr && deviceName) {
+                Napi::Object deviceObj = Napi::Object::New(env);
+                deviceObj.Set("id", Napi::String::New(env, std::to_string(deviceID)));
+                
+                const char *name = CFStringGetCStringPtr(deviceName, kCFStringEncodingUTF8);
+                if (name) {
+                    deviceObj.Set("name", Napi::String::New(env, name));
+                } else {
+                    deviceObj.Set("name", Napi::String::New(env, "Unknown Device"));
+                }
+                
+                devices.Set(index++, deviceObj);
+                CFRelease(deviceName);
+            }
+        }
+    }
+    
+    free(audioDevices);
+    return devices;
+}
+
+// Initialize the addon
+Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    exports.Set("startRecording", Napi::Function::New(env, StartRecording));
+    exports.Set("stopRecording", Napi::Function::New(env, StopRecording));
+    exports.Set("isRecording", Napi::Function::New(env, IsRecording));
+    exports.Set("getDisplays", Napi::Function::New(env, GetDisplays));
+    exports.Set("getWindows", Napi::Function::New(env, GetWindows));
+    exports.Set("checkPermissions", Napi::Function::New(env, CheckPermissions));
+    exports.Set("getAudioDevices", Napi::Function::New(env, GetAudioDevices));
     
     // Initialize cursor tracker
     InitCursorTracker(env, exports);
@@ -826,4 +755,4 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     return exports;
 }
 
-NODE_API_MODULE(mac_recorder, Init) 
+NODE_API_MODULE(mac_recorder, Init)

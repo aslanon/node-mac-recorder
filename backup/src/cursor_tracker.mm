@@ -168,7 +168,7 @@ void writeToFile(NSDictionary *cursorData) {
                                                                options:0
                                                                  error:&error];
             if (jsonData && !error) {
-                NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                NSString *jsonString = [[[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding] autorelease];
                 
                 if (g_isFirstWrite) {
                     // İlk yazma - array başlat
@@ -292,6 +292,7 @@ void cleanupCursorTracking() {
     }
     
     if (g_timerTarget) {
+        [g_timerTarget autorelease];
         g_timerTarget = nil;
     }
     
@@ -351,12 +352,12 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
     @try {
         // Dosyayı oluştur ve aç
         g_outputPath = [NSString stringWithUTF8String:outputPath.c_str()];
-        g_fileHandle = [NSFileHandle fileHandleForWritingAtPath:g_outputPath];
+        g_fileHandle = [[NSFileHandle fileHandleForWritingAtPath:g_outputPath] retain];
         
         if (!g_fileHandle) {
             // Dosya yoksa oluştur
             [[NSFileManager defaultManager] createFileAtPath:g_outputPath contents:nil attributes:nil];
-            g_fileHandle = [NSFileHandle fileHandleForWritingAtPath:g_outputPath];
+            g_fileHandle = [[NSFileHandle fileHandleForWritingAtPath:g_outputPath] retain];
         }
         
         if (!g_fileHandle) {

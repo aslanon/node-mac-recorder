@@ -20,32 +20,25 @@
       "xcode_settings": {
         "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
         "CLANG_CXX_LIBRARY": "libc++",
-        "MACOSX_DEPLOYMENT_TARGET": "12.3",
-        "ARCHS": ["arm64"],
-        "VALID_ARCHS": ["arm64"],
+        "MACOSX_DEPLOYMENT_TARGET": "10.15",
         "OTHER_CFLAGS": [
-          "-ObjC++",
-          "-fmodules"
-        ],
-        "CLANG_ENABLE_OBJC_ARC": "YES"
+          "-ObjC++"
+        ]
       },
       "link_settings": {
         "libraries": [
-          "-framework ScreenCaptureKit",
           "-framework AVFoundation",
           "-framework CoreMedia",
           "-framework CoreVideo",
           "-framework Foundation",
           "-framework AppKit",
+          "-framework ScreenCaptureKit",
           "-framework ApplicationServices",
           "-framework Carbon",
           "-framework Accessibility"
         ]
       },
-      "defines": [ 
-        "NAPI_DISABLE_CPP_EXCEPTIONS",
-        "USE_SCREENCAPTUREKIT=1"
-      ]
+      "defines": [ "NAPI_DISABLE_CPP_EXCEPTIONS" ]
     }
   ]
 } 

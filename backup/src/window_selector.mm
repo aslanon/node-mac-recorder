@@ -221,7 +221,7 @@ bool hideScreenRecordingPreview();
 @implementation WindowSelectorDelegate
 - (void)selectButtonClicked:(id)sender {
     if (g_currentWindowUnderCursor) {
-        g_selectedWindowInfo = g_currentWindowUnderCursor;
+        g_selectedWindowInfo = [g_currentWindowUnderCursor retain];
         cleanupWindowSelector();
     }
 }
@@ -233,7 +233,7 @@ bool hideScreenRecordingPreview();
     // Get screen info from global array using button tag
     if (g_allScreens && screenIndex >= 0 && screenIndex < [g_allScreens count]) {
         NSDictionary *screenInfo = [g_allScreens objectAtIndex:screenIndex];
-        g_selectedScreenInfo = screenInfo;
+        g_selectedScreenInfo = [screenInfo retain];
         
         NSLog(@"🖥️ SCREEN BUTTON CLICKED: %@ (%@)", 
               [screenInfo objectForKey:@"name"],
@@ -458,7 +458,8 @@ void updateOverlay() {
         
         if (windowUnderCursor && ![windowUnderCursor isEqualToDictionary:g_currentWindowUnderCursor]) {
             // Update current window
-            g_currentWindowUnderCursor = windowUnderCursor;
+            [g_currentWindowUnderCursor release];
+            g_currentWindowUnderCursor = [windowUnderCursor retain];
             
             // Update overlay position and size
             int x = [[windowUnderCursor objectForKey:@"x"] intValue];
@@ -549,6 +550,7 @@ void updateOverlay() {
             NSLog(@"🚪 WINDOW LEFT: %@ - \"%@\"", leftAppName, leftWindowTitle);
             
             [g_overlayWindow orderOut:nil];
+            [g_currentWindowUnderCursor release];
             g_currentWindowUnderCursor = nil;
         }
     }
@@ -580,15 +582,18 @@ void cleanupWindowSelector() {
     
     // Clean up delegate
     if (g_delegate) {
+        [g_delegate release];
         g_delegate = nil;
     }
     
     // Clean up data
     if (g_allWindows) {
+        [g_allWindows release];
         g_allWindows = nil;
     }
     
     if (g_currentWindowUnderCursor) {
+        [g_currentWindowUnderCursor release];
         g_currentWindowUnderCursor = nil;
     }
 }
@@ -602,6 +607,7 @@ void cleanupRecordingPreview() {
     }
     
     if (g_recordingWindowInfo) {
+        [g_recordingWindowInfo release];
         g_recordingWindowInfo = nil;
     }
 }
@@ -614,7 +620,7 @@ bool showRecordingPreview(NSDictionary *windowInfo) {
         if (!windowInfo) return false;
         
         // Store window info
-        g_recordingWindowInfo = windowInfo;
+        g_recordingWindowInfo = [windowInfo retain];
         
         // Get main screen bounds for full screen overlay
         NSScreen *mainScreen = [NSScreen mainScreen];
@@ -687,11 +693,13 @@ void cleanupScreenSelector() {
         for (NSWindow *overlayWindow in g_screenOverlayWindows) {
             [overlayWindow close];
         }
+        [g_screenOverlayWindows release];
         g_screenOverlayWindows = nil;
     }
     
     // Clean up screen data
     if (g_allScreens) {
+        [g_allScreens release];
         g_allScreens = nil;
     }
 }
@@ -831,11 +839,11 @@ bool startScreenSelection() {
             [overlayWindow makeKeyAndOrderFront:nil];
             
             [g_screenOverlayWindows addObject:overlayWindow];
-            screenInfo = nil;
+            [screenInfo release];
         }
         
-        g_allScreens = screenInfoArray;
-        screenInfoArray = nil;
+        g_allScreens = [screenInfoArray retain];
+        [screenInfoArray release];
         g_isScreenSelecting = true;
         
         // Add ESC key event monitor to cancel selection
@@ -875,10 +883,11 @@ bool stopScreenSelection() {
 NSDictionary* getSelectedScreenInfo() {
     if (!g_selectedScreenInfo) return nil;
     
-    NSDictionary *result = g_selectedScreenInfo;
+    NSDictionary *result = [g_selectedScreenInfo retain];
+    [g_selectedScreenInfo release];
     g_selectedScreenInfo = nil;
     
-    return result;
+    return [result autorelease];
 }
 
 bool showScreenRecordingPreview(NSDictionary *screenInfo) {
@@ -952,7 +961,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     
     @try {
         // Get all windows
-        g_allWindows = getAllSelectableWindows();
+        g_allWindows = [getAllSelectableWindows() retain];
         
         if (!g_allWindows || [g_allWindows count] == 0) {
             Napi::Error::New(env, "No selectable windows found").ThrowAsJavaScriptException();
@@ -1164,6 +1173,7 @@ Napi::Value GetSelectedWindowInfo(const Napi::CallbackInfo& info) {
         result.Set("screenHeight", Napi::Number::New(env, (int)screenFrame.size.height));
         
         // Clear selected window info after reading
+        [g_selectedWindowInfo release];
         g_selectedWindowInfo = nil;
         
         return result;
@@ -1283,7 +1293,7 @@ Napi::Value ShowRecordingPreview(const Napi::CallbackInfo& info) {
         }
         
         bool success = showRecordingPreview(windowInfo);
-        windowInfo = nil;
+        [windowInfo release];
         
         return Napi::Boolean::New(env, success);
         
@@ -1405,7 +1415,7 @@ Napi::Value ShowScreenRecordingPreview(const Napi::CallbackInfo& info) {
         }
         
         bool success = showScreenRecordingPreview(screenInfo);
-        screenInfo = nil;
+        [screenInfo release];
         
         return Napi::Boolean::New(env, success);
         

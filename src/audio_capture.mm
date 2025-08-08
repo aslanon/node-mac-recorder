@@ -1,9 +1,11 @@
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreAudio/CoreAudio.h>
 
 @interface AudioCapture : NSObject
 
 + (NSArray *)getAudioDevices;
++ (NSArray *)getSystemAudioDevices;
 + (BOOL)hasAudioPermission;
 + (void)requestAudioPermission:(void(^)(BOOL granted))completion;
 
@@ -14,25 +16,39 @@
 + (NSArray *)getAudioDevices {
     NSMutableArray *devices = [NSMutableArray array];
     
-    // Get all audio devices
-    NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+    // Get microphone devices using AVFoundation
+    AVCaptureDeviceDiscoverySession *discoverySession = [AVCaptureDeviceDiscoverySession 
+        discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInMicrophone, AVCaptureDeviceTypeExternalUnknown]
+        mediaType:AVMediaTypeAudio
+        position:AVCaptureDevicePositionUnspecified];
+    NSArray *audioDevices = discoverySession.devices;
     
     for (AVCaptureDevice *device in audioDevices) {
         NSDictionary *deviceInfo = @{
             @"id": device.uniqueID,
             @"name": device.localizedName,
             @"manufacturer": device.manufacturer ?: @"Unknown",
+            @"type": @"microphone",
             @"isDefault": @([device isEqual:[AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio]])
         };
         
         [devices addObject:deviceInfo];
     }
     
-    // Also get system audio devices using Core Audio
+    // Add system audio devices using Core Audio API
+    NSArray *systemDevices = [self getSystemAudioDevices];
+    [devices addObjectsFromArray:systemDevices];
+    
+    return [devices copy];
+}
+
++ (NSArray *)getSystemAudioDevices {
+    NSMutableArray *devices = [NSMutableArray array];
+    
     AudioObjectPropertyAddress propertyAddress = {
         kAudioHardwarePropertyDevices,
         kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMaster
+        kAudioObjectPropertyElementMain  // Changed from kAudioObjectPropertyElementMaster (deprecated)
     };
     
     UInt32 dataSize = 0;
@@ -49,37 +65,41 @@
                 AudioDeviceID deviceID = audioDeviceIDs[i];
                 
                 // Get device name
-                propertyAddress.mSelector = kAudioDevicePropertyDeviceNameCFString;
-                propertyAddress.mScope = kAudioObjectPropertyScopeGlobal;
-                
                 CFStringRef deviceName = NULL;
-                dataSize = sizeof(deviceName);
+                UInt32 size = sizeof(deviceName);
+                AudioObjectPropertyAddress nameAddress = {
+                    kAudioDevicePropertyDeviceNameCFString,
+                    kAudioDevicePropertyScopeOutput,  // Focus on output devices for system audio
+                    kAudioObjectPropertyElementMain
+                };
                 
-                status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, NULL, &dataSize, &deviceName);
+                status = AudioObjectGetPropertyData(deviceID, &nameAddress, 0, NULL, &size, &deviceName);
                 
                 if (status == kAudioHardwareNoError && deviceName) {
-                    // Check if it's an input device
-                    propertyAddress.mSelector = kAudioDevicePropertyStreamConfiguration;
-                    propertyAddress.mScope = kAudioDevicePropertyScopeInput;
+                    // Check if this is an output device
+                    AudioObjectPropertyAddress streamAddress = {
+                        kAudioDevicePropertyStreams,
+                        kAudioDevicePropertyScopeOutput,
+                        kAudioObjectPropertyElementMain
+                    };
                     
-                    AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, NULL, &dataSize);
+                    UInt32 streamSize = 0;
+                    status = AudioObjectGetPropertyDataSize(deviceID, &streamAddress, 0, NULL, &streamSize);
                     
-                    if (dataSize > 0) {
-                        AudioBufferList *bufferList = (AudioBufferList *)malloc(dataSize);
-                        AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, NULL, &dataSize, bufferList);
+                    if (status == kAudioHardwareNoError && streamSize > 0) {
+                        // This is an output device - can be used for system audio capture
+                        const char *name = CFStringGetCStringPtr(deviceName, kCFStringEncodingUTF8);
+                        NSString *deviceNameStr = name ? [NSString stringWithUTF8String:name] : @"Unknown Device";
                         
-                        if (bufferList->mNumberBuffers > 0) {
-                            NSDictionary *deviceInfo = @{
-                                @"id": @(deviceID),
-                                @"name": (__bridge NSString *)deviceName,
-                                @"type": @"System Audio Input",
-                                @"isSystemDevice": @YES
-                            };
-                            
-                            [devices addObject:deviceInfo];
-                        }
+                        NSDictionary *deviceInfo = @{
+                            @"id": [NSString stringWithFormat:@"%u", deviceID],
+                            @"name": deviceNameStr,
+                            @"manufacturer": @"System",
+                            @"type": @"system_audio",
+                            @"isDefault": @(NO)  // We'll determine default separately if needed
+                        };
                         
-                        free(bufferList);
+                        [devices addObject:deviceInfo];
                     }
                     
                     CFRelease(deviceName);
@@ -94,23 +114,59 @@
 }
 
 + (BOOL)hasAudioPermission {
-    if (@available(macOS 10.14, *)) {
-        AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-        return status == AVAuthorizationStatusAuthorized;
-    }
-    return YES; // Older versions don't require explicit permission
+    // Check microphone permission using AVFoundation
+    AVAuthorizationStatus authStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    return authStatus == AVAuthorizationStatusAuthorized;
 }
 
 + (void)requestAudioPermission:(void(^)(BOOL granted))completion {
-    if (@available(macOS 10.14, *)) {
-        [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
-            dispatch_async(dispatch_get_main_queue(), ^{
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) {
                 completion(granted);
-            });
-        }];
-    } else {
-        completion(YES);
-    }
+            }
+        });
+    }];
 }
 
-@end 
+@end
+
+// ScreenCaptureKit Audio Configuration Helper
+API_AVAILABLE(macos(12.3))
+@interface SCKAudioConfiguration : NSObject
+
++ (BOOL)configureAudioForStream:(SCStreamConfiguration *)config 
+                 includeMicrophone:(BOOL)includeMicrophone
+               includeSystemAudio:(BOOL)includeSystemAudio
+                  microphoneDevice:(NSString *)micDeviceID
+                systemAudioDevice:(NSString *)sysDeviceID;
+
+@end
+
+@implementation SCKAudioConfiguration
+
++ (BOOL)configureAudioForStream:(SCStreamConfiguration *)config 
+                 includeMicrophone:(BOOL)includeMicrophone
+               includeSystemAudio:(BOOL)includeSystemAudio
+                  microphoneDevice:(NSString *)micDeviceID
+                systemAudioDevice:(NSString *)sysDeviceID {
+    
+    // Configure system audio capture (requires macOS 13.0+)
+    if (@available(macOS 13.0, *)) {
+        config.capturesAudio = includeSystemAudio;
+        config.excludesCurrentProcessAudio = YES;
+        
+        if (includeSystemAudio) {
+            // ScreenCaptureKit will capture system audio from the selected content
+            // Quality settings
+            config.channelCount = 2;  // Stereo
+            config.sampleRate = 48000; // 48kHz
+        } else {
+            config.capturesAudio = NO;
+        }
+    }
+    
+    return YES;
+}
+
+@end

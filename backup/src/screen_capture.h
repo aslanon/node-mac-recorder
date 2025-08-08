@@ -3,7 +3,6 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
-#import <napi.h>
 
 @interface ScreenCapture : NSObject
 
@@ -16,9 +15,5 @@
                                      rect:(CGRect)rect;
 
 @end
-
-// NAPI function declarations for legacy fallback
-Napi::Value GetAvailableDisplays(const Napi::CallbackInfo& info);
-Napi::Value GetWindowList(const Napi::CallbackInfo& info);
 
 #endif // SCREEN_CAPTURE_H 
