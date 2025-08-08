@@ -1,19 +1,27 @@
 const { EventEmitter } = require("events");
 const path = require("path");
 
-// Native modülü yükle
+// Native modülü yükle (arm64 prebuild öncelikli)
 let nativeBinding;
 try {
-	nativeBinding = require("./build/Release/mac_recorder.node");
+	if (process.platform === "darwin" && process.arch === "arm64") {
+		nativeBinding = require("./prebuilds/darwin-arm64/node.napi.node");
+	} else {
+		nativeBinding = require("./build/Release/mac_recorder.node");
+	}
 } catch (error) {
 	try {
-		nativeBinding = require("./build/Debug/mac_recorder.node");
-	} catch (debugError) {
-		throw new Error(
-			'Native module not found. Please run "npm run build" to compile the native module.\n' +
-				"Original error: " +
-				error.message
-		);
+		nativeBinding = require("./build/Release/mac_recorder.node");
+	} catch (_) {
+		try {
+			nativeBinding = require("./build/Debug/mac_recorder.node");
+		} catch (debugError) {
+			throw new Error(
+				'Native module not found. Please run "npm run build" to compile the native module.\n' +
+					"Original error: " +
+					error.message
+			);
+		}
 	}
 }
 
@@ -40,11 +48,11 @@ class WindowSelector extends EventEmitter {
 			try {
 				// Native window selection başlat
 				const success = nativeBinding.startWindowSelection();
-				
+
 				if (success) {
 					this.isSelecting = true;
 					this.selectedWindow = null;
-					
+
 					// Status polling timer başlat (higher frequency for overlay updates)
 					this.selectionTimer = setInterval(() => {
 						this.checkSelectionStatus();
@@ -72,7 +80,7 @@ class WindowSelector extends EventEmitter {
 		return new Promise((resolve, reject) => {
 			try {
 				const success = nativeBinding.stopWindowSelection();
-				
+
 				// Timer'ı durdur
 				if (this.selectionTimer) {
 					clearInterval(this.selectionTimer);
@@ -98,14 +106,14 @@ class WindowSelector extends EventEmitter {
 
 		try {
 			const status = nativeBinding.getWindowSelectionStatus();
-			
+
 			// Seçim tamamlandı mı kontrol et
 			if (status.hasSelectedWindow && !this.selectedWindow) {
 				const windowInfo = nativeBinding.getSelectedWindowInfo();
 				if (windowInfo) {
 					this.selectedWindow = windowInfo;
 					this.isSelecting = false;
-					
+
 					// Timer'ı durdur
 					if (this.selectionTimer) {
 						clearInterval(this.selectionTimer);
@@ -121,17 +129,20 @@ class WindowSelector extends EventEmitter {
 			if (this.lastStatus) {
 				const lastWindow = this.lastStatus.currentWindow;
 				const currentWindow = status.currentWindow;
-				
+
 				if (!lastWindow && currentWindow) {
 					// Yeni pencere üstüne gelindi
 					this.emit("windowEntered", currentWindow);
 				} else if (lastWindow && !currentWindow) {
 					// Pencere üstünden ayrıldı
 					this.emit("windowLeft", lastWindow);
-				} else if (lastWindow && currentWindow && 
-						  (lastWindow.id !== currentWindow.id || 
-						   lastWindow.title !== currentWindow.title || 
-						   lastWindow.appName !== currentWindow.appName)) {
+				} else if (
+					lastWindow &&
+					currentWindow &&
+					(lastWindow.id !== currentWindow.id ||
+						lastWindow.title !== currentWindow.title ||
+						lastWindow.appName !== currentWindow.appName)
+				) {
 					// Farklı bir pencereye geçildi
 					this.emit("windowLeft", lastWindow);
 					this.emit("windowEntered", currentWindow);
@@ -164,14 +175,14 @@ class WindowSelector extends EventEmitter {
 				isSelecting: this.isSelecting && nativeStatus.isSelecting,
 				hasSelectedWindow: !!this.selectedWindow,
 				selectedWindow: this.selectedWindow,
-				nativeStatus: nativeStatus
+				nativeStatus: nativeStatus,
 			};
 		} catch (error) {
 			return {
 				isSelecting: this.isSelecting,
 				hasSelectedWindow: !!this.selectedWindow,
 				selectedWindow: this.selectedWindow,
-				error: error.message
+				error: error.message,
 			};
 		}
 	}
@@ -205,7 +216,6 @@ class WindowSelector extends EventEmitter {
 
 				// Seçimi başlat
 				await this.startSelection();
-
 			} catch (error) {
 				this.removeAllListeners("windowSelected");
 				this.removeAllListeners("error");
@@ -242,7 +252,9 @@ class WindowSelector extends EventEmitter {
 			nativeBinding.setBringToFrontEnabled(enabled);
 			// Only log if explicitly setting, not on startup
 			if (arguments.length > 0) {
-				console.log(`🔄 Auto bring-to-front: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+				console.log(
+					`🔄 Auto bring-to-front: ${enabled ? "ENABLED" : "DISABLED"}`
+				);
 			}
 		} catch (error) {
 			throw new Error(`Failed to set bring to front: ${error.message}`);
@@ -376,14 +388,14 @@ class WindowSelector extends EventEmitter {
 		try {
 			// Start screen selection
 			await this.startScreenSelection();
-			
+
 			// Poll for selection completion
 			return new Promise((resolve, reject) => {
 				let isResolved = false;
-				
+
 				const checkSelection = () => {
 					if (isResolved) return; // Prevent multiple resolutions
-					
+
 					const selectedScreen = this.getSelectedScreen();
 					if (selectedScreen) {
 						isResolved = true;
@@ -394,19 +406,19 @@ class WindowSelector extends EventEmitter {
 					} else {
 						// Selection was cancelled (probably ESC key)
 						isResolved = true;
-						reject(new Error('Screen selection was cancelled'));
+						reject(new Error("Screen selection was cancelled"));
 					}
 				};
-				
+
 				// Start polling
 				checkSelection();
-				
+
 				// Timeout after 60 seconds
 				setTimeout(() => {
 					if (!isResolved) {
 						isResolved = true;
 						this.stopScreenSelection();
-						reject(new Error('Screen selection timed out'));
+						reject(new Error("Screen selection timed out"));
 					}
 				}, 60000);
 			});
@@ -430,7 +442,9 @@ class WindowSelector extends EventEmitter {
 			const success = nativeBinding.showScreenRecordingPreview(screenInfo);
 			return success;
 		} catch (error) {
-			throw new Error(`Failed to show screen recording preview: ${error.message}`);
+			throw new Error(
+				`Failed to show screen recording preview: ${error.message}`
+			);
 		}
 	}
 
@@ -443,7 +457,9 @@ class WindowSelector extends EventEmitter {
 			const success = nativeBinding.hideScreenRecordingPreview();
 			return success;
 		} catch (error) {
-			throw new Error(`Failed to hide screen recording preview: ${error.message}`);
+			throw new Error(
+				`Failed to hide screen recording preview: ${error.message}`
+			);
 		}
 	}
 
@@ -460,7 +476,7 @@ class WindowSelector extends EventEmitter {
 			return {
 				screenRecording: false,
 				accessibility: false,
-				error: error.message
+				error: error.message,
 			};
 		}
 	}

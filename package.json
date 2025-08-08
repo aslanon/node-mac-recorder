@@ -37,6 +37,9 @@
 		"install": "node install.js",
 		"build": "node-gyp build",
 		"rebuild": "node-gyp rebuild",
+		"prebuild:node-arm64": "prebuildify --platform darwin --arch arm64 --napi --strip",
+		"prebuild:electron-arm64": "prebuildify --platform darwin --arch arm64 --napi --strip --targets electron@27.0.0",
+		"prebuild:all-arm64": "npm run prebuild:node-arm64 && npm run prebuild:electron-arm64",
 		"clean": "node-gyp clean",
 		"test:window-selector": "node window-selector-test.js",
 		"example:window-selector": "node examples/window-selector-example.js"
@@ -45,7 +48,8 @@
 		"node-addon-api": "^7.0.0"
 	},
 	"devDependencies": {
-		"node-gyp": "^10.0.0"
+		"node-gyp": "^10.0.0",
+		"prebuildify": "^6.0.1"
 	},
 	"gypfile": true
 }

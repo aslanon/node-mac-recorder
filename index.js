@@ -5,16 +5,25 @@ const fs = require("fs");
 // Native modülü yükle
 let nativeBinding;
 try {
-	nativeBinding = require("./build/Release/mac_recorder.node");
+	// Prefer prebuild on arm64
+	if (process.platform === "darwin" && process.arch === "arm64") {
+		nativeBinding = require("./prebuilds/darwin-arm64/node.napi.node");
+	} else {
+		nativeBinding = require("./build/Release/mac_recorder.node");
+	}
 } catch (error) {
 	try {
-		nativeBinding = require("./build/Debug/mac_recorder.node");
-	} catch (debugError) {
-		throw new Error(
-			'Native module not found. Please run "npm run build" to compile the native module.\n' +
-				"Original error: " +
-				error.message
-		);
+		nativeBinding = require("./build/Release/mac_recorder.node");
+	} catch (_) {
+		try {
+			nativeBinding = require("./build/Debug/mac_recorder.node");
+		} catch (debugError) {
+			throw new Error(
+				'Native module not found. Please run "npm run build" to compile the native module.\n' +
+					"Original error: " +
+					error.message
+			);
+		}
 	}
 }
 

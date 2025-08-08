@@ -2,7 +2,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-console.log("🔨 Building native macOS recorder module...\n");
+console.log("🔨 Installing node-mac-recorder...\n");
 
 // Check if we're on macOS
 if (process.platform !== "darwin") {
@@ -10,7 +10,24 @@ if (process.platform !== "darwin") {
 	process.exit(1);
 }
 
-// Check if Xcode Command Line Tools are installed
+// Prefer prebuilds on supported platforms
+const prebuildPath = path.join(
+	__dirname,
+	"prebuilds",
+	`darwin-${process.arch}`,
+	"node.napi.node"
+);
+if (
+	process.platform === "darwin" &&
+	process.arch === "arm64" &&
+	fs.existsSync(prebuildPath)
+) {
+	console.log("✅ Using prebuilt binary:", prebuildPath);
+	console.log("🎉 node-mac-recorder is ready to use (no compilation needed)");
+	process.exit(0);
+}
+
+// Fallback to building from source
 console.log("🔍 Checking Xcode Command Line Tools...");
 const xcodebuild = spawn("xcode-select", ["--print-path"], { stdio: "pipe" });
 

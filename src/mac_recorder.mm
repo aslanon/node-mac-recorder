@@ -124,29 +124,71 @@ API_AVAILABLE(macos(12.3))
 static SCStream *g_scStream = nil;
 static SCKRecorderDelegate *g_scDelegate = nil;
 static bool g_isRecording = false;
+static BOOL g_screenOutputAttached = NO;
+static BOOL g_audioOutputAttached = NO;
+static dispatch_queue_t g_outputQueue = NULL; // use a dedicated serial queue for sample handling
 
 // Helper function to cleanup ScreenCaptureKit recording resources
 void cleanupSCKRecording() {
     NSLog(@"🛑 Cleaning up ScreenCaptureKit recording");
-    
+
+    // Detach outputs first to prevent further callbacks into the delegate
+    if (g_scStream && g_scDelegate) {
+        NSError *rmError = nil;
+        if (g_screenOutputAttached) {
+            [g_scStream removeStreamOutput:g_scDelegate type:SCStreamOutputTypeScreen error:&rmError];
+            g_screenOutputAttached = NO;
+        }
+        if (g_audioOutputAttached) {
+            rmError = nil;
+            [g_scStream removeStreamOutput:g_scDelegate type:SCStreamOutputTypeAudio error:&rmError];
+            g_audioOutputAttached = NO;
+        }
+    }
+
     if (g_scStream) {
         NSLog(@"🛑 Stopping SCStream");
-        [g_scStream stopCaptureWithCompletionHandler:^(NSError * _Nullable error) {
+        SCStream *streamToStop = g_scStream; // keep local until stop completes
+        [streamToStop stopCaptureWithCompletionHandler:^(NSError * _Nullable error) {
             if (error) {
                 NSLog(@"❌ Error stopping SCStream: %@", error.localizedDescription);
             } else {
                 NSLog(@"✅ SCStream stopped successfully");
             }
+
+            // Finish writer after stream has stopped to ensure no further buffers arrive
+            if (g_scDelegate && g_scDelegate.assetWriter && g_scDelegate.isWriting) {
+                NSLog(@"🛑 Finishing asset writer (status: %ld)", (long)g_scDelegate.assetWriter.status);
+                g_scDelegate.isWriting = NO;
+
+                if (g_scDelegate.assetWriter.status == AVAssetWriterStatusWriting) {
+                    if (g_scDelegate.videoInput) {
+                        [g_scDelegate.videoInput markAsFinished];
+                    }
+                    if (g_scDelegate.audioInput) {
+                        [g_scDelegate.audioInput markAsFinished];
+                    }
+
+                    [g_scDelegate.assetWriter finishWritingWithCompletionHandler:^{
+                        NSLog(@"✅ Asset writer finished. Status: %ld", (long)g_scDelegate.assetWriter.status);
+                        if (g_scDelegate.assetWriter.error) {
+                            NSLog(@"❌ Asset writer error: %@", g_scDelegate.assetWriter.error.localizedDescription);
+                        }
+                    }];
+                } else if (g_scDelegate.assetWriter.status == AVAssetWriterStatusFailed) {
+                    NSLog(@"❌ Asset writer failed: %@", g_scDelegate.assetWriter.error.localizedDescription);
+                }
+            }
+
+            g_isRecording = false;
+            g_scStream = nil;
+            g_scDelegate = nil;
         }];
-        g_scStream = nil;
-    }
-    
-    if (g_scDelegate) {
-        if (g_scDelegate.assetWriter && g_scDelegate.isWriting) {
+    } else {
+        // No stream, just finalize writer if needed
+        if (g_scDelegate && g_scDelegate.assetWriter && g_scDelegate.isWriting) {
             NSLog(@"🛑 Finishing asset writer (status: %ld)", (long)g_scDelegate.assetWriter.status);
             g_scDelegate.isWriting = NO;
-            
-            // Only mark inputs as finished if asset writer is actually writing
             if (g_scDelegate.assetWriter.status == AVAssetWriterStatusWriting) {
                 if (g_scDelegate.videoInput) {
                     [g_scDelegate.videoInput markAsFinished];
@@ -154,23 +196,12 @@ void cleanupSCKRecording() {
                 if (g_scDelegate.audioInput) {
                     [g_scDelegate.audioInput markAsFinished];
                 }
-                
-                [g_scDelegate.assetWriter finishWritingWithCompletionHandler:^{
-                    NSLog(@"✅ Asset writer finished. Status: %ld", (long)g_scDelegate.assetWriter.status);
-                    if (g_scDelegate.assetWriter.error) {
-                        NSLog(@"❌ Asset writer error: %@", g_scDelegate.assetWriter.error.localizedDescription);
-                    }
-                }];
-            } else {
-                NSLog(@"⚠️ Asset writer not in writing status, cannot finish normally");
-                if (g_scDelegate.assetWriter.status == AVAssetWriterStatusFailed) {
-                    NSLog(@"❌ Asset writer failed: %@", g_scDelegate.assetWriter.error.localizedDescription);
-                }
+                [g_scDelegate.assetWriter finishWritingWithCompletionHandler:^{}];
             }
         }
+        g_isRecording = false;
         g_scDelegate = nil;
     }
-    g_isRecording = false;
 }
 
 // Check if ScreenCaptureKit is available
@@ -184,7 +215,7 @@ bool isScreenCaptureKitAvailable() {
 // NAPI Function: Start Recording with ScreenCaptureKit
 Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    
+    @autoreleasepool {
     if (!isScreenCaptureKitAvailable()) {
         NSLog(@"ScreenCaptureKit requires macOS 12.3 or later");
         return Napi::Boolean::New(env, false);
@@ -472,19 +503,22 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         }
     }
     
-    // Create callback queue for the delegate
-    dispatch_queue_t delegateQueue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-    
+    // Create a dedicated serial queue for output callbacks
+    if (g_outputQueue == NULL) {
+        g_outputQueue = dispatch_queue_create("com.node-mac-recorder.stream-output", DISPATCH_QUEUE_SERIAL);
+    }
+
     // Create and start stream first
     g_scStream = [[SCStream alloc] initWithFilter:contentFilter configuration:config delegate:g_scDelegate];
     
     // Attach outputs to actually receive sample buffers
     NSLog(@"✅ Setting up stream output callback for sample buffers");
-    dispatch_queue_t outputQueue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_t outputQueue = g_outputQueue;
     NSError *outputError = nil;
     BOOL addedScreenOutput = [g_scStream addStreamOutput:g_scDelegate type:SCStreamOutputTypeScreen sampleHandlerQueue:outputQueue error:&outputError];
     if (addedScreenOutput) {
         NSLog(@"✅ Screen output attached to SCStream");
+        g_screenOutputAttached = YES;
     } else {
         NSLog(@"❌ Failed to attach screen output to SCStream: %@", outputError.localizedDescription);
     }
@@ -493,6 +527,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         BOOL addedAudioOutput = [g_scStream addStreamOutput:g_scDelegate type:SCStreamOutputTypeAudio sampleHandlerQueue:outputQueue error:&outputError];
         if (addedAudioOutput) {
             NSLog(@"✅ Audio output attached to SCStream");
+            g_audioOutputAttached = YES;
         } else {
             NSLog(@"⚠️ Failed to attach audio output to SCStream (audio may be disabled): %@", outputError.localizedDescription);
         }
@@ -546,6 +581,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     
     NSLog(@"🎬 Recording initialized successfully");
     return Napi::Boolean::New(env, true);
+    }
 }
 
 // NAPI Function: Stop Recording
@@ -558,6 +594,12 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     
     cleanupSCKRecording();
     return Napi::Boolean::New(env, true);
+}
+
+// NAPI Function: Get Recording Status (for JS compatibility)
+Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    return Napi::Boolean::New(env, g_isRecording);
 }
 
 // NAPI Function: Get Recording Status
@@ -741,6 +783,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("startRecording", Napi::Function::New(env, StartRecording));
     exports.Set("stopRecording", Napi::Function::New(env, StopRecording));
     exports.Set("isRecording", Napi::Function::New(env, IsRecording));
+    exports.Set("getRecordingStatus", Napi::Function::New(env, GetRecordingStatus));
     exports.Set("getDisplays", Napi::Function::New(env, GetDisplays));
     exports.Set("getWindows", Napi::Function::New(env, GetWindows));
     exports.Set("checkPermissions", Napi::Function::New(env, CheckPermissions));
