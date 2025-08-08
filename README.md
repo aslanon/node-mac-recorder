@@ -1,6 +1,6 @@
 # node-mac-recorder
 
-A powerful native macOS screen recording Node.js package with advanced window selection, multi-display support, and granular audio controls. Built with AVFoundation for optimal performance.
+A powerful native macOS screen recording Node.js package with advanced window selection, multi-display support, and granular audio controls. Built with AVFoundation and ScreenCaptureKit for optimal performance.
 
 ## Features
 
@@ -12,6 +12,7 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 🖱️ **Multi-Display Support** - Automatic display detection and selection
 - 🎨 **Cursor Control** - Toggle cursor visibility in recordings
 - 🖱️ **Cursor Tracking** - Track mouse position, cursor types, and click events
+- 🚫 **Exclude Apps/Windows (macOS 15+)** - Use ScreenCaptureKit to exclude specific apps (bundle id/PID) and windows
 
 🎵 **Granular Audio Controls**
 
@@ -48,6 +49,11 @@ npm install node-mac-recorder
 - **Xcode Command Line Tools**
 - **Screen Recording Permission** (automatically requested)
 - **CPU Architecture**: Intel (x64) and Apple Silicon (ARM64) supported
+
+ScreenCaptureKit path and exclusion support:
+
+- Requires macOS 15.0+ for on-disk recording via `SCRecordingOutput`
+- On older systems (<=14), the library falls back to AVFoundation automatically (exclusions not available)
 
 ### Build Requirements
 
@@ -110,8 +116,21 @@ await recorder.startRecording("./recording.mov", {
 	quality: "high", // 'low', 'medium', 'high'
 	frameRate: 30, // FPS (15, 30, 60)
 	captureCursor: false, // Show cursor (default: false)
+
+	// ScreenCaptureKit (macOS 15+) - optional, backward compatible
+	useScreenCaptureKit: false, // If true and available, prefers ScreenCaptureKit
+	excludedAppBundleIds: ["com.apple.Safari"], // Exclude by bundle id
+	excludedPIDs: [process.pid], // Exclude by PID
+	excludedWindowIds: [12345, 67890], // Exclude specific window IDs
+	// When running under Electron, autoExcludeSelf defaults to true
+	autoExcludeSelf: true,
 });
 ```
+
+Notes
+
+- If any of `excludedAppBundleIds`, `excludedPIDs`, `excludedWindowIds` are provided, the library automatically switches to ScreenCaptureKit on supported macOS versions.
+- When running inside Electron, the current app PID is excluded by default (`autoExcludeSelf: true`).
 
 #### `stopRecording()`
 
@@ -305,6 +324,29 @@ await new Promise((resolve) => setTimeout(resolve, 10000)); // 10 seconds
 await recorder.stopRecording();
 ```
 
+### Exclude Electron app and other windows (ScreenCaptureKit)
+
+```javascript
+const recorder = new MacRecorder();
+
+// By default, when running inside Electron, your app is auto-excluded.
+// You can also exclude other apps/windows explicitly:
+await recorder.startRecording("./excluded.mov", {
+	captureCursor: true,
+	// Prefer SC explicitly (optional — auto-enabled when exclusions are set)
+	useScreenCaptureKit: true,
+	excludedAppBundleIds: ["com.apple.Safari"],
+	excludedWindowIds: [
+		/* CGWindowID list */
+	],
+	// autoExcludeSelf is true by default on Electron; set false to include your app
+	// autoExcludeSelf: false,
+});
+
+// ... later
+await recorder.stopRecording();
+```
+
 ### Multi-Display Recording
 
 ```javascript
@@ -362,16 +404,17 @@ audioDevices.forEach((device, i) => {
 });
 
 // Find system audio device (like BlackHole, Soundflower, etc.)
-const systemAudioDevice = audioDevices.find(device => 
-	device.name.toLowerCase().includes('blackhole') ||
-	device.name.toLowerCase().includes('soundflower') ||
-	device.name.toLowerCase().includes('loopback') ||
-	device.name.toLowerCase().includes('aggregate')
+const systemAudioDevice = audioDevices.find(
+	(device) =>
+		device.name.toLowerCase().includes("blackhole") ||
+		device.name.toLowerCase().includes("soundflower") ||
+		device.name.toLowerCase().includes("loopback") ||
+		device.name.toLowerCase().includes("aggregate")
 );
 
 if (systemAudioDevice) {
 	console.log(`Using system audio device: ${systemAudioDevice.name}`);
-	
+
 	// Record with specific system audio device
 	await recorder.startRecording("./system-audio-specific.mov", {
 		includeMicrophone: false,
@@ -380,8 +423,10 @@ if (systemAudioDevice) {
 		captureArea: { x: 0, y: 0, width: 1, height: 1 }, // Minimal video
 	});
 } else {
-	console.log("No system audio device found. Installing BlackHole or Soundflower recommended.");
-	
+	console.log(
+		"No system audio device found. Installing BlackHole or Soundflower recommended."
+	);
+
 	// Record with default system audio capture (may not work without virtual audio device)
 	await recorder.startRecording("./system-audio-default.mov", {
 		includeMicrophone: false,
@@ -391,7 +436,7 @@ if (systemAudioDevice) {
 }
 
 // Record for 10 seconds
-await new Promise(resolve => setTimeout(resolve, 10000));
+await new Promise((resolve) => setTimeout(resolve, 10000));
 await recorder.stopRecording();
 ```
 
@@ -400,7 +445,7 @@ await recorder.stopRecording();
 For reliable system audio capture, install a virtual audio device:
 
 1. **BlackHole** (Free): https://github.com/ExistentialAudio/BlackHole
-2. **Soundflower** (Free): https://github.com/mattingalls/Soundflower  
+2. **Soundflower** (Free): https://github.com/mattingalls/Soundflower
 3. **Loopback** (Paid): https://rogueamoeba.com/loopback/
 
 These create aggregate audio devices that the package can detect and use for system audio capture.
@@ -720,6 +765,11 @@ npm cache clean --force
 xcode-select --install
 ```
 
+### ScreenCaptureKit availability
+
+- Exclusions require macOS 15+ (uses `SCRecordingOutput`).
+- On macOS 12.3–14, the module will fall back to AVFoundation (no exclusions). This is automatic and backward-compatible.
+
 ### Recording Issues
 
 1. **Empty/Black Video**: Check screen recording permissions
@@ -774,12 +824,24 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ### Latest Updates
 
-- ✅ **Cursor Tracking**: Track mouse position, cursor types, and click events with JSON export
-- ✅ **Window Recording**: Automatic coordinate conversion for multi-display setups
-- ✅ **Audio Controls**: Separate microphone and system audio controls
-- ✅ **Display Selection**: Multi-monitor support with automatic detection
-- ✅ **Smart Filtering**: Improved window detection and filtering
-- ✅ **Performance**: Optimized native implementation
+- ✅ ScreenCaptureKit path with exclusions (apps by bundle id/PID and window IDs) on macOS 15+
+- ✅ Electron apps auto-excluded by default (can be disabled with `autoExcludeSelf: false`)
+- ✅ Prebuilt binaries for darwin-arm64 and darwin-x64; automatic loading via `node-gyp-build`
+- ✅ Cursor Tracking: Track mouse position, cursor types, and click events with JSON export
+- ✅ Window Recording: Automatic coordinate conversion for multi-display setups
+- ✅ Audio Controls: Separate microphone and system audio controls
+- ✅ Display Selection: Multi-monitor support with automatic detection
+- ✅ Smart Filtering: Improved window detection and filtering
+- ✅ Performance: Optimized native implementation
+
+## Prebuilt binaries
+
+This package ships prebuilt native binaries for macOS:
+
+- darwin-arm64 (Apple Silicon)
+- darwin-x64 (Intel)
+
+At runtime, the correct binary is loaded automatically via `node-gyp-build`. If a prebuilt is not available for your environment, the module falls back to a local build.
 
 ---
 
