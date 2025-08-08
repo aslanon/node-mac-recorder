@@ -7,6 +7,8 @@ DEFS_Debug := \
 	'-DUSING_UV_SHARED=1' \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
+	'-DV8_DEPRECATION_WARNINGS' \
+	'-DV8_IMMINENT_DEPRECATION_WARNINGS' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
@@ -17,13 +19,13 @@ DEFS_Debug := \
 	'-DUSE_SCREENCAPTUREKIT=1' \
 	'-DBUILDING_NODE_EXTENSION' \
 	'-DDEBUG' \
-	'-D_DEBUG'
+	'-D_DEBUG' \
+	'-DV8_ENABLE_CHECKS'
 
 # Flags passed to all source files.
 CFLAGS_Debug := \
 	-O0 \
 	-gdwarf-2 \
-	-fno-strict-aliasing \
 	-mmacosx-version-min=12.3 \
 	-arch \
 	arm64 \
@@ -34,13 +36,16 @@ CFLAGS_Debug := \
 
 # Flags passed to only C files.
 CFLAGS_C_Debug := \
+	-fno-strict-aliasing \
 	-ObjC++ \
 	-fmodules
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Debug := \
+	-std=gnu++17 \
 	-stdlib=libc++ \
 	-fno-rtti \
+	-fno-strict-aliasing \
 	-ObjC++ \
 	-fmodules
 
@@ -53,13 +58,13 @@ CFLAGS_OBJCC_Debug := \
 	-fobjc-arc
 
 INCS_Debug := \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
@@ -67,6 +72,8 @@ DEFS_Release := \
 	'-DUSING_UV_SHARED=1' \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
+	'-DV8_DEPRECATION_WARNINGS' \
+	'-DV8_IMMINENT_DEPRECATION_WARNINGS' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
@@ -81,7 +88,6 @@ DEFS_Release := \
 CFLAGS_Release := \
 	-O3 \
 	-gdwarf-2 \
-	-fno-strict-aliasing \
 	-mmacosx-version-min=12.3 \
 	-arch \
 	arm64 \
@@ -92,13 +98,16 @@ CFLAGS_Release := \
 
 # Flags passed to only C files.
 CFLAGS_C_Release := \
+	-fno-strict-aliasing \
 	-ObjC++ \
 	-fmodules
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Release := \
+	-std=gnu++17 \
 	-stdlib=libc++ \
 	-fno-rtti \
+	-fno-strict-aliasing \
 	-ObjC++ \
 	-fmodules
 
@@ -111,13 +120,13 @@ CFLAGS_OBJCC_Release := \
 	-fobjc-arc
 
 INCS_Release := \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/include/node \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/src \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/config \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/openssl/openssl/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/uv/include \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/zlib \
-	-I/var/folders/jv/4wphlx252k9f61b23qwdkhpm0000gq/T/prebuildify/node/24.0.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \

@@ -443,6 +443,11 @@ NSDictionary* getWindowUnderCursor(CGPoint point) {
 
 // Update overlay to highlight window under cursor
 void updateOverlay() {
+    // Ensure AppKit usage on main thread
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ updateOverlay(); });
+        return;
+    }
     @autoreleasepool {
         if (!g_isWindowSelecting || !g_overlayWindow) return;
         
@@ -556,6 +561,10 @@ void updateOverlay() {
 
 // Cleanup function
 void cleanupWindowSelector() {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ cleanupWindowSelector(); });
+        return;
+    }
     g_isWindowSelecting = false;
     
     // Stop tracking timer
@@ -595,6 +604,10 @@ void cleanupWindowSelector() {
 
 // Recording preview functions
 void cleanupRecordingPreview() {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ cleanupRecordingPreview(); });
+        return;
+    }
     if (g_recordingPreviewWindow) {
         [g_recordingPreviewWindow close];
         g_recordingPreviewWindow = nil;
@@ -674,6 +687,10 @@ bool hideRecordingPreview() {
 
 // Screen selection functions
 void cleanupScreenSelector() {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ cleanupScreenSelector(); });
+        return;
+    }
     g_isScreenSelecting = false;
     
     // Remove key event monitor
@@ -699,7 +716,13 @@ void cleanupScreenSelector() {
 bool startScreenSelection() {
     @try {
         if (g_isScreenSelecting) return false;
-        
+        // Force to main thread
+        if (![NSThread isMainThread]) {
+            __block BOOL ok = NO;
+            dispatch_sync(dispatch_get_main_queue(), ^{ ok = startScreenSelection(); });
+            return ok;
+        }
+
         // Get all available screens
         NSArray *screens = [NSScreen screens];
         if (!screens || [screens count] == 0) return false;
@@ -861,9 +884,12 @@ bool startScreenSelection() {
 bool stopScreenSelection() {
     @try {
         if (!g_isScreenSelecting) return false;
-        
+        if (![NSThread isMainThread]) {
+            __block BOOL ok = NO;
+            dispatch_sync(dispatch_get_main_queue(), ^{ ok = stopScreenSelection(); });
+            return ok;
+        }
         cleanupScreenSelector();
-        NSLog(@"🖥️ SCREEN SELECTION: Stopped");
         return true;
         
     } @catch (NSException *exception) {
