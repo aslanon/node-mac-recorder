@@ -666,6 +666,33 @@ class ElectronWindowSelector extends EventEmitter {
             };
         }
     }
+
+    /**
+     * Electron tarafından kullanılacak window listesi döndürür
+     */
+    async getAvailableWindows() {
+        try {
+            const windows = nativeBinding.getWindows();
+            return windows || [];
+        } catch (error) {
+            console.error('Get available windows failed:', error.message);
+            return [];
+        }
+    }
+
+    /**
+     * Electron tarafından kullanılacak display listesi döndürür
+     */
+    async getAvailableDisplays() {
+        try {
+            const MacRecorder = require('./index.js');
+            const recorder = new MacRecorder();
+            return await recorder.getDisplays();
+        } catch (error) {
+            console.error('Get available displays failed:', error.message);
+            return [];
+        }
+    }
 }
 
 module.exports = ElectronWindowSelector;
