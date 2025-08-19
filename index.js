@@ -950,6 +950,63 @@ class MacRecorder extends EventEmitter {
 
 		return Promise.all(windowPromises);
 	}
+
+	// Window Selection Methods (ScreenCaptureKit compatible)
+	startWindowSelection() {
+		if (!nativeBinding.startWindowSelection) {
+			throw new Error('Window selection is not available in this build');
+		}
+		return nativeBinding.startWindowSelection();
+	}
+
+	stopWindowSelection() {
+		if (!nativeBinding.stopWindowSelection) {
+			return false;
+		}
+		return nativeBinding.stopWindowSelection();
+	}
+
+	getSelectedWindowInfo() {
+		if (!nativeBinding.getSelectedWindowInfo) {
+			return null;
+		}
+		return nativeBinding.getSelectedWindowInfo();
+	}
+
+	getWindowSelectionStatus() {
+		if (!nativeBinding.getWindowSelectionStatus) {
+			return { isSelecting: false, hasSelectedWindow: false };
+		}
+		return nativeBinding.getWindowSelectionStatus();
+	}
+
+	bringWindowToFront(windowId) {
+		if (!nativeBinding.bringWindowToFront) {
+			return false;
+		}
+		return nativeBinding.bringWindowToFront(windowId);
+	}
+
+	setBringToFrontEnabled(enabled) {
+		if (!nativeBinding.setBringToFrontEnabled) {
+			return false;
+		}
+		return nativeBinding.setBringToFrontEnabled(enabled);
+	}
+
+	showRecordingPreview(windowInfo) {
+		if (!nativeBinding.showRecordingPreview) {
+			return false;
+		}
+		return nativeBinding.showRecordingPreview(windowInfo);
+	}
+
+	hideRecordingPreview() {
+		if (!nativeBinding.hideRecordingPreview) {
+			return false;
+		}
+		return nativeBinding.hideRecordingPreview();
+	}
 }
 
 // WindowSelector modülünü de export edelim

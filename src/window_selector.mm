@@ -5,6 +5,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 #import <Accessibility/Accessibility.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 
 // Global state for window selection
 static bool g_isWindowSelecting = false;
@@ -35,6 +36,7 @@ void cleanupWindowSelector();
 void updateOverlay();
 NSDictionary* getWindowUnderCursor(CGPoint point);
 NSArray* getAllSelectableWindows();
+NSArray* getAllSelectableWindowsLegacy();
 bool bringWindowToFront(int windowId);
 void cleanupRecordingPreview();
 bool showRecordingPreview(NSDictionary *windowInfo);
@@ -233,7 +235,7 @@ bool hideScreenRecordingPreview();
     NSInteger screenIndex = [button tag];
     
     // Get screen info from global array using button tag
-    if (g_allScreens && screenIndex >= 0 && screenIndex < [g_allScreens count]) {
+    if (g_allScreens && screenIndex >= 0 && screenIndex < (NSInteger)[g_allScreens count]) {
         NSDictionary *screenInfo = [g_allScreens objectAtIndex:screenIndex];
         g_selectedScreenInfo = [screenInfo copy];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -367,8 +369,83 @@ bool bringWindowToFront(int windowId) {
     }
 }
 
-// Get all selectable windows
+// Get all selectable windows using ScreenCaptureKit
 NSArray* getAllSelectableWindows() {
+    @autoreleasepool {
+        NSMutableArray *windows = [NSMutableArray array];
+        
+        // Check if ScreenCaptureKit is available (requires macOS 12.3+)
+        if (@available(macOS 12.3, *)) {
+            // Use dispatch_semaphore for synchronous SCShareableContent retrieval
+            dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+            __block SCShareableContent *content = nil;
+            __block NSError *error = nil;
+            
+            [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *shareableContent, NSError *contentError) {
+                content = shareableContent;
+                error = contentError;
+                dispatch_semaphore_signal(semaphore);
+            }];
+            
+            // Wait for completion (timeout after 5 seconds)
+            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+            if (dispatch_semaphore_wait(semaphore, timeout) == 0 && content) {
+                NSLog(@"✅ ScreenCaptureKit: Found %lu windows", (unsigned long)content.windows.count);
+                
+                for (SCWindow *scWindow in content.windows) {
+                    // Skip windows without proper frame or title
+                    if (scWindow.frame.size.width < 50 || scWindow.frame.size.height < 50) continue;
+                    if (!scWindow.owningApplication) continue;
+                    
+                    // Skip system applications
+                    NSString *bundleId = scWindow.owningApplication.bundleIdentifier;
+                    NSString *appName = scWindow.owningApplication.applicationName;
+                    if ([bundleId hasPrefix:@"com.apple.dock"] ||
+                        [bundleId hasPrefix:@"com.apple.WindowServer"] ||
+                        [bundleId hasPrefix:@"com.apple.controlcenter"] ||
+                        [bundleId hasPrefix:@"com.apple.notificationcenterui"]) {
+                        continue;
+                    }
+                    
+                    // Convert SCWindow coordinates to match CGWindow coordinate system
+                    CGRect frame = scWindow.frame;
+                    int x = (int)frame.origin.x;
+                    int y = (int)frame.origin.y;  
+                    int width = (int)frame.size.width;
+                    int height = (int)frame.size.height;
+                    
+                    NSString *windowTitle = scWindow.title ?: @"Untitled";
+                    if ([windowTitle length] == 0) windowTitle = @"Untitled";
+                    
+                    NSDictionary *window = @{
+                        @"id": @(scWindow.windowID),
+                        @"title": windowTitle,
+                        @"appName": appName ?: @"Unknown App",
+                        @"x": @(x),
+                        @"y": @(y),
+                        @"width": @(width),
+                        @"height": @(height),
+                        @"bundleId": bundleId ?: @""
+                    };
+                    
+                    [windows addObject:window];
+                }
+            } else {
+                NSLog(@"❌ ScreenCaptureKit: Failed to get shareable content or timeout occurred");
+                // Fall back to CGWindowList as backup
+                return getAllSelectableWindowsLegacy();
+            }
+        } else {
+            NSLog(@"⚠️ ScreenCaptureKit not available, falling back to CGWindowList");
+            return getAllSelectableWindowsLegacy();
+        }
+        
+        return [windows copy];
+    }
+}
+
+// Legacy window enumeration using CGWindowList (fallback for older macOS)
+NSArray* getAllSelectableWindowsLegacy() {
     @autoreleasepool {
         NSMutableArray *windows = [NSMutableArray array];
         
@@ -734,7 +811,7 @@ bool startScreenSelection() {
         NSMutableArray *screenInfoArray = [[NSMutableArray alloc] init];
         g_screenOverlayWindows = [[NSMutableArray alloc] init];
         
-        for (NSInteger i = 0; i < [screens count]; i++) {
+        for (NSUInteger i = 0; i < [screens count]; i++) {
             NSScreen *screen = [screens objectAtIndex:i];
             NSRect screenFrame = [screen frame];
             
@@ -922,10 +999,10 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
         NSArray *screens = [NSScreen screens];
         if (!screens || [screens count] == 0) return false;
         
-        int selectedScreenId = [[screenInfo objectForKey:@"id"] intValue];
+        NSUInteger selectedScreenId = (NSUInteger)[[screenInfo objectForKey:@"id"] intValue];
         
         // Create overlay for each screen except the selected one
-        for (NSInteger i = 0; i < [screens count]; i++) {
+        for (NSUInteger i = 0; i < [screens count]; i++) {
             if (i == selectedScreenId) continue; // Skip selected screen
             
             NSScreen *screen = [screens objectAtIndex:i];
@@ -956,7 +1033,7 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             }
         }
         
-        NSLog(@"🎬 SCREEN RECORDING PREVIEW: Showing overlay for Screen %d", selectedScreenId);
+        NSLog(@"🎬 SCREEN RECORDING PREVIEW: Showing overlay for Screen %lu", (unsigned long)selectedScreenId);
         
         return true;
         
@@ -996,7 +1073,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             }
             
             // Store windows for later retrieval via getWindowSelectionStatus
-            g_allWindows = [windows mutableCopy];
+            g_allWindows = [getAllSelectableWindows() mutableCopy];
             g_isWindowSelecting = true;
             
             // Return true to indicate windows are available
@@ -1017,7 +1094,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     
     @try {
         // Get all windows
-        g_allWindows = getAllSelectableWindows();
+        g_allWindows = [getAllSelectableWindows() mutableCopy];
         
         if (!g_allWindows || [g_allWindows count] == 0) {
             Napi::Error::New(env, "No selectable windows found").ThrowAsJavaScriptException();

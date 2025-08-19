@@ -770,8 +770,33 @@ Napi::Value GetWindows(const Napi::CallbackInfo& info) {
             Napi::Object windowObj = Napi::Object::New(env);
             windowObj.Set("id", Napi::Number::New(env, window.windowID));
             windowObj.Set("title", Napi::String::New(env, window.title ? [window.title UTF8String] : ""));
-            windowObj.Set("ownerName", Napi::String::New(env, window.owningApplication.applicationName ? [window.owningApplication.applicationName UTF8String] : ""));
-            windowObj.Set("bounds", Napi::Object::New(env)); // TODO: Add bounds details
+            
+            // Safely get application information (can be nil for some windows)
+            NSString *appName = @"";
+            NSString *bundleId = @"";
+            if (window.owningApplication) {
+                appName = window.owningApplication.applicationName ?: @"";
+                bundleId = window.owningApplication.bundleIdentifier ?: @"";
+            }
+            
+            windowObj.Set("appName", Napi::String::New(env, [appName UTF8String]));
+            windowObj.Set("ownerName", Napi::String::New(env, [appName UTF8String]));
+            windowObj.Set("bundleId", Napi::String::New(env, [bundleId UTF8String]));
+            
+            // Add frame details
+            CGRect frame = window.frame;
+            windowObj.Set("x", Napi::Number::New(env, (int)frame.origin.x));
+            windowObj.Set("y", Napi::Number::New(env, (int)frame.origin.y));
+            windowObj.Set("width", Napi::Number::New(env, (int)frame.size.width));
+            windowObj.Set("height", Napi::Number::New(env, (int)frame.size.height));
+            
+            // Legacy bounds object for compatibility
+            Napi::Object boundsObj = Napi::Object::New(env);
+            boundsObj.Set("x", Napi::Number::New(env, (int)frame.origin.x));
+            boundsObj.Set("y", Napi::Number::New(env, (int)frame.origin.y));
+            boundsObj.Set("width", Napi::Number::New(env, (int)frame.size.width));
+            boundsObj.Set("height", Napi::Number::New(env, (int)frame.size.height));
+            windowObj.Set("bounds", boundsObj);
             
             windowsArray.Set(index++, windowObj);
         }
