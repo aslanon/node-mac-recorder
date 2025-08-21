@@ -497,22 +497,56 @@ NSArray* getAllSelectableWindowsLegacy() {
     }
 }
 
-// Get window under cursor point
+// Get window under cursor point using real-time mouse position
 NSDictionary* getWindowUnderCursor(CGPoint point) {
     @autoreleasepool {
-        if (!g_allWindows) return nil;
+        // Get window ID directly under cursor using macOS API
+        CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
         
-        // Find window that contains the cursor point
-        for (NSDictionary *window in g_allWindows) {
-            int x = [[window objectForKey:@"x"] intValue];
-            int y = [[window objectForKey:@"y"] intValue];
-            int width = [[window objectForKey:@"width"] intValue];
-            int height = [[window objectForKey:@"height"] intValue];
+        if (windowList) {
+            NSArray *windowArray = (__bridge NSArray *)windowList;
             
-            if (point.x >= x && point.x <= x + width &&
-                point.y >= y && point.y <= y + height) {
-                return window;
+            // Find the topmost window at cursor position
+            for (NSDictionary *windowInfo in windowArray) {
+                NSDictionary *bounds = [windowInfo objectForKey:(NSString *)kCGWindowBounds];
+                NSNumber *layer = [windowInfo objectForKey:(NSString *)kCGWindowLayer];
+                NSString *owner = [windowInfo objectForKey:(NSString *)kCGWindowOwnerName];
+                NSNumber *winID = [windowInfo objectForKey:(NSString *)kCGWindowNumber];
+                
+                if (!bounds || !winID || !owner) continue;
+                if ([layer intValue] != 0) continue; // Only normal windows
+                if ([owner isEqualToString:@"WindowServer"] || [owner isEqualToString:@"Dock"]) continue;
+                
+                int x = [[bounds objectForKey:@"X"] intValue];
+                int y = [[bounds objectForKey:@"Y"] intValue];
+                int width = [[bounds objectForKey:@"Width"] intValue];
+                int height = [[bounds objectForKey:@"Height"] intValue];
+                
+                // Skip too small windows
+                if (width < 50 || height < 50) continue;
+                
+                // Check if cursor is within window bounds
+                if (point.x >= x && point.x <= x + width &&
+                    point.y >= y && point.y <= y + height) {
+                    
+                    NSString *windowName = [windowInfo objectForKey:(NSString *)kCGWindowName];
+                    
+                    // Create window info in our format
+                    NSDictionary *window = @{
+                        @"id": winID,
+                        @"title": windowName ?: @"Untitled",
+                        @"appName": owner,
+                        @"x": @(x),
+                        @"y": @(y),
+                        @"width": @(width),
+                        @"height": @(height)
+                    };
+                    
+                    CFRelease(windowList);
+                    return window;
+                }
             }
+            CFRelease(windowList);
         }
         
         return nil;
@@ -1274,26 +1308,54 @@ Napi::Value GetSelectedWindowInfo(const Napi::CallbackInfo& info) {
         NSLog(@"   📊 Details: ID=%@, Pos=(%d,%d), Size=%dx%d", 
               [g_selectedWindowInfo objectForKey:@"id"], x, y, width, height);
         
-        // Get all screens
+        // Get all screens and find which screen contains this window
         NSArray *screens = [NSScreen screens];
         NSScreen *windowScreen = nil;
         NSScreen *mainScreen = [NSScreen mainScreen];
         
+        // Calculate window center point for better screen detection
+        CGPoint windowCenter = CGPointMake(x + width/2, y + height/2);
+        
         for (NSScreen *screen in screens) {
             NSRect screenFrame = [screen frame];
             
-            // Convert window coordinates to screen-relative
-            if (x >= screenFrame.origin.x && 
-                x < screenFrame.origin.x + screenFrame.size.width &&
-                y >= screenFrame.origin.y && 
-                y < screenFrame.origin.y + screenFrame.size.height) {
+            // Check if window center is within screen bounds
+            if (windowCenter.x >= screenFrame.origin.x && 
+                windowCenter.x < screenFrame.origin.x + screenFrame.size.width &&
+                windowCenter.y >= screenFrame.origin.y && 
+                windowCenter.y < screenFrame.origin.y + screenFrame.size.height) {
                 windowScreen = screen;
+                NSLog(@"   🖥️ Window found on screen: (%.0f,%.0f) %.0fx%.0f", 
+                      screenFrame.origin.x, screenFrame.origin.y, 
+                      screenFrame.size.width, screenFrame.size.height);
                 break;
+            }
+        }
+        
+        // If no exact match, find screen with maximum overlap
+        if (!windowScreen) {
+            CGFloat maxOverlapArea = 0;
+            NSRect windowRect = NSMakeRect(x, y, width, height);
+            
+            for (NSScreen *screen in screens) {
+                NSRect screenFrame = [screen frame];
+                NSRect intersection = NSIntersectionRect(windowRect, screenFrame);
+                CGFloat overlapArea = intersection.size.width * intersection.size.height;
+                
+                if (overlapArea > maxOverlapArea) {
+                    maxOverlapArea = overlapArea;
+                    windowScreen = screen;
+                }
+            }
+            
+            if (windowScreen) {
+                NSLog(@"   🖥️ Window assigned to screen with max overlap: %.0f pixels²", maxOverlapArea);
             }
         }
         
         if (!windowScreen) {
             windowScreen = mainScreen;
+            NSLog(@"   🖥️ Window defaulted to main screen");
         }
         
         // Add screen information
@@ -1361,13 +1423,74 @@ Napi::Value GetWindowSelectionStatus(const Napi::CallbackInfo& info) {
         updateOverlay();
     }
     
+    // For Electron mode, also get real-time window under cursor
+    const char* electronVersion = getenv("ELECTRON_VERSION");
+    const char* electronRunAs = getenv("ELECTRON_RUN_AS_NODE");
+    
     Napi::Object result = Napi::Object::New(env);
     result.Set("isSelecting", Napi::Boolean::New(env, g_isWindowSelecting));
     result.Set("hasSelectedWindow", Napi::Boolean::New(env, g_selectedWindowInfo != nil));
     result.Set("windowCount", Napi::Number::New(env, g_allWindows ? [g_allWindows count] : 0));
     result.Set("hasOverlay", Napi::Boolean::New(env, g_overlayWindow != nil));
     
-    if (g_currentWindowUnderCursor) {
+    if (electronVersion || electronRunAs) {
+        // In Electron mode, get real-time window under cursor
+        @try {
+            NSPoint mouseLocation = [NSEvent mouseLocation];
+            NSScreen *mainScreen = [NSScreen mainScreen];
+            CGFloat screenHeight = [mainScreen frame].size.height;
+            CGPoint globalPoint = CGPointMake(mouseLocation.x, screenHeight - mouseLocation.y);
+            
+            NSDictionary *windowUnderCursor = getWindowUnderCursor(globalPoint);
+            
+            if (windowUnderCursor) {
+                Napi::Object currentWindow = Napi::Object::New(env);
+                currentWindow.Set("id", Napi::Number::New(env, [[windowUnderCursor objectForKey:@"id"] intValue]));
+                currentWindow.Set("title", Napi::String::New(env, [[windowUnderCursor objectForKey:@"title"] UTF8String]));
+                currentWindow.Set("appName", Napi::String::New(env, [[windowUnderCursor objectForKey:@"appName"] UTF8String]));
+                currentWindow.Set("x", Napi::Number::New(env, [[windowUnderCursor objectForKey:@"x"] intValue]));
+                currentWindow.Set("y", Napi::Number::New(env, [[windowUnderCursor objectForKey:@"y"] intValue]));
+                currentWindow.Set("width", Napi::Number::New(env, [[windowUnderCursor objectForKey:@"width"] intValue]));
+                currentWindow.Set("height", Napi::Number::New(env, [[windowUnderCursor objectForKey:@"height"] intValue]));
+                
+                // Add screen detection for Electron
+                int x = [[windowUnderCursor objectForKey:@"x"] intValue];
+                int y = [[windowUnderCursor objectForKey:@"y"] intValue];
+                int width = [[windowUnderCursor objectForKey:@"width"] intValue];
+                int height = [[windowUnderCursor objectForKey:@"height"] intValue];
+                
+                NSArray *screens = [NSScreen screens];
+                NSScreen *windowScreen = nil;
+                CGPoint windowCenter = CGPointMake(x + width/2, y + height/2);
+                
+                for (NSScreen *screen in screens) {
+                    NSRect screenFrame = [screen frame];
+                    if (windowCenter.x >= screenFrame.origin.x && 
+                        windowCenter.x < screenFrame.origin.x + screenFrame.size.width &&
+                        windowCenter.y >= screenFrame.origin.y && 
+                        windowCenter.y < screenFrame.origin.y + screenFrame.size.height) {
+                        windowScreen = screen;
+                        break;
+                    }
+                }
+                
+                if (windowScreen) {
+                    NSRect screenFrame = [windowScreen frame];
+                    currentWindow.Set("screenId", Napi::Number::New(env, [[windowScreen deviceDescription] objectForKey:@"NSScreenNumber"] ? 
+                        [[[windowScreen deviceDescription] objectForKey:@"NSScreenNumber"] intValue] : 0));
+                    currentWindow.Set("screenX", Napi::Number::New(env, (int)screenFrame.origin.x));
+                    currentWindow.Set("screenY", Napi::Number::New(env, (int)screenFrame.origin.y));
+                    currentWindow.Set("screenWidth", Napi::Number::New(env, (int)screenFrame.size.width));
+                    currentWindow.Set("screenHeight", Napi::Number::New(env, (int)screenFrame.size.height));
+                }
+                
+                result.Set("currentWindow", currentWindow);
+            }
+        } @catch (NSException *exception) {
+            // Ignore mouse tracking errors in Electron mode
+        }
+    } else if (g_currentWindowUnderCursor) {
+        // Native mode
         Napi::Object currentWindow = Napi::Object::New(env);
         currentWindow.Set("id", Napi::Number::New(env, [[g_currentWindowUnderCursor objectForKey:@"id"] intValue]));
         currentWindow.Set("title", Napi::String::New(env, [[g_currentWindowUnderCursor objectForKey:@"title"] UTF8String]));
