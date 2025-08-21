@@ -5,6 +5,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 #import <Accessibility/Accessibility.h>
+#import <QuartzCore/QuartzCore.h>
 
 // Global state for window selection
 static bool g_isWindowSelecting = false;
@@ -67,15 +68,9 @@ bool hideScreenRecordingPreview();
     
     if (!self.windowInfo) return;
     
-    // Background with transparency - purple tone
-    [[NSColor colorWithRed:0.4 green:0.3 blue:0.8 alpha:0.08] setFill];
+    // Background with transparency - purple tone (no border)
+    [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.25] setFill];
     NSRectFill(self.bounds);
-    
-    // Ultra-thin border with darker purple
-    [[NSColor colorWithRed:0.5 green:0.3 blue:0.7 alpha:0.4] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.125, 0.125) xRadius:12 yRadius:12];
-    [border setLineWidth:0.25];
-    [border stroke];
     
     // Text will be handled by separate label above button
 }
@@ -155,15 +150,9 @@ bool hideScreenRecordingPreview();
     
     if (!self.screenInfo) return;
     
-    // Background with transparency - purple tone
-    [[NSColor colorWithRed:0.4 green:0.3 blue:0.8 alpha:0.12] setFill];
+    // Background with transparency - purple tone (no border)
+    [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.3] setFill];
     NSRectFill(self.bounds);
-    
-    // Ultra-thin border with darker purple
-    [[NSColor colorWithRed:0.5 green:0.3 blue:0.7 alpha:0.3] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.125, 0.125) xRadius:15 yRadius:15];
-    [border setLineWidth:0.25];
-    [border stroke];
     
     // Text will be handled by separate label above button
 }
@@ -577,6 +566,30 @@ void updateOverlay() {
                 NSLog(@"🎯 Positioning app icon at: (%.0f, %.0f) for window size: (%.0f, %.0f)", 
                       iconCenter.x, iconCenter.y, (float)width, (float)height);
                 
+                // Add smooth floating animation after positioning
+                [appIconView.layer removeAnimationForKey:@"floatAnimation"];
+                [appIconView.layer removeAnimationForKey:@"floatAnimationY"];
+                
+                // Horizontal float animation
+                CABasicAnimation *floatAnimationX = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
+                floatAnimationX.fromValue = @(-5.0);
+                floatAnimationX.toValue = @(5.0);
+                floatAnimationX.duration = 3.5;
+                floatAnimationX.repeatCount = HUGE_VALF;
+                floatAnimationX.autoreverses = YES;
+                floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
+                
+                // Subtle vertical float animation (slightly offset timing)
+                CABasicAnimation *floatAnimationY = [CABasicAnimation animationWithKeyPath:@"transform.translation.y"];
+                floatAnimationY.fromValue = @(-2.0);
+                floatAnimationY.toValue = @(2.0);
+                floatAnimationY.duration = 4.5;
+                floatAnimationY.repeatCount = HUGE_VALF;
+                floatAnimationY.autoreverses = YES;
+                floatAnimationY.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+                [appIconView.layer addAnimation:floatAnimationY forKey:@"floatAnimationY"];
+                
                 // Position info label at overlay center, above button
                 NSPoint labelCenter = NSMakePoint(
                     (width - [infoLabel frame].size.width) / 2,  // Center horizontally
@@ -821,22 +834,23 @@ bool startScreenSelection() {
             [overlayView setScreenInfo:screenInfo];
             [overlayWindow setContentView:overlayView];
             
-            // Create select button
-            NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 180, 60)];
+            // Create select button with more padding
+            NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
             [selectButton setTitle:@"Start Record"];
             [selectButton setButtonType:NSButtonTypeMomentaryPushIn];
             [selectButton setBezelStyle:NSBezelStyleRegularSquare];
-            [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
+            [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
             [selectButton setTag:i]; // Set screen index as tag
             
-            // Modern button styling with purple gradient-like effect
+            // Modern button styling with purple tone
             [selectButton setWantsLayer:YES];
-            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.95] CGColor]];
+            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.55 green:0.3 blue:0.75 alpha:0.95] CGColor]];
             [selectButton.layer setCornerRadius:14.0];
             [selectButton.layer setBorderWidth:0.0];
             
-            // White text color with better font weight
-            [selectButton setFont:[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold]];
+            // Clean white text - normal weight
+            [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
+            [selectButton setTitle:@"Start Record"];
             NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
                 initWithString:[selectButton title]];
             [titleString addAttribute:NSForegroundColorAttributeName 
@@ -844,19 +858,7 @@ bool startScreenSelection() {
                                 range:NSMakeRange(0, [titleString length])];
             [selectButton setAttributedTitle:titleString];
             
-            // Enhanced shadow for modern look - purple tone
-            [selectButton.layer setShadowColor:[[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.8] CGColor]];
-            [selectButton.layer setShadowOffset:NSMakeSize(0, -3)];
-            [selectButton.layer setShadowRadius:8.0];
-            [selectButton.layer setShadowOpacity:0.4];
-            
-            // Add subtle inner highlight - purple tone
-            CALayer *highlightLayer = [CALayer layer];
-            [highlightLayer setFrame:CGRectMake(0, selectButton.frame.size.height * 0.6, 
-                                                selectButton.frame.size.width, selectButton.frame.size.height * 0.4)];
-            [highlightLayer setBackgroundColor:[[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.3] CGColor]];
-            [highlightLayer setCornerRadius:14.0];
-            [selectButton.layer addSublayer:highlightLayer];
+            // Clean button - no shadows or highlights
             
             // Set button target and action (reuse global delegate)
             if (!g_delegate) {
@@ -872,26 +874,20 @@ bool startScreenSelection() {
             [screenCancelButton setBezelStyle:NSBezelStyleRegularSquare];
             [screenCancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
             
-            // Modern cancel button styling
+            // Modern cancel button styling - darker gray, clean
             [screenCancelButton setWantsLayer:YES];
-            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:0.9] CGColor]];
+            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.35 green:0.35 blue:0.4 alpha:0.9] CGColor]];
             [screenCancelButton.layer setCornerRadius:12.0];
             [screenCancelButton.layer setBorderWidth:0.0];
             
-            // White text for cancel button with better font
-            [screenCancelButton setFont:[NSFont systemFontOfSize:15 weight:NSFontWeightMedium]];
+            // Clean white text for cancel button
+            [screenCancelButton setFont:[NSFont systemFontOfSize:15 weight:NSFontWeightRegular]];
             NSMutableAttributedString *screenCancelTitleString = [[NSMutableAttributedString alloc] 
                 initWithString:[screenCancelButton title]];
             [screenCancelTitleString addAttribute:NSForegroundColorAttributeName 
                                 value:[NSColor whiteColor] 
                                 range:NSMakeRange(0, [screenCancelTitleString length])];
             [screenCancelButton setAttributedTitle:screenCancelTitleString];
-            
-            // Enhanced shadow for cancel button
-            [screenCancelButton.layer setShadowColor:[[NSColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:0.8] CGColor]];
-            [screenCancelButton.layer setShadowOffset:NSMakeSize(0, -2)];
-            [screenCancelButton.layer setShadowRadius:4.0];
-            [screenCancelButton.layer setShadowOpacity:0.3];
             
             [screenCancelButton setTarget:g_delegate];
             [screenCancelButton setAction:@selector(cancelButtonClicked:)];
@@ -936,6 +932,26 @@ bool startScreenSelection() {
                 buttonCenter.y + [selectButton frame].size.height + 60 + 10  // Above label + text height + margin
             );
             [screenIconView setFrameOrigin:iconCenter];
+            
+            // Add smooth floating animation to screen icon
+            CABasicAnimation *screenFloatAnimationX = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
+            screenFloatAnimationX.fromValue = @(-5.0);
+            screenFloatAnimationX.toValue = @(5.0);
+            screenFloatAnimationX.duration = 4.0; // Slightly different duration for variety
+            screenFloatAnimationX.repeatCount = HUGE_VALF;
+            screenFloatAnimationX.autoreverses = YES;
+            screenFloatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [screenIconView.layer addAnimation:screenFloatAnimationX forKey:@"floatAnimationX"];
+            
+            // Subtle vertical float for screen icon
+            CABasicAnimation *screenFloatAnimationY = [CABasicAnimation animationWithKeyPath:@"transform.translation.y"];
+            screenFloatAnimationY.fromValue = @(-2.0);
+            screenFloatAnimationY.toValue = @(2.0);
+            screenFloatAnimationY.duration = 5.0; // Different timing than window icons
+            screenFloatAnimationY.repeatCount = HUGE_VALF;
+            screenFloatAnimationY.autoreverses = YES;
+            screenFloatAnimationY.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [screenIconView.layer addAnimation:screenFloatAnimationY forKey:@"floatAnimationY"];
             
             // Position info label at screen center, above button
             NSPoint labelCenter = NSMakePoint(
@@ -1107,33 +1123,26 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:initialFrame];
         [g_overlayWindow setContentView:g_overlayView];
         
-        // Create select button with blue theme
-        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 160, 60)];
+        // Create select button with purple theme
+        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
         [g_selectButton setTitle:@"Start Record"];
         [g_selectButton setButtonType:NSButtonTypeMomentaryPushIn];
         [g_selectButton setBezelStyle:NSBezelStyleRegularSquare];
-        [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
+        [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
         
-        // Modern button styling with purple gradient-like effect
+        // Modern button styling with purple tone
         [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.95] CGColor]];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.55 green:0.3 blue:0.75 alpha:0.95] CGColor]];
         [g_selectButton.layer setCornerRadius:14.0];
         [g_selectButton.layer setBorderWidth:0.0];
         
-        // White text color with better font weight
-        [g_selectButton setFont:[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold]];
+        // Clean white text - normal weight
         NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
             initWithString:[g_selectButton title]];
         [titleString addAttribute:NSForegroundColorAttributeName 
                             value:[NSColor whiteColor] 
                             range:NSMakeRange(0, [titleString length])];
         [g_selectButton setAttributedTitle:titleString];
-        
-        // Enhanced shadow for modern look - purple tone
-        [g_selectButton.layer setShadowColor:[[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.8] CGColor]];
-        [g_selectButton.layer setShadowOffset:NSMakeSize(0, -3)];
-        [g_selectButton.layer setShadowRadius:8.0];
-        [g_selectButton.layer setShadowOpacity:0.4];
         
         // Create delegate for button action and timer
         g_delegate = [[WindowSelectorDelegate alloc] init];
@@ -1148,28 +1157,21 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [cancelButton setTitle:@"Cancel"];
         [cancelButton setButtonType:NSButtonTypeMomentaryPushIn];
         [cancelButton setBezelStyle:NSBezelStyleRegularSquare];
-        [cancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
+        [cancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightRegular]];
         
-        // Modern cancel button styling
+        // Modern cancel button styling - darker gray, clean
         [cancelButton setWantsLayer:YES];
-        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:0.9] CGColor]];
+        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.35 green:0.35 blue:0.4 alpha:0.9] CGColor]];
         [cancelButton.layer setCornerRadius:12.0];
         [cancelButton.layer setBorderWidth:0.0];
         
-        // White text for cancel button with better font
-        [cancelButton setFont:[NSFont systemFontOfSize:15 weight:NSFontWeightMedium]];
+        // Clean white text for cancel button
         NSMutableAttributedString *cancelTitleString = [[NSMutableAttributedString alloc] 
             initWithString:[cancelButton title]];
         [cancelTitleString addAttribute:NSForegroundColorAttributeName 
                             value:[NSColor whiteColor] 
                             range:NSMakeRange(0, [cancelTitleString length])];
         [cancelButton setAttributedTitle:cancelTitleString];
-        
-        // Enhanced shadow for cancel button
-        [cancelButton.layer setShadowColor:[[NSColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:0.8] CGColor]];
-        [cancelButton.layer setShadowOffset:NSMakeSize(0, -2)];
-        [cancelButton.layer setShadowRadius:4.0];
-        [cancelButton.layer setShadowOpacity:0.3];
         
         [cancelButton setTarget:g_delegate];
         [cancelButton setAction:@selector(cancelButtonClicked:)];
