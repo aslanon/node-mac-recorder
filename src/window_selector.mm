@@ -389,8 +389,9 @@ void updateScreenOverlays();
         self.wantsLayer = YES;
         // Semi-transparent black background for screen overlay (same as window overlay)
         self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.3] CGColor];
-        // Ensure no borders or decorations
+        // Purple border for screen selection (same as window highlight)
         self.layer.borderWidth = 1.0;
+        self.layer.borderColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.9] CGColor];
         self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
@@ -417,6 +418,20 @@ void updateScreenOverlays();
     NSRectFill(self.bounds);
     
     // No border for clean look
+}
+
+- (void)setIsActiveScreen:(BOOL)isActive {
+    _isActiveScreen = isActive;
+    
+    if (isActive) {
+        // Active screen: locked state purple border (#3d00b047)
+        self.layer.borderColor = [[NSColor colorWithRed:0.24 green:0.0 blue:0.69 alpha:0.95] CGColor];
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.24 green:0.0 blue:0.69 alpha:0.278] CGColor];
+    } else {
+        // Inactive screen: normal state purple border (#4400c52e) 
+        self.layer.borderColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.9] CGColor];
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18] CGColor];
+    }
 }
 
 @end
