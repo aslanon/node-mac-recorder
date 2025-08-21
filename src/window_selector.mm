@@ -1056,18 +1056,16 @@ bool startScreenSelection() {
             
             // Window created for specific screen
             
-            // Use a high but not maximum level to avoid issues with secondary displays
-            [overlayWindow setLevel:CGWindowLevelForKey(kCGFloatingWindowLevelKey) + 1000];
+            // Use maximum level to match g_overlayWindow
+            [overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)];
             [overlayWindow setOpaque:NO];
             [overlayWindow setBackgroundColor:[NSColor clearColor]];
             [overlayWindow setIgnoresMouseEvents:NO];
             [overlayWindow setAcceptsMouseMovedEvents:YES];
             [overlayWindow setHasShadow:NO];
             [overlayWindow setAlphaValue:1.0];
-            // Ensure window appears on all spaces and stays put
-            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | 
-                                                 NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                                 NSWindowCollectionBehaviorIgnoresCycle];
+            // Ensure window appears on all spaces and stays put - match g_overlayWindow
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
             
             // Remove any default window decorations and borders
             [overlayWindow setTitlebarAppearsTransparent:YES];
@@ -1246,7 +1244,7 @@ bool startScreenSelection() {
                 // Secondary screens - more aggressive approach
                 [overlayWindow orderFront:nil];
                 [overlayWindow makeKeyAndOrderFront:nil]; // Try makeKey too
-                [overlayWindow setLevel:CGWindowLevelForKey(kCGFloatingWindowLevelKey) + 2000]; // Even higher level
+                [overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)]; // Match g_overlayWindow level
                 
                 // Secondary screen overlay shown
                 
@@ -1358,11 +1356,11 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
                                                                       defer:NO
                                                                       screen:screen];
             
-            [overlayWindow setLevel:CGWindowLevelForKey(kCGOverlayWindowLevelKey)];
+            [overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)];
             [overlayWindow setOpaque:NO];
-            [overlayWindow setBackgroundColor:[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5]];
-            [overlayWindow setIgnoresMouseEvents:YES];
-            [overlayWindow setAcceptsMouseMovedEvents:NO];
+            [overlayWindow setBackgroundColor:[NSColor clearColor]];
+            [overlayWindow setIgnoresMouseEvents:NO];
+            [overlayWindow setAcceptsMouseMovedEvents:YES];
             [overlayWindow setHasShadow:NO];
             // no border
             [overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
