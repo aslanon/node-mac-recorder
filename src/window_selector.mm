@@ -120,6 +120,10 @@ void updateScreenOverlays();
         // Ensure no borders or decorations
         self.layer.borderWidth = 0.0;
         self.layer.cornerRadius = 0.0;
+        self.layer.masksToBounds = YES;
+        self.layer.shadowOpacity = 0.0;
+        self.layer.shadowRadius = 0.0;
+        self.layer.shadowOffset = NSMakeSize(0, 0);
     }
     return self;
 }
@@ -176,6 +180,10 @@ void updateScreenOverlays();
         // Ensure no borders or decorations
         self.layer.borderWidth = 0.0;
         self.layer.cornerRadius = 0.0;
+        self.layer.masksToBounds = YES;
+        self.layer.shadowOpacity = 0.0;
+        self.layer.shadowRadius = 0.0;
+        self.layer.shadowOffset = NSMakeSize(0, 0);
         self.isActiveScreen = NO;
     }
     return self;
@@ -622,7 +630,7 @@ void updateOverlay() {
                 CABasicAnimation *floatAnimationX = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
                 floatAnimationX.fromValue = @(-4.0);
                 floatAnimationX.toValue = @(4.0);
-                floatAnimationX.duration = 1.8; // Much faster animation
+                floatAnimationX.duration = 1.0; // Much faster animation
                 floatAnimationX.repeatCount = HUGE_VALF;
                 floatAnimationX.autoreverses = YES;
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -1037,10 +1045,22 @@ bool startScreenSelection() {
             [overlayWindow setMovable:NO];
             [overlayWindow setMovableByWindowBackground:NO];
             
+            // Force remove all borders and decorations
+            [overlayWindow setHasShadow:NO];
+            [overlayWindow setOpaque:NO];
+            [overlayWindow setBackgroundColor:[NSColor clearColor]];
+            
             // Create overlay view
             ScreenSelectorOverlayView *overlayView = [[ScreenSelectorOverlayView alloc] initWithFrame:screenFrame];
             [overlayView setScreenInfo:screenInfo];
             [overlayWindow setContentView:overlayView];
+            
+            // Force window layer to have no borders
+            [overlayWindow setWantsLayer:YES];
+            overlayWindow.layer.borderWidth = 0.0;
+            overlayWindow.layer.borderColor = [[NSColor clearColor] CGColor];
+            overlayWindow.layer.cornerRadius = 0.0;
+            overlayWindow.layer.masksToBounds = YES;
             
             // Create select button with more padding
             NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
@@ -1165,7 +1185,7 @@ bool startScreenSelection() {
             CABasicAnimation *screenFloatAnimationX = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
             screenFloatAnimationX.fromValue = @(-4.0);
             screenFloatAnimationX.toValue = @(4.0);
-            screenFloatAnimationX.duration = 1.6; // Much faster animation
+            screenFloatAnimationX.duration = 1.2; // Much faster animation
             screenFloatAnimationX.repeatCount = HUGE_VALF;
             screenFloatAnimationX.autoreverses = YES;
             screenFloatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -1328,8 +1348,20 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             [overlayWindow setMovable:NO];
             [overlayWindow setMovableByWindowBackground:NO];
             
+            // Force remove all borders and decorations
+            [overlayWindow setHasShadow:NO];
+            [overlayWindow setOpaque:NO];
+            [overlayWindow setBackgroundColor:[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5]];
+            
             [overlayWindow orderFront:nil];
             [overlayWindow makeKeyAndOrderFront:nil];
+            
+            // Force window layer to have no borders
+            [overlayWindow setWantsLayer:YES];
+            overlayWindow.layer.borderWidth = 0.0;
+            overlayWindow.layer.borderColor = [[NSColor clearColor] CGColor];
+            overlayWindow.layer.cornerRadius = 0.0;
+            overlayWindow.layer.masksToBounds = YES;
             
             // Store for cleanup (reuse recording preview window variable)
             if (!g_recordingPreviewWindow) {
@@ -1391,9 +1423,21 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setMovable:NO];
         [g_overlayWindow setMovableByWindowBackground:NO];
         
+        // Force remove all borders and decorations
+        [g_overlayWindow setHasShadow:NO];
+        [g_overlayWindow setOpaque:NO];
+        [g_overlayWindow setBackgroundColor:[NSColor clearColor]];
+        
         // Create overlay view
         g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:initialFrame];
         [g_overlayWindow setContentView:g_overlayView];
+        
+        // Force window layer to have no borders
+        [g_overlayWindow setWantsLayer:YES];
+        g_overlayWindow.layer.borderWidth = 0.0;
+        g_overlayWindow.layer.borderColor = [[NSColor clearColor] CGColor];
+        g_overlayWindow.layer.cornerRadius = 0.0;
+        g_overlayWindow.layer.masksToBounds = YES;
         
         // Additional window styling to ensure no borders or decorations
         [g_overlayWindow setMovable:NO];
