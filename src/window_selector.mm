@@ -84,9 +84,9 @@ void updateScreenOverlays();
         // Inactive window appearance set
     }
     
-    // Purple border (same as screen selector)
-    self.layer.borderColor = [[NSColor colorWithRed:0.7 green:0.5 blue:1.0 alpha:0.6] CGColor];
-    self.layer.borderWidth = 4.0;
+    // No border to match screen selector
+    self.layer.borderColor = [[NSColor clearColor] CGColor];
+    self.layer.borderWidth = 0.0;
     self.layer.cornerRadius = 0.0;
 }
 
