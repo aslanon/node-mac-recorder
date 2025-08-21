@@ -71,10 +71,10 @@ bool hideScreenRecordingPreview();
     [[NSColor colorWithRed:0.4 green:0.3 blue:0.8 alpha:0.08] setFill];
     NSRectFill(self.bounds);
     
-    // Thin border with darker purple
-    [[NSColor colorWithRed:0.3 green:0.2 blue:0.6 alpha:0.6] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:12 yRadius:12];
-    [border setLineWidth:1.0];
+    // Ultra-thin border with darker purple
+    [[NSColor colorWithRed:0.5 green:0.3 blue:0.7 alpha:0.4] setStroke];
+    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.125, 0.125) xRadius:12 yRadius:12];
+    [border setLineWidth:0.25];
     [border stroke];
     
     // Text will be handled by separate label above button
@@ -159,10 +159,10 @@ bool hideScreenRecordingPreview();
     [[NSColor colorWithRed:0.4 green:0.3 blue:0.8 alpha:0.12] setFill];
     NSRectFill(self.bounds);
     
-    // Thin border with darker purple  
-    [[NSColor colorWithRed:0.3 green:0.2 blue:0.6 alpha:0.5] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:15 yRadius:15];
-    [border setLineWidth:1.0];
+    // Ultra-thin border with darker purple
+    [[NSColor colorWithRed:0.5 green:0.3 blue:0.7 alpha:0.3] setStroke];
+    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.125, 0.125) xRadius:15 yRadius:15];
+    [border setLineWidth:0.25];
     [border stroke];
     
     // Text will be handled by separate label above button
@@ -521,9 +521,13 @@ void updateOverlay() {
                 appIconView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, 96, 96)];
                 [appIconView setImageScaling:NSImageScaleProportionallyUpOrDown];
                 [appIconView setWantsLayer:YES];
-                [appIconView.layer setCornerRadius:16.0];  // Rounded corners like iOS
+                [appIconView.layer setCornerRadius:16.0];
                 [appIconView.layer setMasksToBounds:YES];
+                [appIconView.layer setBackgroundColor:[[NSColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:0.3] CGColor]]; // Debug background
                 [g_overlayWindow.contentView addSubview:appIconView];
+                NSLog(@"🖼️ Created app icon view at frame: (%.0f, %.0f, %.0f, %.0f)", 
+                      appIconView.frame.origin.x, appIconView.frame.origin.y, 
+                      appIconView.frame.size.width, appIconView.frame.size.height);
             }
             
             // Get app icon using NSWorkspace
@@ -542,9 +546,13 @@ void updateOverlay() {
             // Fallback to generic app icon if not found
             if (!appIcon) {
                 appIcon = [workspace iconForFileType:NSFileTypeForHFSTypeCode(kGenericApplicationIcon)];
+                NSLog(@"⚠️ Using fallback icon for app: %@", iconAppName);
+            } else {
+                NSLog(@"✅ Found app icon for: %@", iconAppName);
             }
             
             [appIconView setImage:appIcon];
+            NSLog(@"🖼️ Set icon image, size: %.0fx%.0f", [appIcon size].width, [appIcon size].height);
             
             // Update label text
             NSString *labelWindowTitle = [windowUnderCursor objectForKey:@"title"] ?: @"Unknown Window";
@@ -566,6 +574,8 @@ void updateOverlay() {
                     buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
                 );
                 [appIconView setFrameOrigin:iconCenter];
+                NSLog(@"🎯 Positioning app icon at: (%.0f, %.0f) for window size: (%.0f, %.0f)", 
+                      iconCenter.x, iconCenter.y, (float)width, (float)height);
                 
                 // Position info label at overlay center, above button
                 NSPoint labelCenter = NSMakePoint(
@@ -819,9 +829,9 @@ bool startScreenSelection() {
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
             [selectButton setTag:i]; // Set screen index as tag
             
-            // Modern button styling with gradient-like effect
+            // Modern button styling with purple gradient-like effect
             [selectButton setWantsLayer:YES];
-            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.1 green:0.5 blue:0.9 alpha:0.95] CGColor]];
+            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.95] CGColor]];
             [selectButton.layer setCornerRadius:14.0];
             [selectButton.layer setBorderWidth:0.0];
             
@@ -834,17 +844,17 @@ bool startScreenSelection() {
                                 range:NSMakeRange(0, [titleString length])];
             [selectButton setAttributedTitle:titleString];
             
-            // Enhanced shadow for modern look
-            [selectButton.layer setShadowColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:0.8] CGColor]];
+            // Enhanced shadow for modern look - purple tone
+            [selectButton.layer setShadowColor:[[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.8] CGColor]];
             [selectButton.layer setShadowOffset:NSMakeSize(0, -3)];
             [selectButton.layer setShadowRadius:8.0];
             [selectButton.layer setShadowOpacity:0.4];
             
-            // Add subtle inner highlight
+            // Add subtle inner highlight - purple tone
             CALayer *highlightLayer = [CALayer layer];
             [highlightLayer setFrame:CGRectMake(0, selectButton.frame.size.height * 0.6, 
                                                 selectButton.frame.size.width, selectButton.frame.size.height * 0.4)];
-            [highlightLayer setBackgroundColor:[[NSColor colorWithRed:0.3 green:0.7 blue:1.0 alpha:0.3] CGColor]];
+            [highlightLayer setBackgroundColor:[[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.3] CGColor]];
             [highlightLayer setCornerRadius:14.0];
             [selectButton.layer addSublayer:highlightLayer];
             
@@ -1104,9 +1114,9 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_selectButton setBezelStyle:NSBezelStyleRegularSquare];
         [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
         
-        // Modern button styling with gradient-like effect
+        // Modern button styling with purple gradient-like effect
         [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.1 green:0.5 blue:0.9 alpha:0.95] CGColor]];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.95] CGColor]];
         [g_selectButton.layer setCornerRadius:14.0];
         [g_selectButton.layer setBorderWidth:0.0];
         
@@ -1119,8 +1129,8 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
                             range:NSMakeRange(0, [titleString length])];
         [g_selectButton setAttributedTitle:titleString];
         
-        // Enhanced shadow for modern look
-        [g_selectButton.layer setShadowColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:0.8] CGColor]];
+        // Enhanced shadow for modern look - purple tone
+        [g_selectButton.layer setShadowColor:[[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.8] CGColor]];
         [g_selectButton.layer setShadowOffset:NSMakeSize(0, -3)];
         [g_selectButton.layer setShadowRadius:8.0];
         [g_selectButton.layer setShadowOpacity:0.4];
