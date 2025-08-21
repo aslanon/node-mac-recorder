@@ -60,6 +60,12 @@ void updateScreenOverlays();
 - (void)setHighlightFrame:(NSRect)frame;
 @end
 
+// Custom button with hover effects
+@interface HoverButton : NSButton
+@property (nonatomic) BOOL isHovered;
+- (void)setupHoverTracking;
+@end
+
 @implementation WindowSelectorOverlayView
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -95,17 +101,29 @@ void updateScreenOverlays();
                                                                   xRadius:8.0
                                                                   yRadius:8.0];
     
-    // Fill color based on toggle state - no border
+    // Fill color and border based on toggle state
     NSColor *fillColor;
+    NSColor *strokeColor;
+    CGFloat lineWidth;
     
     if (self.isToggled) {
+        // Locked state: thicker border
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
+        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
+        lineWidth = 3.0;
     } else {
+        // Normal state: thin border
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
+        strokeColor = [NSColor whiteColor];
+        lineWidth = 1.0;
     }
     
     [fillColor setFill];
     [highlightPath fill];
+    
+    [strokeColor setStroke];
+    [highlightPath setLineWidth:lineWidth];
+    [highlightPath stroke];
 }
 
 - (void)updateAppearance {
@@ -159,6 +177,62 @@ void updateScreenOverlays();
 }
 
 // Layer-based approach, no custom drawing needed
+
+@end
+
+@implementation HoverButton
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.isHovered = NO;
+        [self setupHoverTracking];
+    }
+    return self;
+}
+
+- (void)setupHoverTracking {
+    NSTrackingArea *trackingArea = [[NSTrackingArea alloc] 
+        initWithRect:self.bounds
+             options:(NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways)
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:trackingArea];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    self.isHovered = YES;
+    [self animateScale:1.2 duration:0.15];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    self.isHovered = NO;
+    [self animateScale:1.0 duration:0.15];
+}
+
+- (void)animateScale:(CGFloat)scale duration:(NSTimeInterval)duration {
+    [NSAnimationContext beginGrouping];
+    [NSAnimationContext currentContext].duration = duration;
+    [NSAnimationContext currentContext].timingFunction = 
+        [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    
+    CATransform3D transform = CATransform3DMakeScale(scale, scale, 1.0);
+    self.layer.transform = transform;
+    
+    [NSAnimationContext endGrouping];
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    
+    // Remove old tracking areas
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    
+    // Add new tracking area
+    [self setupHoverTracking];
+}
 
 @end
 
@@ -1239,8 +1313,8 @@ bool startScreenSelection() {
             
             // Note: NSWindow doesn't have setWantsLayer method, only NSView does
             
-            // Create select button with more padding
-            NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
+            // Create select button with more padding and hover effects
+            NSButton *selectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
             [selectButton setTitle:@"Start Record"];
             [selectButton setButtonType:NSButtonTypeMomentaryPushIn];
             [selectButton setBordered:NO];
@@ -1282,8 +1356,8 @@ bool startScreenSelection() {
             [selectButton setFocusRingType:NSFocusRingTypeNone];
             [selectButton setShowsBorderOnlyWhileMouseInside:NO];
             
-            // Create cancel button for screen selection
-            NSButton *screenCancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
+            // Create cancel button for screen selection with hover effects
+            NSButton *screenCancelButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
             [screenCancelButton setTitle:@"Cancel"];
             [screenCancelButton setButtonType:NSButtonTypeMomentaryPushIn];
             [screenCancelButton setBordered:NO];
@@ -1640,8 +1714,8 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setMovable:NO];
         [g_overlayWindow setMovableByWindowBackground:NO];
         
-        // Create select button with purple theme
-        g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
+        // Create select button with purple theme and hover effects
+        g_selectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
         [g_selectButton setTitle:@"Start Record"];
         [g_selectButton setButtonType:NSButtonTypeMomentaryPushIn];
         [g_selectButton setBordered:NO];
@@ -1681,8 +1755,8 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         // Add select button directly to window (not view) for proper layering
         [g_overlayWindow.contentView addSubview:g_selectButton];
         
-        // Create cancel button
-        NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
+        // Create cancel button with hover effects
+        NSButton *cancelButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
         [cancelButton setTitle:@"Cancel"];
         [cancelButton setButtonType:NSButtonTypeMomentaryPushIn];
         [cancelButton setBordered:NO];
