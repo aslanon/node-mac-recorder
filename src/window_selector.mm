@@ -66,6 +66,10 @@ void updateScreenOverlays();
 - (void)setupHoverTracking;
 @end
 
+// Custom window that never becomes key
+@interface NoFocusWindow : NSWindow
+@end
+
 // Window delegate to prevent focus
 @interface OverlayWindowDelegate : NSObject <NSWindowDelegate>
 @end
@@ -113,13 +117,13 @@ void updateScreenOverlays();
     NSColor *strokeColor;
     
     if (self.isToggled) {
-        // Locked state: slightly different opacity
+        // Locked state: slightly different opacity with darker purple stroke
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.5];
         strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
     } else {
-        // Normal state: standard fill
+        // Normal state: purple fill with lighter purple stroke
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
-        strokeColor = [NSColor whiteColor];
+        strokeColor = [NSColor colorWithRed:0.7 green:0.5 blue:0.95 alpha:0.8];
     }
     
     [fillColor setFill];
@@ -251,6 +255,22 @@ void updateScreenOverlays();
 
 @end
 
+@implementation NoFocusWindow
+
+- (BOOL)canBecomeKeyWindow {
+    return NO; // Never accept key status
+}
+
+- (BOOL)canBecomeMainWindow {
+    return NO; // Never accept main status
+}
+
+- (BOOL)acceptsFirstResponder {
+    return NO; // Never accept first responder
+}
+
+@end
+
 @implementation OverlayWindowDelegate
 
 - (BOOL)windowShouldBecomeKey:(NSWindow *)window {
@@ -259,6 +279,14 @@ void updateScreenOverlays();
 
 - (BOOL)windowShouldBecomeMain:(NSWindow *)window {
     return NO; // Prevent window from becoming main
+}
+
+- (BOOL)canBecomeKeyWindow {
+    return NO; // Never can become key
+}
+
+- (BOOL)canBecomeMainWindow {
+    return NO; // Never can become main
 }
 
 @end
@@ -1717,10 +1745,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         // Create full-screen overlay window to prevent window dragging
         NSScreen *mainScreen = [NSScreen mainScreen];
         NSRect fullScreenFrame = [mainScreen frame];
-        g_overlayWindow = [[NSWindow alloc] initWithContentRect:fullScreenFrame
-                                                      styleMask:NSWindowStyleMaskBorderless
-                                                        backing:NSBackingStoreBuffered
-                                                          defer:NO];
+        g_overlayWindow = [[NoFocusWindow alloc] initWithContentRect:fullScreenFrame
+                                                           styleMask:NSWindowStyleMaskBorderless
+                                                             backing:NSBackingStoreBuffered
+                                                               defer:NO];
         
         // Force completely borderless appearance
         [g_overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
@@ -1773,6 +1801,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             windowDelegate = [[OverlayWindowDelegate alloc] init];
         }
         [g_overlayWindow setDelegate:windowDelegate];
+        
+        // Additional focus prevention - override window methods
+        [g_overlayWindow setAcceptsMouseMovedEvents:YES];
+        [g_overlayWindow setIgnoresMouseEvents:NO];
         
         // Create select button with purple theme and hover effects
         g_selectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
