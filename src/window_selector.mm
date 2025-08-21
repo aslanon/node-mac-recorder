@@ -943,20 +943,27 @@ bool startScreenSelection() {
             [screenInfoArray addObject:screenInfo];
             
             // Create overlay window for this screen (FULL screen including menu bar)
+            // IMPORTANT: Explicitly assign to specific screen
             NSWindow *overlayWindow = [[NSWindow alloc] initWithContentRect:screenFrame
                                                                   styleMask:NSWindowStyleMaskBorderless
                                                                     backing:NSBackingStoreBuffered
                                                                       defer:NO
                                                                       screen:screen];
             
-            [overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)];
+            // Window created for specific screen
+            
+            // Use a high but not maximum level to avoid issues with secondary displays
+            [overlayWindow setLevel:CGWindowLevelForKey(kCGFloatingWindowLevelKey) + 1000];
             [overlayWindow setOpaque:NO];
             [overlayWindow setBackgroundColor:[NSColor clearColor]];
             [overlayWindow setIgnoresMouseEvents:NO];
             [overlayWindow setAcceptsMouseMovedEvents:YES];
             [overlayWindow setHasShadow:NO];
             [overlayWindow setAlphaValue:1.0];
-            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+            // Ensure window appears on all spaces and stays put
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | 
+                                                 NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                                 NSWindowCollectionBehaviorIgnoresCycle];
             
             // Remove any default window decorations and borders
             [overlayWindow setTitlebarAppearsTransparent:YES];
@@ -1116,12 +1123,28 @@ bool startScreenSelection() {
             [overlayView addSubview:selectButton];
             [overlayView addSubview:screenCancelButton];
             
-            [overlayWindow orderFront:nil];
-            [overlayWindow makeKeyAndOrderFront:nil];
+            // Ensure window frame is correct for this screen
+            [overlayWindow setFrame:screenFrame display:YES animate:NO];
+            
+            // Show overlay - for secondary screens, avoid makeKeyAndOrderFront initially
+            if (i == 0) {
+                // Primary screen - can be key window
+                [overlayWindow makeKeyAndOrderFront:nil];
+            } else {
+                // Secondary screens - just order front first
+                [overlayWindow orderFront:nil];
+                // Small delay to ensure window is created on correct screen
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [overlayWindow orderFront:nil];
+                    [overlayWindow setOrderedIndex:0]; // Bring to very front
+                });
+            }
             
             // Additional visibility settings
             [overlayWindow setAlphaValue:1.0];
             [overlayWindow setIsVisible:YES];
+            
+            // Overlay window is now ready and visible
             
             [g_screenOverlayWindows addObject:overlayWindow];
             [screenInfo release];
