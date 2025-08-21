@@ -120,18 +120,11 @@ void updateScreenOverlays();
         // Locked state: slightly different opacity with darker purple stroke
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.5];
         strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
-    } else {
-        // Normal state: purple fill with lighter purple stroke
-        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
-        strokeColor = [NSColor colorWithRed:0.7 green:0.5 blue:0.95 alpha:0.8];
-    }
+    } 
     
     [fillColor setFill];
     [highlightPath fill];
-    
-    [strokeColor setStroke];
-    [highlightPath setLineWidth:1.0];
-    [highlightPath stroke];
+
 }
 
 - (void)updateAppearance {
@@ -222,11 +215,34 @@ void updateScreenOverlays();
 - (void)mouseEntered:(NSEvent *)event {
     self.isHovered = YES;
     [[NSCursor pointingHandCursor] set];
+    
+    // Brighten background on hover
+    if (self.layer.backgroundColor) {
+        CGFloat red, green, blue, alpha;
+        NSColor *currentColor = [NSColor colorWithCGColor:self.layer.backgroundColor];
+        [currentColor getRed:&red green:&green blue:&blue alpha:&alpha];
+        
+        // Increase brightness by 20%
+        red = MIN(1.0, red * 1.2);
+        green = MIN(1.0, green * 1.2);
+        blue = MIN(1.0, blue * 1.2);
+        
+        NSColor *brighterColor = [NSColor colorWithRed:red green:green blue:blue alpha:alpha];
+        self.layer.backgroundColor = [brighterColor CGColor];
+    }
 }
 
 - (void)mouseExited:(NSEvent *)event {
     self.isHovered = NO;
     [[NSCursor arrowCursor] set];
+    
+    // Restore original background color
+    NSString *title = [self title];
+    if ([title isEqualToString:@"Start Record"]) {
+        self.layer.backgroundColor = [[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor];
+    } else if ([title isEqualToString:@"Cancel"]) {
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.4 green:0.4 blue:0.45 alpha:1.0] CGColor];
+    }
 }
 
 - (void)animateScale:(CGFloat)scale duration:(NSTimeInterval)duration {
@@ -304,7 +320,7 @@ void updateScreenOverlays();
         self.wantsLayer = YES;
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
         // Ensure no borders or decorations
-        self.layer.borderWidth = 0.0;
+        self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
@@ -364,7 +380,7 @@ void updateScreenOverlays();
         self.wantsLayer = YES;
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
         // Ensure no borders or decorations
-        self.layer.borderWidth = 0.0;
+        self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
@@ -839,7 +855,7 @@ void updateOverlay() {
                 
                 // Force no borders on info label
                 [infoLabel setWantsLayer:YES];
-                infoLabel.layer.borderWidth = 0.0;
+                infoLabel.layer.borderWidth = 1.0;
                 infoLabel.layer.borderColor = [[NSColor clearColor] CGColor];
                 infoLabel.layer.cornerRadius = 0.0;
                 infoLabel.layer.masksToBounds = YES;
@@ -865,7 +881,7 @@ void updateOverlay() {
                 [appIconView.layer setBackgroundColor:[[NSColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:0.3] CGColor]]; // Debug background
                 
                 // Force no borders on app icon view
-                appIconView.layer.borderWidth = 0.0;
+                appIconView.layer.borderWidth = 1.0;
                 appIconView.layer.borderColor = [[NSColor clearColor] CGColor];
                 appIconView.layer.shadowOpacity = 0.0;
                 appIconView.layer.shadowRadius = 0.0;
@@ -906,20 +922,19 @@ void updateOverlay() {
             NSString *labelAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown App";
             [infoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", labelAppName, labelWindowTitle]];
             
-            // Position buttons - Start Record in center of highlighted window
+            // Position buttons - Start Record in center of screen
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
-                // Convert window coordinates to overlay view coordinates
-                NSRect highlightFrame = NSMakeRect(x, [g_overlayView frame].size.height - y - height, width, height);
+                NSRect screenFrame = [g_overlayView frame];
                 NSPoint buttonCenter = NSMakePoint(
-                    highlightFrame.origin.x + (highlightFrame.size.width - buttonSize.width) / 2,
-                    highlightFrame.origin.y + (highlightFrame.size.height - buttonSize.height) / 2 + 15
+                    (screenFrame.size.width - buttonSize.width) / 2,
+                    (screenFrame.size.height - buttonSize.height) / 2 + 30  // Slightly above center
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position app icon above text label within highlighted area
+                // Position app icon above text label in screen center
                 NSPoint iconCenter = NSMakePoint(
-                    highlightFrame.origin.x + (highlightFrame.size.width - 96) / 2,  // Center horizontally within highlight
+                    (screenFrame.size.width - 96) / 2,  // Center horizontally on screen
                     buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
                 );
                 [appIconView setFrameOrigin:iconCenter];
@@ -940,9 +955,9 @@ void updateOverlay() {
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
                 [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
                 
-                // Position info label within highlighted area, above button
+                // Position info label in screen center, above button
                 NSPoint labelCenter = NSMakePoint(
-                    highlightFrame.origin.x + (highlightFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally within highlight
+                    (screenFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on screen
                     buttonCenter.y + buttonSize.height + 10  // 10px above button, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
@@ -960,7 +975,7 @@ void updateOverlay() {
                 if (cancelButton) {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
-                        highlightFrame.origin.x + (highlightFrame.size.width - cancelButtonSize.width) / 2,
+                        (screenFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on screen
                         buttonCenter.y - buttonSize.height - 20  // 20px below main button
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
@@ -979,7 +994,7 @@ void updateOverlay() {
                 if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
                     [subview setWantsLayer:YES];
                     if (subview.layer) {
-                        subview.layer.borderWidth = 0.0;
+                        subview.layer.borderWidth = 1.0;
                         subview.layer.borderColor = [[NSColor clearColor] CGColor];
                         subview.layer.masksToBounds = YES;
                         subview.layer.shadowOpacity = 0.0;
