@@ -1088,10 +1088,7 @@ bool startScreenSelection() {
             
             // Force window layer to have no borders
             [overlayWindow setWantsLayer:YES];
-            overlayWindow.layer.borderWidth = 0.0;
-            overlayWindow.layer.borderColor = [[NSColor clearColor] CGColor];
-            overlayWindow.layer.cornerRadius = 0.0;
-            overlayWindow.layer.masksToBounds = YES;
+            // Note: NSWindow doesn't have direct layer access, only contentView does
             
             // Create select button with more padding
             NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
@@ -1389,10 +1386,7 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             
             // Force window layer to have no borders
             [overlayWindow setWantsLayer:YES];
-            overlayWindow.layer.borderWidth = 0.0;
-            overlayWindow.layer.borderColor = [[NSColor clearColor] CGColor];
-            overlayWindow.layer.cornerRadius = 0.0;
-            overlayWindow.layer.masksToBounds = YES;
+            // Note: NSWindow doesn't have direct layer access, only contentView does
             
             // Store for cleanup (reuse recording preview window variable)
             if (!g_recordingPreviewWindow) {
@@ -1468,10 +1462,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Force window layer to have no borders
         [g_overlayWindow setWantsLayer:YES];
-        g_overlayWindow.layer.borderWidth = 0.0;
-        g_overlayWindow.layer.borderColor = [[NSColor clearColor] CGColor];
-        g_overlayWindow.layer.cornerRadius = 0.0;
-        g_overlayWindow.layer.masksToBounds = YES;
+        // Note: NSWindow doesn't have direct layer access, only contentView does
         
         // Force content view to have no borders
         g_overlayWindow.contentView.wantsLayer = YES;
