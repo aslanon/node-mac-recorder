@@ -211,6 +211,9 @@ void updateScreenOverlays();
 }
 
 - (void)animateScale:(CGFloat)scale duration:(NSTimeInterval)duration {
+    // Set anchor point to center for center-based scaling
+    self.layer.anchorPoint = CGPointMake(0.5, 0.5);
+    
     [NSAnimationContext beginGrouping];
     [NSAnimationContext currentContext].duration = duration;
     [NSAnimationContext currentContext].timingFunction = 
@@ -1024,7 +1027,7 @@ bool showRecordingPreview(NSDictionary *windowInfo) {
         [g_recordingPreviewWindow setAcceptsMouseMovedEvents:NO];
         [g_recordingPreviewWindow setHasShadow:NO];
         [g_recordingPreviewWindow setAlphaValue:1.0];
-        [g_recordingPreviewWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+        [g_recordingPreviewWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle];
         
         // Remove any default window decorations and borders
         [g_recordingPreviewWindow setTitlebarAppearsTransparent:YES];
@@ -1201,6 +1204,11 @@ bool startScreenSelection() {
     @try {
         if (g_isScreenSelecting) return false;
         
+        // Clean up any existing window selector first
+        if (g_isWindowSelecting) {
+            cleanupWindowSelector();
+        }
+        
         // Get all available screens
         NSArray *screens = [NSScreen screens];
         if (!screens || [screens count] == 0) return false;
@@ -1293,7 +1301,7 @@ bool startScreenSelection() {
             [overlayWindow setHasShadow:NO];
             [overlayWindow setAlphaValue:1.0];
             // Ensure window appears on all spaces and stays put - match g_overlayWindow
-            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle];
             
             // Remove any default window decorations and borders
             [overlayWindow setTitlebarAppearsTransparent:YES];
@@ -1593,7 +1601,7 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             // no border
             [overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
             [overlayWindow setAlphaValue:1.0];
-            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle];
             
 
             // Force content view to have no borders
@@ -1650,12 +1658,17 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // Clean up any existing overlay first
+        // Clean up any existing overlays first
         if (g_overlayWindow) {
             [g_overlayWindow close];
             g_overlayWindow = nil;
             g_overlayView = nil;
             g_selectButton = nil;
+        }
+        
+        // Also cleanup screen selector if running
+        if (g_isScreenSelecting) {
+            cleanupScreenSelector();
         }
         
         // Get all windows
@@ -1684,7 +1697,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setAcceptsMouseMovedEvents:YES];
         [g_overlayWindow setHasShadow:NO];
         [g_overlayWindow setAlphaValue:1.0];
-        [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary];
+        [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorIgnoresCycle];
         
         // Remove any default window decorations and borders
         [g_overlayWindow setTitlebarAppearsTransparent:YES];
