@@ -17,6 +17,7 @@ static NSDictionary *g_selectedWindowInfo = nil;
 static NSMutableArray *g_allWindows = nil;
 static NSDictionary *g_currentWindowUnderCursor = nil;
 static bool g_bringToFrontEnabled = false; // Default disabled for overlay-only highlighting
+static bool g_hasToggledWindow = false; // Track if any window is currently toggled
 static id g_windowKeyEventMonitor = nil;
 
 // Recording preview overlay state
@@ -120,6 +121,9 @@ void updateScreenOverlays();
     // Toggle the window state
     self.isToggled = !self.isToggled;
     
+    // Update global toggle state
+    g_hasToggledWindow = self.isToggled;
+    
     // Bring window to front if toggled
     if (self.isToggled && self.windowInfo) {
         int windowId = [[self.windowInfo objectForKey:@"id"] intValue];
@@ -128,6 +132,8 @@ void updateScreenOverlays();
             NSLog(@"🔄 TOGGLED: Window brought to front - %@", [self.windowInfo objectForKey:@"title"]);
         }
     }
+    
+    NSLog(@"🎯 Global toggle state: %s", g_hasToggledWindow ? "HAS_TOGGLED" : "NO_TOGGLE");
 }
 
 // Layer-based approach, no custom drawing needed
@@ -489,6 +495,15 @@ void updateOverlay() {
         NSDictionary *windowUnderCursor = getWindowUnderCursor(globalPoint);
         
         if (windowUnderCursor && ![windowUnderCursor isEqualToDictionary:g_currentWindowUnderCursor]) {
+            // If there's a toggled window, don't switch to a different window
+            if (g_hasToggledWindow && g_currentWindowUnderCursor) {
+                // Check if current toggled window is different from window under cursor
+                BOOL isSameWindow = [[g_currentWindowUnderCursor objectForKey:@"id"] isEqual:[windowUnderCursor objectForKey:@"id"]];
+                if (!isSameWindow) {
+                    NSLog(@"🔒 BLOCKED: Not switching overlay - current window is toggled");
+                    return; // Don't update overlay for different window
+                }
+            }
             // Update current window
             [g_currentWindowUnderCursor release];
             g_currentWindowUnderCursor = [windowUnderCursor retain];
@@ -560,6 +575,7 @@ void updateOverlay() {
             // Update overlay view window info and reset toggle state for new window
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:windowUnderCursor];
             [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
+            g_hasToggledWindow = NO; // Reset global toggle state when switching windows
             
             // Add/update info label above button
             NSTextField *infoLabel = nil;
@@ -746,6 +762,7 @@ void updateOverlay() {
 // Cleanup function
 void cleanupWindowSelector() {
     g_isWindowSelecting = false;
+    g_hasToggledWindow = false; // Reset toggle state
     
     // Stop tracking timer
     if (g_trackingTimer) {
