@@ -326,7 +326,8 @@ void updateScreenOverlays();
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        // Semi-transparent purple background for screen/window overlay  
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18] CGColor];
         // Ensure no borders or decorations
         self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
@@ -386,7 +387,8 @@ void updateScreenOverlays();
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        // Semi-transparent purple background for screen/window overlay  
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18] CGColor];
         // Ensure no borders or decorations
         self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
@@ -936,14 +938,14 @@ void updateOverlay() {
                 NSRect overlayFrame = [g_overlayView frame];  // Use overlay view frame for proper centering
                 NSPoint buttonCenter = NSMakePoint(
                     (overlayFrame.size.width - buttonSize.width) / 2,
-                    (overlayFrame.size.height - buttonSize.height) / 2 + 30  // Slightly above center
+                    (overlayFrame.size.height - buttonSize.height) / 2  // Perfect center
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position app icon above text label in absolute overlay center
+                // Position app icon above center
                 NSPoint iconCenter = NSMakePoint(
                     (overlayFrame.size.width - 96) / 2,  // Center horizontally on overlay
-                    buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
+                    (overlayFrame.size.height / 2) + 80  // 80px above center
                 );
                 [appIconView setFrameOrigin:iconCenter];
                 NSLog(@"🎯 Positioning app icon at: (%.0f, %.0f) for window size: (%.0f, %.0f)", 
@@ -963,10 +965,10 @@ void updateOverlay() {
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
                 [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
                 
-                // Position info label in absolute overlay center, above button
+                // Position info label between icon and button
                 NSPoint labelCenter = NSMakePoint(
                     (overlayFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on overlay
-                    buttonCenter.y + buttonSize.height + 10  // 10px above button, below icon
+                    (overlayFrame.size.height / 2) + 30  // 30px above center, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
                 
@@ -984,7 +986,7 @@ void updateOverlay() {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
                         (overlayFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on overlay
-                        buttonCenter.y - buttonSize.height - 20  // 20px below main button
+                        (overlayFrame.size.height / 2) - 60  // 60px below center
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
                 }
@@ -1512,17 +1514,17 @@ bool startScreenSelection() {
             NSString *resolution = [screenInfo objectForKey:@"resolution"] ?: @"Unknown Resolution";
             [screenInfoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", screenName, resolution]];
             
-            // Position buttons - Start Record in center, Cancel below it
+            // Position buttons - Start Record in perfect center
             NSPoint buttonCenter = NSMakePoint(
                 (screenFrame.size.width - [selectButton frame].size.width) / 2,
-                (screenFrame.size.height - [selectButton frame].size.height) / 2 + 15  // Slightly above center
+                (screenFrame.size.height - [selectButton frame].size.height) / 2  // Perfect center
             );
             [selectButton setFrameOrigin:buttonCenter];
             
-            // Position screen icon above text label
+            // Position screen icon above center
             NSPoint iconCenter = NSMakePoint(
                 (screenFrame.size.width - 96) / 2,  // Center horizontally (icon is 96px wide)
-                buttonCenter.y + [selectButton frame].size.height + 60 + 10  // Above label + text height + margin
+                (screenFrame.size.height / 2) + 80  // 80px above center
             );
             [screenIconView setFrameOrigin:iconCenter];
             
@@ -1536,16 +1538,16 @@ bool startScreenSelection() {
             screenFloatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
             [screenIconView.layer addAnimation:screenFloatAnimationX forKey:@"floatAnimationX"];
             
-            // Position info label at screen center, above button
+            // Position info label between icon and button
             NSPoint labelCenter = NSMakePoint(
                 (screenFrame.size.width - [screenInfoLabel frame].size.width) / 2,  // Center horizontally
-                buttonCenter.y + [selectButton frame].size.height + 10  // 10px above button, below icon
+                (screenFrame.size.height / 2) + 30  // 30px above center, below icon
             );
             [screenInfoLabel setFrameOrigin:labelCenter];
             
             NSPoint cancelButtonCenter = NSMakePoint(
                 (screenFrame.size.width - [screenCancelButton frame].size.width) / 2,
-                buttonCenter.y - [selectButton frame].size.height - 20  // 20px below main button
+                (screenFrame.size.height / 2) - 60  // 60px below center
             );
             [screenCancelButton setFrameOrigin:cancelButtonCenter];
             
