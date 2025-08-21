@@ -77,9 +77,6 @@ void updateScreenOverlays();
     // Background with transparency - purple tone (no border)
     [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.25] setFill];
     NSRectFill(self.bounds);
-    
-    // Ensure no borders or frames are drawn
-    // Text will be handled by separate label above button
 }
 
 @end
@@ -175,13 +172,7 @@ void updateScreenOverlays();
     }
     NSRectFill(self.bounds);
     
-    // Add subtle border for active screen
-    if (self.isActiveScreen) {
-        [[NSColor colorWithRed:0.7 green:0.5 blue:1.0 alpha:0.6] setStroke];
-        NSBezierPath *borderPath = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 2, 2)];
-        [borderPath setLineWidth:4.0];
-        [borderPath stroke];
-    }
+    // No border for clean look
 }
 
 @end
@@ -943,12 +934,24 @@ bool startScreenSelection() {
             [screenInfoArray addObject:screenInfo];
             
             // Create overlay window for this screen (FULL screen including menu bar)
-            // IMPORTANT: Explicitly assign to specific screen
-            NSWindow *overlayWindow = [[NSWindow alloc] initWithContentRect:screenFrame
-                                                                  styleMask:NSWindowStyleMaskBorderless
-                                                                    backing:NSBackingStoreBuffered
-                                                                      defer:NO
-                                                                      screen:screen];
+            // For secondary screens, don't specify screen parameter to avoid issues
+            NSWindow *overlayWindow;
+            if (i == 0) {
+                // Primary screen - use screen parameter
+                overlayWindow = [[NSWindow alloc] initWithContentRect:screenFrame
+                                                            styleMask:NSWindowStyleMaskBorderless
+                                                              backing:NSBackingStoreBuffered
+                                                                defer:NO
+                                                               screen:screen];
+            } else {
+                // Secondary screens - create without screen param, set frame manually
+                overlayWindow = [[NSWindow alloc] initWithContentRect:screenFrame
+                                                            styleMask:NSWindowStyleMaskBorderless
+                                                              backing:NSBackingStoreBuffered
+                                                                defer:NO];
+                // Force specific positioning for secondary screen
+                [overlayWindow setFrameOrigin:screenFrame.origin];
+            }
             
             // Window created for specific screen
             
@@ -1126,17 +1129,23 @@ bool startScreenSelection() {
             // Ensure window frame is correct for this screen
             [overlayWindow setFrame:screenFrame display:YES animate:NO];
             
-            // Show overlay - for secondary screens, avoid makeKeyAndOrderFront initially
+            // Show overlay - different strategy for secondary screens
             if (i == 0) {
-                // Primary screen - can be key window
+                // Primary screen
                 [overlayWindow makeKeyAndOrderFront:nil];
+                // Primary screen overlay shown
             } else {
-                // Secondary screens - just order front first
+                // Secondary screens - more aggressive approach
                 [overlayWindow orderFront:nil];
-                // Small delay to ensure window is created on correct screen
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [overlayWindow makeKeyAndOrderFront:nil]; // Try makeKey too
+                [overlayWindow setLevel:CGWindowLevelForKey(kCGFloatingWindowLevelKey) + 2000]; // Even higher level
+                
+                // Secondary screen overlay shown
+                
+                // Double-check with delayed re-show
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [overlayWindow orderFront:nil];
-                    [overlayWindow setOrderedIndex:0]; // Bring to very front
+                    [overlayWindow makeKeyAndOrderFront:nil];
                 });
             }
             
