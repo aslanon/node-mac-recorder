@@ -84,8 +84,8 @@ void updateScreenOverlays();
         self.isActiveWindow = YES;
         self.highlightFrame = NSZeroRect;
         
-        // Transparent background for full-screen overlay
-        self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        // Semi-transparent background for full-screen overlay (50% less transparency = more opaque)
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.3] CGColor];
         
         // Disable focus ring completely
         [self setFocusRingType:NSFocusRingTypeNone];
@@ -929,19 +929,19 @@ void updateOverlay() {
             NSString *labelAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown App";
             [infoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", labelAppName, labelWindowTitle]];
             
-            // Position buttons - Start Record in absolute center of screen
+            // Position buttons - Start Record in absolute center of overlay
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
-                NSRect screenFrame = [[NSScreen mainScreen] frame];  // Use main screen frame instead of overlay view
+                NSRect overlayFrame = [g_overlayView frame];  // Use overlay view frame for proper centering
                 NSPoint buttonCenter = NSMakePoint(
-                    (screenFrame.size.width - buttonSize.width) / 2,
-                    (screenFrame.size.height - buttonSize.height) / 2 + 30  // Slightly above center
+                    (overlayFrame.size.width - buttonSize.width) / 2,
+                    (overlayFrame.size.height - buttonSize.height) / 2 + 30  // Slightly above center
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position app icon above text label in absolute screen center
+                // Position app icon above text label in absolute overlay center
                 NSPoint iconCenter = NSMakePoint(
-                    (screenFrame.size.width - 96) / 2,  // Center horizontally on main screen
+                    (overlayFrame.size.width - 96) / 2,  // Center horizontally on overlay
                     buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
                 );
                 [appIconView setFrameOrigin:iconCenter];
@@ -962,9 +962,9 @@ void updateOverlay() {
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
                 [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
                 
-                // Position info label in absolute screen center, above button
+                // Position info label in absolute overlay center, above button
                 NSPoint labelCenter = NSMakePoint(
-                    (screenFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on main screen
+                    (overlayFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on overlay
                     buttonCenter.y + buttonSize.height + 10  // 10px above button, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
