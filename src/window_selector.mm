@@ -95,27 +95,17 @@ void updateScreenOverlays();
                                                                   xRadius:8.0
                                                                   yRadius:8.0];
     
-    // Fill color based on toggle state
+    // Fill color based on toggle state - no border
     NSColor *fillColor;
-    NSColor *strokeColor;
-    CGFloat lineWidth;
     
     if (self.isToggled) {
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
-        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
-        lineWidth = 3.0;
     } else {
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
-        strokeColor = [NSColor whiteColor];
-        lineWidth = 1.0;
     }
     
     [fillColor setFill];
     [highlightPath fill];
-    
-    [strokeColor setStroke];
-    [highlightPath setLineWidth:lineWidth];
-    [highlightPath stroke];
 }
 
 - (void)updateAppearance {
@@ -1586,6 +1576,14 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
     }
     
     @try {
+        // Clean up any existing overlay first
+        if (g_overlayWindow) {
+            [g_overlayWindow close];
+            g_overlayWindow = nil;
+            g_overlayView = nil;
+            g_selectButton = nil;
+        }
+        
         // Get all windows
         g_allWindows = [getAllSelectableWindows() retain];
         

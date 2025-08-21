@@ -1,50 +1,38 @@
-const MacRecorder = require('./index');
+#!/usr/bin/env node
+
+const WindowSelector = require("./window-selector");
 
 async function quickTest() {
-    const recorder = new MacRecorder();
-    
-    console.log('🚀 Hızlı Sistem Sesi Testi\n');
-    
+    console.log("🧪 Quick Window Selector Test");
+    console.log("============================
+");
+
+    const selector = new WindowSelector();
+
     try {
-        // Ses cihazlarını listele
-        const devices = await recorder.getAudioDevices();
-        console.log('🎤 Mevcut ses cihazları:');
-        devices.forEach((d, i) => console.log(`${i+1}. ${d.name}`));
-        
-        // Sistem sesi cihazı var mı?
-        const sysDevice = devices.find(d => 
-            d.name.toLowerCase().includes('aggregate') ||
-            d.name.toLowerCase().includes('blackhole') ||
-            d.name.toLowerCase().includes('soundflower')
-        );
-        
-        if (sysDevice) {
-            console.log(`\n✅ Sistem sesi cihazı bulundu: ${sysDevice.name}`);
-            console.log('🎵 Sistem sesi yakalama çalışmalı');
-        } else {
-            console.log('\n⚠️  Sistem sesi cihazı yok');
-            console.log('💡 BlackHole veya Soundflower yüklemen gerekiyor');
-        }
-        
-        // Kısa test kayıt
-        console.log('\n🔴 2 saniyelik test kayıt başlıyor...');
-        console.log('🎵 Şimdi müzik çal!');
-        
-        await recorder.startRecording('./test-output/quick-test.mov', {
-            includeSystemAudio: true,
-            includeMicrophone: false,
-            systemAudioDeviceId: sysDevice?.id,
-            captureArea: { x: 0, y: 0, width: 200, height: 150 }
-        });
-        
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        await recorder.stopRecording();
-        
-        console.log('✅ Test tamamlandı! ./test-output/quick-test.mov dosyasını kontrol et');
-        
+        console.log("✅ Starting window selection...");
+        console.log("🎯 Hover over windows to see highlighting (no border)");
+        console.log("🔒 Window dragging should be blocked");
+        console.log("⌛ Test will auto-stop in 15 seconds
+");
+
+        await selector.startSelection();
+
+        // Auto stop after 15 seconds
+        setTimeout(async () => {
+            console.log("
+⏹️  Auto-stopping test...");
+            await selector.cleanup();
+            process.exit(0);
+        }, 15000);
+
     } catch (error) {
-        console.error('❌ Hata:', error.message);
+        console.error("❌ Test failed:", error.message);
+        await selector.cleanup();
+        process.exit(1);
     }
 }
 
-quickTest();
+if (require.main === module) {
+    quickTest().catch(console.error);
+}
