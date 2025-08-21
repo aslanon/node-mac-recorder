@@ -16,7 +16,7 @@ static NSTimer *g_trackingTimer = nil;
 static NSDictionary *g_selectedWindowInfo = nil;
 static NSMutableArray *g_allWindows = nil;
 static NSDictionary *g_currentWindowUnderCursor = nil;
-static bool g_bringToFrontEnabled = true; // Default enabled
+static bool g_bringToFrontEnabled = false; // Default disabled for overlay-only highlighting
 static id g_windowKeyEventMonitor = nil;
 
 // Recording preview overlay state
@@ -54,6 +54,7 @@ void updateScreenOverlays();
 @interface WindowSelectorOverlayView : NSView
 @property (nonatomic, strong) NSDictionary *windowInfo;
 @property (nonatomic) BOOL isActiveWindow;
+@property (nonatomic) BOOL isToggled;
 @end
 
 @implementation WindowSelectorOverlayView
@@ -74,30 +75,58 @@ void updateScreenOverlays();
 }
 
 - (void)updateAppearance {
-    if (self.isActiveWindow) {
-        // Active window: brighter background
+    if (self.isToggled) {
+        // Toggled window: same background, thick border
         self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
-        // Active window appearance set
+        self.layer.borderColor = [[NSColor whiteColor] CGColor];
+        self.layer.borderWidth = 3.0;
+    } else if (self.isActiveWindow) {
+        // Active window: brighter background, no border
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
+        self.layer.borderColor = [[NSColor clearColor] CGColor];
+        self.layer.borderWidth = 0.0;
     } else {
-        // Inactive window: dimmer background  
+        // Inactive window: dimmer background, no border
         self.layer.backgroundColor = [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] CGColor];
-        // Inactive window appearance set
+        self.layer.borderColor = [[NSColor clearColor] CGColor];
+        self.layer.borderWidth = 0.0;
     }
     
-            // 1px border for window highlight
-        self.layer.borderColor = [[NSColor whiteColor] CGColor];
-        self.layer.borderWidth = 1.0;
-        self.layer.cornerRadius = 8.0;
-        self.layer.masksToBounds = YES;
-        self.layer.shadowOpacity = 0.0;
-        self.layer.shadowRadius = 0.0;
-        self.layer.shadowOffset = NSMakeSize(0, 0);
+    self.layer.cornerRadius = 8.0;
+    self.layer.masksToBounds = YES;
+    self.layer.shadowOpacity = 0.0;
+    self.layer.shadowRadius = 0.0;
+    self.layer.shadowOffset = NSMakeSize(0, 0);
 }
 
 - (void)setIsActiveWindow:(BOOL)isActiveWindow {
     if (_isActiveWindow != isActiveWindow) {
         _isActiveWindow = isActiveWindow;
         [self updateAppearance];
+    }
+}
+
+- (void)setIsToggled:(BOOL)isToggled {
+    if (_isToggled != isToggled) {
+        _isToggled = isToggled;
+        [self updateAppearance];
+    }
+}
+
+// Handle mouse clicks for toggle functionality
+- (void)mouseDown:(NSEvent *)event {
+    [super mouseDown:event];
+    
+    // Toggle the window state
+    self.isToggled = !self.isToggled;
+    
+    // Bring window to front if toggled
+    if (self.isToggled && self.windowInfo) {
+        int windowId = [[self.windowInfo objectForKey:@"id"] intValue];
+        if (windowId > 0) {
+            bringWindowToFront(windowId);
+            NSLog(@"🔄 TOGGLED: Window brought to front - %@", [self.windowInfo objectForKey:@"title"]);
+        }
     }
 }
 
@@ -528,8 +557,9 @@ void updateOverlay() {
             // Ensure overlay is on the correct screen
             [g_overlayWindow setFrame:overlayFrame display:YES];
             
-            // Update overlay view window info
+            // Update overlay view window info and reset toggle state for new window
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:windowUnderCursor];
+            [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
             
             // Add/update info label above button
             NSTextField *infoLabel = nil;
@@ -1574,10 +1604,15 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Cancel button reference will be found dynamically in positioning code
         
-        // Timer approach doesn't work well with Node.js
-        // Instead, we'll use JavaScript polling via getWindowSelectionStatus
-        // The JS side will call this function repeatedly to trigger overlay updates
-        g_trackingTimer = nil; // No timer for now
+        // Start tracking timer for real-time window detection
+        if (!g_delegate) {
+            g_delegate = [[WindowSelectorDelegate alloc] init];
+        }
+        g_trackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 // 20 FPS
+                                                          target:g_delegate
+                                                        selector:@selector(timerUpdate:)
+                                                        userInfo:nil
+                                                         repeats:YES];
         
         // Add ESC key event monitor to cancel selection
         g_windowKeyEventMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
