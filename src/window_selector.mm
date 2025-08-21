@@ -124,12 +124,21 @@ void updateScreenOverlays();
     // Update global toggle state
     g_hasToggledWindow = self.isToggled;
     
-    // Bring window to front if toggled
     if (self.isToggled && self.windowInfo) {
+        // Toggle activated - bring window to front
         int windowId = [[self.windowInfo objectForKey:@"id"] intValue];
         if (windowId > 0) {
             bringWindowToFront(windowId);
-            NSLog(@"🔄 TOGGLED: Window brought to front - %@", [self.windowInfo objectForKey:@"title"]);
+            NSLog(@"🔄 TOGGLED ON: Window brought to front - %@", [self.windowInfo objectForKey:@"title"]);
+        }
+    } else if (!self.isToggled) {
+        // Toggle deactivated - clear state and force overlay refresh
+        NSLog(@"🔄 TOGGLED OFF: Clearing lock state for fresh tracking");
+        
+        // Force next overlay update by clearing current window data
+        if (g_currentWindowUnderCursor) {
+            [g_currentWindowUnderCursor release];
+            g_currentWindowUnderCursor = nil;
         }
     }
     
@@ -518,7 +527,7 @@ void updateOverlay() {
                     int deltaX = abs(newX - oldX);
                     int deltaY = abs(newY - oldY);
                     
-                    if (deltaX >= 3 || deltaY >= 3) {
+                    if (deltaX >= 5 || deltaY >= 5) {
                         // Significant position change - update
                         needsUpdate = YES;
                         targetWindow = freshWindowData;
@@ -562,7 +571,7 @@ void updateOverlay() {
                     int deltaX = abs(newX - oldX);
                     int deltaY = abs(newY - oldY);
                     
-                    if (deltaX >= 3 || deltaY >= 3) {
+                    if (deltaX >= 5 || deltaY >= 5) {
                         // Significant position change - update
                         needsUpdate = YES;
                         targetWindow = freshWindowData;
