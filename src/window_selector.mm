@@ -76,7 +76,8 @@ void updateScreenOverlays();
     
     if (!self.windowInfo) return;
     
-    // Background with transparency - same style as screen overlay
+    // Fill background first (inside border area)
+    NSRect fillRect = NSInsetRect(self.bounds, 4, 4); // Inset by border width
     if (self.isActiveWindow) {
         // Active window: brighter, more opaque (same as active screen)
         [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] setFill];
@@ -84,7 +85,13 @@ void updateScreenOverlays();
         // Inactive window: dimmer, less opaque (same as inactive screen)
         [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] setFill];
     }
-    NSRectFill(self.bounds);
+    NSRectFill(fillRect);
+    
+    // Add border (same purple color as screen selector)
+    [[NSColor colorWithRed:0.7 green:0.5 blue:1.0 alpha:0.6] setStroke];
+    NSBezierPath *borderPath = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 2, 2)];
+    [borderPath setLineWidth:4.0];
+    [borderPath stroke];
 }
 
 @end
@@ -928,20 +935,36 @@ bool startScreenSelection() {
         NSMutableArray *screenInfoArray = [[NSMutableArray alloc] init];
         g_screenOverlayWindows = [[NSMutableArray alloc] init];
         
+        // Get real display IDs like MacRecorder does
+        CGDirectDisplayID activeDisplays[32];
+        uint32_t displayCount;
+        CGError err = CGGetActiveDisplayList(32, activeDisplays, &displayCount);
+        
+        if (err != kCGErrorSuccess) {
+            NSLog(@"❌ Failed to get active display list: %d", err);
+            return false;
+        }
+
         for (NSInteger i = 0; i < [screens count]; i++) {
             NSScreen *screen = [screens objectAtIndex:i];
             NSRect screenFrame = [screen frame];
             
-            // Create screen info dictionary
+            // Get the real CGDirectDisplayID for this screen
+            CGDirectDisplayID displayID = 0;
+            if (i < displayCount) {
+                displayID = activeDisplays[i];
+            }
+            
+            // Create screen info dictionary with real display ID
             NSMutableDictionary *screenInfo = [[NSMutableDictionary alloc] init];
-            [screenInfo setObject:[NSNumber numberWithInteger:i] forKey:@"id"];
+            [screenInfo setObject:[NSNumber numberWithUnsignedInt:displayID] forKey:@"id"]; // Real display ID
             [screenInfo setObject:[NSString stringWithFormat:@"Display %ld", (long)(i + 1)] forKey:@"name"];
             [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.origin.x] forKey:@"x"];
             [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.origin.y] forKey:@"y"];
             [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.size.width] forKey:@"width"];
             [screenInfo setObject:[NSNumber numberWithInt:(int)screenFrame.size.height] forKey:@"height"];
             [screenInfo setObject:[NSString stringWithFormat:@"%.0fx%.0f", screenFrame.size.width, screenFrame.size.height] forKey:@"resolution"];
-            [screenInfo setObject:[NSNumber numberWithBool:(i == 0)] forKey:@"isPrimary"]; // First screen is primary
+            [screenInfo setObject:[NSNumber numberWithBool:(displayID == CGMainDisplayID())] forKey:@"isPrimary"]; // Real primary check
             [screenInfoArray addObject:screenInfo];
             
             // Create overlay window for this screen (FULL screen including menu bar)
