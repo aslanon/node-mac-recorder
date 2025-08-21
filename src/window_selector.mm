@@ -77,20 +77,20 @@ void updateScreenOverlays();
 
 - (void)updateAppearance {
     if (self.isToggled) {
-        // Toggled window: same background, thick border
+        // Toggled window: same background, thick border with darker version of fill color
         self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
-        self.layer.borderColor = [[NSColor whiteColor] CGColor];
+        self.layer.borderColor = [[NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9] CGColor]; // Darker purple
         self.layer.borderWidth = 3.0;
     } else if (self.isActiveWindow) {
-        // Active window: brighter background, no border
+        // Active window: brighter background, thin white border
         self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
-        self.layer.borderColor = [[NSColor clearColor] CGColor];
-        self.layer.borderWidth = 0.0;
+        self.layer.borderColor = [[NSColor whiteColor] CGColor];
+        self.layer.borderWidth = 1.0;
     } else {
-        // Inactive window: dimmer background, no border
+        // Inactive window: dimmer background, thin white border
         self.layer.backgroundColor = [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] CGColor];
-        self.layer.borderColor = [[NSColor clearColor] CGColor];
-        self.layer.borderWidth = 0.0;
+        self.layer.borderColor = [[NSColor whiteColor] CGColor];
+        self.layer.borderWidth = 1.0;
     }
     
     self.layer.cornerRadius = 8.0;
