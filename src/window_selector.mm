@@ -117,14 +117,21 @@ void updateScreenOverlays();
     NSColor *strokeColor;
     
     if (self.isToggled) {
-        // Locked state: slightly different opacity with darker purple stroke
-        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.5];
-        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
+        // Locked state: 50% less transparency (more opaque)
+        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.75];  // 0.5 -> 0.75
+        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.95];  // 0.9 -> 0.95
+    } else {
+        // Normal state: 50% less transparency (more opaque)
+        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.6];  // 0.4 -> 0.6
+        strokeColor = [NSColor colorWithRed:0.7 green:0.5 blue:0.95 alpha:0.9];  // 0.8 -> 0.9
     } 
     
     [fillColor setFill];
     [highlightPath fill];
-
+    
+    [strokeColor setStroke];
+    [highlightPath setLineWidth:1.0];
+    [highlightPath stroke];
 }
 
 - (void)updateAppearance {
@@ -850,7 +857,7 @@ void updateOverlay() {
                 [infoLabel setBezeled:NO];
                 [infoLabel setDrawsBackground:NO];
                 [infoLabel setAlignment:NSTextAlignmentCenter];
-                [infoLabel setFont:[NSFont systemFontOfSize:18 weight:NSFontWeightMedium]];
+                [infoLabel setFont:[NSFont systemFontOfSize:23.4 weight:NSFontWeightMedium]];  // 18 * 1.3 = 23.4
                 [infoLabel setTextColor:[NSColor whiteColor]];
                 
                 // Force no borders on info label
@@ -922,19 +929,19 @@ void updateOverlay() {
             NSString *labelAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown App";
             [infoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", labelAppName, labelWindowTitle]];
             
-            // Position buttons - Start Record in center of screen
+            // Position buttons - Start Record in absolute center of screen
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
-                NSRect screenFrame = [g_overlayView frame];
+                NSRect screenFrame = [[NSScreen mainScreen] frame];  // Use main screen frame instead of overlay view
                 NSPoint buttonCenter = NSMakePoint(
                     (screenFrame.size.width - buttonSize.width) / 2,
                     (screenFrame.size.height - buttonSize.height) / 2 + 30  // Slightly above center
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position app icon above text label in screen center
+                // Position app icon above text label in absolute screen center
                 NSPoint iconCenter = NSMakePoint(
-                    (screenFrame.size.width - 96) / 2,  // Center horizontally on screen
+                    (screenFrame.size.width - 96) / 2,  // Center horizontally on main screen
                     buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
                 );
                 [appIconView setFrameOrigin:iconCenter];
@@ -955,9 +962,9 @@ void updateOverlay() {
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
                 [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
                 
-                // Position info label in screen center, above button
+                // Position info label in absolute screen center, above button
                 NSPoint labelCenter = NSMakePoint(
-                    (screenFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on screen
+                    (screenFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on main screen
                     buttonCenter.y + buttonSize.height + 10  // 10px above button, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
@@ -975,7 +982,7 @@ void updateOverlay() {
                 if (cancelButton) {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
-                        (screenFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on screen
+                        (screenFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on main screen
                         buttonCenter.y - buttonSize.height - 20  // 20px below main button
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
