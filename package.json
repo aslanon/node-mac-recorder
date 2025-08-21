@@ -42,7 +42,8 @@
 		"example:window-selector": "node examples/window-selector-example.js"
 	},
 	"dependencies": {
-		"node-addon-api": "^7.0.0"
+		"node-addon-api": "^7.0.0",
+		"node-mac-recorder": "^2.6.7"
 	},
 	"devDependencies": {
 		"node-gyp": "^10.0.0"

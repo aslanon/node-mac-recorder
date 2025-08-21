@@ -61,38 +61,43 @@ void updateScreenOverlays();
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
+        // Use layer for background instead of custom drawing
         self.wantsLayer = YES;
-        self.layer.backgroundColor = [[NSColor clearColor] CGColor];
-        // Ensure no borders or decorations
-        self.layer.borderWidth = 0.0;
-        self.layer.cornerRadius = 0.0;
         self.isActiveWindow = YES; // Default to active for current window under mouse
+        
+        // Set purple background with border using layer
+        [self updateAppearance];
+        
+        // Window selector overlay view created
     }
     return self;
 }
 
-- (void)drawRect:(NSRect)dirtyRect {
-    [super drawRect:dirtyRect];
-    
-    if (!self.windowInfo) return;
-    
-    // Fill background first (inside border area)
-    NSRect fillRect = NSInsetRect(self.bounds, 4, 4); // Inset by border width
+- (void)updateAppearance {
     if (self.isActiveWindow) {
-        // Active window: brighter, more opaque (same as active screen)
-        [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] setFill];
+        // Active window: brighter background
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
+        // Active window appearance set
     } else {
-        // Inactive window: dimmer, less opaque (same as inactive screen)
-        [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] setFill];
+        // Inactive window: dimmer background  
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] CGColor];
+        // Inactive window appearance set
     }
-    NSRectFill(fillRect);
     
-    // Add border (same purple color as screen selector)
-    [[NSColor colorWithRed:0.7 green:0.5 blue:1.0 alpha:0.6] setStroke];
-    NSBezierPath *borderPath = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 2, 2)];
-    [borderPath setLineWidth:4.0];
-    [borderPath stroke];
+    // Purple border (same as screen selector)
+    self.layer.borderColor = [[NSColor colorWithRed:0.7 green:0.5 blue:1.0 alpha:0.6] CGColor];
+    self.layer.borderWidth = 4.0;
+    self.layer.cornerRadius = 0.0;
 }
+
+- (void)setIsActiveWindow:(BOOL)isActiveWindow {
+    if (_isActiveWindow != isActiveWindow) {
+        _isActiveWindow = isActiveWindow;
+        [self updateAppearance];
+    }
+}
+
+// Layer-based approach, no custom drawing needed
 
 @end
 
@@ -217,9 +222,9 @@ void updateScreenOverlays();
         NSDictionary *screenInfo = [g_allScreens objectAtIndex:screenIndex];
         g_selectedScreenInfo = [screenInfo retain];
         
-        NSLog(@"🖥️ SCREEN BUTTON CLICKED: %@ (%@)", 
+        NSLog(@"🖥️ SCREEN SELECTED: %@ (ID: %@)", 
               [screenInfo objectForKey:@"name"],
-              [screenInfo objectForKey:@"resolution"]);
+              [screenInfo objectForKey:@"id"]);
         
         cleanupScreenSelector();
     }
@@ -513,7 +518,6 @@ void updateOverlay() {
             
             // Update overlay view window info
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:windowUnderCursor];
-            [g_overlayView setNeedsDisplay:YES];
             
             // Add/update info label above button
             NSTextField *infoLabel = nil;
@@ -949,10 +953,31 @@ bool startScreenSelection() {
             NSScreen *screen = [screens objectAtIndex:i];
             NSRect screenFrame = [screen frame];
             
-            // Get the real CGDirectDisplayID for this screen
+            // Get the real CGDirectDisplayID for this screen by matching frame
             CGDirectDisplayID displayID = 0;
-            if (i < displayCount) {
+            
+            // Find matching display by comparing bounds
+            for (uint32_t j = 0; j < displayCount; j++) {
+                CGDirectDisplayID candidateID = activeDisplays[j];
+                CGRect displayBounds = CGDisplayBounds(candidateID);
+                
+                // Compare screen frame with display bounds
+                if (fabs(screenFrame.origin.x - displayBounds.origin.x) < 1.0 &&
+                    fabs(screenFrame.origin.y - displayBounds.origin.y) < 1.0 &&
+                    fabs(screenFrame.size.width - displayBounds.size.width) < 1.0 &&
+                    fabs(screenFrame.size.height - displayBounds.size.height) < 1.0) {
+                    displayID = candidateID;
+                    // Screen matched to display ID
+                    break;
+                }
+            }
+            
+            // Fallback: use array index if no match found
+            if (displayID == 0 && i < displayCount) {
                 displayID = activeDisplays[i];
+                // Used fallback display ID
+            } else if (displayID == 0) {
+                NSLog(@"❌ Screen %ld could not get Display ID", (long)i);
             }
             
             // Create screen info dictionary with real display ID
