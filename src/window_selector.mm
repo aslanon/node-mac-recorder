@@ -30,6 +30,8 @@ static NSMutableArray *g_screenOverlayWindows = nil;
 static NSDictionary *g_selectedScreenInfo = nil;
 static NSArray *g_allScreens = nil;
 static id g_screenKeyEventMonitor = nil;
+static NSTimer *g_screenTrackingTimer = nil;
+static NSInteger g_currentActiveScreenIndex = -1;
 
 // Forward declarations
 void cleanupWindowSelector();
@@ -46,6 +48,7 @@ bool stopScreenSelection();
 NSDictionary* getSelectedScreenInfo();
 bool showScreenRecordingPreview(NSDictionary *screenInfo);
 bool hideScreenRecordingPreview();
+void updateScreenOverlays();
 
 // Custom overlay view class
 @interface WindowSelectorOverlayView : NSView
@@ -139,6 +142,7 @@ bool hideScreenRecordingPreview();
 // Screen selection overlay view
 @interface ScreenSelectorOverlayView : NSView
 @property (nonatomic, strong) NSDictionary *screenInfo;
+@property (nonatomic) BOOL isActiveScreen;
 @end
 
 @implementation ScreenSelectorOverlayView
@@ -151,6 +155,7 @@ bool hideScreenRecordingPreview();
         // Ensure no borders or decorations
         self.layer.borderWidth = 0.0;
         self.layer.cornerRadius = 0.0;
+        self.isActiveScreen = NO;
     }
     return self;
 }
@@ -160,12 +165,23 @@ bool hideScreenRecordingPreview();
     
     if (!self.screenInfo) return;
     
-    // Background with transparency - purple tone (no border)
-    // Ensure no borders or frames are drawn
-    [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.3] setFill];
+    // Background with transparency - purple tone varies by active state
+    if (self.isActiveScreen) {
+        // Active screen: brighter, more opaque
+        [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] setFill];
+    } else {
+        // Inactive screen: dimmer, less opaque
+        [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] setFill];
+    }
     NSRectFill(self.bounds);
     
-    // Text will be handled by separate label above button
+    // Add subtle border for active screen
+    if (self.isActiveScreen) {
+        [[NSColor colorWithRed:0.7 green:0.5 blue:1.0 alpha:0.6] setStroke];
+        NSBezierPath *borderPath = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 2, 2)];
+        [borderPath setLineWidth:4.0];
+        [borderPath stroke];
+    }
 }
 
 @end
@@ -215,6 +231,10 @@ bool hideScreenRecordingPreview();
 
 - (void)timerUpdate:(NSTimer *)timer {
     updateOverlay();
+}
+
+- (void)screenTimerUpdate:(NSTimer *)timer {
+    updateScreenOverlays();
 }
 @end
 
@@ -766,9 +786,105 @@ bool hideRecordingPreview() {
     }
 }
 
+// Update screen overlays based on mouse position
+void updateScreenOverlays() {
+    @autoreleasepool {
+        if (!g_isScreenSelecting || !g_screenOverlayWindows || !g_allScreens) return;
+        
+        // Get current mouse position
+        NSPoint mouseLocation = [NSEvent mouseLocation];
+        // Convert from NSEvent coordinates (bottom-left) to screen coordinates
+        NSArray *screens = [NSScreen screens];
+        NSScreen *mouseScreen = nil;
+        NSInteger mouseScreenIndex = -1;
+        
+        // Find which screen contains the mouse
+        for (NSInteger i = 0; i < [screens count]; i++) {
+            NSScreen *screen = [screens objectAtIndex:i];
+            NSRect screenFrame = [screen frame];
+            
+            if (NSPointInRect(mouseLocation, screenFrame)) {
+                mouseScreen = screen;
+                mouseScreenIndex = i;
+                break;
+            }
+        }
+        
+        // If mouse screen changed, update overlays
+        if (mouseScreenIndex != g_currentActiveScreenIndex) {
+            g_currentActiveScreenIndex = mouseScreenIndex;
+            
+            // Update all screen overlays
+            for (NSInteger i = 0; i < [g_screenOverlayWindows count] && i < [screens count]; i++) {
+                NSWindow *overlayWindow = [g_screenOverlayWindows objectAtIndex:i];
+                ScreenSelectorOverlayView *overlayView = (ScreenSelectorOverlayView *)[overlayWindow contentView];
+                
+                // Update overlay appearance based on whether it's the active screen
+                bool isActiveScreen = (i == mouseScreenIndex);
+                
+                // Update overlay state and appearance
+                [overlayView setIsActiveScreen:isActiveScreen];
+                [overlayView setNeedsDisplay:YES];
+                
+                // Update UI elements based on active state
+                for (NSView *subview in [overlayView subviews]) {
+                    if ([subview isKindOfClass:[NSButton class]]) {
+                        NSButton *button = (NSButton *)subview;
+                        if ([button.title isEqualToString:@"Start Record"]) {
+                            if (isActiveScreen) {
+                                // Active screen: bright, prominent button
+                                [button.layer setBackgroundColor:[[NSColor colorWithRed:0.7 green:0.45 blue:0.9 alpha:1.0] CGColor]];
+                                [button setAlphaValue:1.0];
+                            } else {
+                                // Inactive screen: dimmer button
+                                [button.layer setBackgroundColor:[[NSColor colorWithRed:0.4 green:0.25 blue:0.55 alpha:0.8] CGColor]];
+                                [button setAlphaValue:0.7];
+                            }
+                        }
+                    }
+                    if ([subview isKindOfClass:[NSTextField class]]) {
+                        NSTextField *label = (NSTextField *)subview;
+                        if (isActiveScreen) {
+                            [label setTextColor:[NSColor whiteColor]];
+                            [label setAlphaValue:1.0];
+                        } else {
+                            [label setTextColor:[NSColor colorWithWhite:0.8 alpha:0.8]];
+                            [label setAlphaValue:0.7];
+                        }
+                    }
+                    if ([subview isKindOfClass:[NSImageView class]]) {
+                        NSImageView *imageView = (NSImageView *)subview;
+                        if (isActiveScreen) {
+                            [imageView setAlphaValue:1.0];
+                        } else {
+                            [imageView setAlphaValue:0.6];
+                        }
+                    }
+                }
+                
+                if (isActiveScreen) {
+                    NSLog(@"🖥️ ACTIVE SCREEN: Display %ld", (long)(i + 1));
+                }
+                
+                // Bring active screen overlay to front
+                if (isActiveScreen) {
+                    [overlayWindow orderFront:nil];
+                    [overlayWindow makeKeyAndOrderFront:nil];
+                }
+            }
+        }
+    }
+}
+
 // Screen selection functions
 void cleanupScreenSelector() {
     g_isScreenSelecting = false;
+    
+    // Stop screen tracking timer
+    if (g_screenTrackingTimer) {
+        [g_screenTrackingTimer invalidate];
+        g_screenTrackingTimer = nil;
+    }
     
     // Remove key event monitor
     if (g_screenKeyEventMonitor) {
@@ -790,6 +906,9 @@ void cleanupScreenSelector() {
         [g_allScreens release];
         g_allScreens = nil;
     }
+    
+    // Reset active screen tracking
+    g_currentActiveScreenIndex = -1;
 }
 
 bool startScreenSelection() {
@@ -1003,6 +1122,7 @@ bool startScreenSelection() {
         g_allScreens = [screenInfoArray retain];
         [screenInfoArray release];
         g_isScreenSelecting = true;
+        g_currentActiveScreenIndex = -1;
         
         // Add ESC key event monitor to cancel selection
         g_screenKeyEventMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
@@ -1013,7 +1133,18 @@ bool startScreenSelection() {
             }
         }];
         
+        // Start screen tracking timer to update overlays based on mouse position
+        if (!g_delegate) {
+            g_delegate = [[WindowSelectorDelegate alloc] init];
+        }
+        g_screenTrackingTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 // 20 FPS
+                                                                target:g_delegate
+                                                              selector:@selector(screenTimerUpdate:)
+                                                              userInfo:nil
+                                                               repeats:YES];
+        
         NSLog(@"🖥️ SCREEN SELECTION: Started with %lu screens (ESC to cancel)", (unsigned long)[screens count]);
+        NSLog(@"🖥️ SCREEN TRACKING: Timer started for overlay updates");
         
         return true;
         
