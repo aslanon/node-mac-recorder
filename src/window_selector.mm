@@ -467,19 +467,36 @@ void updateOverlay() {
             int width = [[windowUnderCursor objectForKey:@"width"] intValue];
             int height = [[windowUnderCursor objectForKey:@"height"] intValue];
             
-            // Convert coordinates from CGWindow (top-left) to NSWindow (bottom-left)
-            NSScreen *mainScreen = [NSScreen mainScreen];
-            CGFloat screenHeight = [mainScreen frame].size.height;
+            // Find which screen contains the window center
+            NSArray *screens = [NSScreen screens];
+            NSScreen *windowScreen = nil;
+            CGFloat windowCenterX = x + width / 2;
+            CGFloat windowCenterY = y + height / 2;
+            
+            for (NSScreen *screen in screens) {
+                NSRect screenFrame = [screen frame];
+                // Convert screen frame to CGWindow coordinates
+                CGFloat screenTop = screenFrame.origin.y + screenFrame.size.height;
+                CGFloat screenBottom = screenFrame.origin.y;
+                CGFloat screenLeft = screenFrame.origin.x;
+                CGFloat screenRight = screenFrame.origin.x + screenFrame.size.width;
+                
+                if (windowCenterX >= screenLeft && windowCenterX <= screenRight &&
+                    windowCenterY >= screenBottom && windowCenterY <= screenTop) {
+                    windowScreen = screen;
+                    break;
+                }
+            }
+            
+            // Use main screen if no specific screen found
+            if (!windowScreen) windowScreen = [NSScreen mainScreen];
+            
+            // Convert coordinates from CGWindow (top-left) to NSWindow (bottom-left) for the specific screen
+            CGFloat screenHeight = [windowScreen frame].size.height;
             CGFloat adjustedY = screenHeight - y - height;
             
-            // Clamp overlay to screen bounds to avoid partial off-screen issues
-            NSRect screenFrame = [mainScreen frame];
-            CGFloat clampedX = MAX(screenFrame.origin.x, MIN(x, screenFrame.origin.x + screenFrame.size.width - width));
-            CGFloat clampedY = MAX(screenFrame.origin.y, MIN(adjustedY, screenFrame.origin.y + screenFrame.size.height - height));
-            CGFloat clampedWidth = MIN(width, screenFrame.size.width - (clampedX - screenFrame.origin.x));
-            CGFloat clampedHeight = MIN(height, screenFrame.size.height - (clampedY - screenFrame.origin.y));
-            
-            NSRect overlayFrame = NSMakeRect(clampedX, clampedY, clampedWidth, clampedHeight);
+            // Use actual window coordinates without clamping to preserve overlay accuracy
+            NSRect overlayFrame = NSMakeRect(x, adjustedY, width, height);
             
             NSString *windowTitle = [windowUnderCursor objectForKey:@"title"] ?: @"Untitled";
             NSString *appName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown";
@@ -501,6 +518,8 @@ void updateOverlay() {
                     }
                 }
             }
+            
+            // Ensure overlay is on the correct screen
             [g_overlayWindow setFrame:overlayFrame display:YES];
             
             // Update overlay view window info
@@ -757,16 +776,15 @@ bool startScreenSelection() {
             NSButton *selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 180, 60)];
             [selectButton setTitle:@"Start Record"];
             [selectButton setButtonType:NSButtonTypeMomentaryPushIn];
-            [selectButton setBezelStyle:NSBezelStyleRounded];
+            [selectButton setBezelStyle:NSBezelStyleRegularSquare];
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
             [selectButton setTag:i]; // Set screen index as tag
             
             // Blue background with white text
             [selectButton setWantsLayer:YES];
-            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor]];
-            [selectButton.layer setCornerRadius:8.0];
-            [selectButton.layer setBorderColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:1.0] CGColor]];
-            [selectButton.layer setBorderWidth:2.0];
+            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.95] CGColor]];
+            [selectButton.layer setCornerRadius:12.0];
+            [selectButton.layer setBorderWidth:0.0];
             
             // White text color
             NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
@@ -793,15 +811,14 @@ bool startScreenSelection() {
             NSButton *screenCancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
             [screenCancelButton setTitle:@"Cancel"];
             [screenCancelButton setButtonType:NSButtonTypeMomentaryPushIn];
-            [screenCancelButton setBezelStyle:NSBezelStyleRounded];
+            [screenCancelButton setBezelStyle:NSBezelStyleRegularSquare];
             [screenCancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
             
             // Gray cancel button styling
             [screenCancelButton setWantsLayer:YES];
-            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:0.8] CGColor]];
-            [screenCancelButton.layer setCornerRadius:6.0];
-            [screenCancelButton.layer setBorderColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:1.0] CGColor]];
-            [screenCancelButton.layer setBorderWidth:1.0];
+            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.3 green:0.3 blue:0.3 alpha:0.9] CGColor]];
+            [screenCancelButton.layer setCornerRadius:10.0];
+            [screenCancelButton.layer setBorderWidth:0.0];
             
             // White text for cancel button
             NSMutableAttributedString *screenCancelTitleString = [[NSMutableAttributedString alloc] 
@@ -992,15 +1009,14 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 160, 60)];
         [g_selectButton setTitle:@"Start Record"];
         [g_selectButton setButtonType:NSButtonTypeMomentaryPushIn];
-        [g_selectButton setBezelStyle:NSBezelStyleRounded];
+        [g_selectButton setBezelStyle:NSBezelStyleRegularSquare];
         [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
         
         // Blue background with white text
         [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.9] CGColor]];
-        [g_selectButton.layer setCornerRadius:8.0];
-        [g_selectButton.layer setBorderColor:[[NSColor colorWithRed:0.0 green:0.3 blue:0.7 alpha:1.0] CGColor]];
-        [g_selectButton.layer setBorderWidth:2.0];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.95] CGColor]];
+        [g_selectButton.layer setCornerRadius:12.0];
+        [g_selectButton.layer setBorderWidth:0.0];
         
         // White text color
         NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
@@ -1028,15 +1044,14 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
         [cancelButton setTitle:@"Cancel"];
         [cancelButton setButtonType:NSButtonTypeMomentaryPushIn];
-        [cancelButton setBezelStyle:NSBezelStyleRounded];
+        [cancelButton setBezelStyle:NSBezelStyleRegularSquare];
         [cancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]];
         
         // Gray cancel button styling
         [cancelButton setWantsLayer:YES];
-        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:0.8] CGColor]];
-        [cancelButton.layer setCornerRadius:6.0];
-        [cancelButton.layer setBorderColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:1.0] CGColor]];
-        [cancelButton.layer setBorderWidth:1.0];
+        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.3 green:0.3 blue:0.3 alpha:0.9] CGColor]];
+        [cancelButton.layer setCornerRadius:10.0];
+        [cancelButton.layer setBorderWidth:0.0];
         
         // White text for cancel button
         NSMutableAttributedString *cancelTitleString = [[NSMutableAttributedString alloc] 
