@@ -59,6 +59,9 @@ bool hideScreenRecordingPreview();
     if (self) {
         self.wantsLayer = YES;
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        // Ensure no borders or decorations
+        self.layer.borderWidth = 0.0;
+        self.layer.cornerRadius = 0.0;
     }
     return self;
 }
@@ -72,6 +75,7 @@ bool hideScreenRecordingPreview();
     [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.25] setFill];
     NSRectFill(self.bounds);
     
+    // Ensure no borders or frames are drawn
     // Text will be handled by separate label above button
 }
 
@@ -89,6 +93,9 @@ bool hideScreenRecordingPreview();
     if (self) {
         self.wantsLayer = YES;
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        // Ensure no borders or decorations
+        self.layer.borderWidth = 0.0;
+        self.layer.cornerRadius = 0.0;
     }
     return self;
 }
@@ -141,6 +148,9 @@ bool hideScreenRecordingPreview();
     if (self) {
         self.wantsLayer = YES;
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        // Ensure no borders or decorations
+        self.layer.borderWidth = 0.0;
+        self.layer.cornerRadius = 0.0;
     }
     return self;
 }
@@ -151,6 +161,7 @@ bool hideScreenRecordingPreview();
     if (!self.screenInfo) return;
     
     // Background with transparency - purple tone (no border)
+    // Ensure no borders or frames are drawn
     [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.3] setFill];
     NSRectFill(self.bounds);
     
@@ -712,6 +723,12 @@ bool showRecordingPreview(NSDictionary *windowInfo) {
         [g_recordingPreviewWindow setAlphaValue:1.0];
         [g_recordingPreviewWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
         
+        // Remove any default window decorations and borders
+        [g_recordingPreviewWindow setTitlebarAppearsTransparent:YES];
+        [g_recordingPreviewWindow setTitleVisibility:NSWindowTitleHidden];
+        [g_recordingPreviewWindow setMovable:NO];
+        [g_recordingPreviewWindow setMovableByWindowBackground:NO];
+        
         // Create preview view
         g_recordingPreviewView = [[RecordingPreviewView alloc] initWithFrame:screenFrame];
         [(RecordingPreviewView *)g_recordingPreviewView setRecordingWindowInfo:windowInfo];
@@ -819,6 +836,12 @@ bool startScreenSelection() {
             [overlayWindow setAlphaValue:1.0];
             [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
             
+            // Remove any default window decorations and borders
+            [overlayWindow setTitlebarAppearsTransparent:YES];
+            [overlayWindow setTitleVisibility:NSWindowTitleHidden];
+            [overlayWindow setMovable:NO];
+            [overlayWindow setMovableByWindowBackground:NO];
+            
             // Create overlay view
             ScreenSelectorOverlayView *overlayView = [[ScreenSelectorOverlayView alloc] initWithFrame:screenFrame];
             [overlayView setScreenInfo:screenInfo];
@@ -837,6 +860,12 @@ bool startScreenSelection() {
             [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.55 green:0.3 blue:0.75 alpha:0.95] CGColor]];
             [selectButton.layer setCornerRadius:8.0];
             [selectButton.layer setBorderWidth:0.0];
+            
+            // Remove all button borders and decorations
+            [selectButton.layer setShadowOpacity:0.0];
+            [selectButton.layer setShadowRadius:0.0];
+            [selectButton.layer setShadowOffset:NSMakeSize(0, 0)];
+            [selectButton.layer setMasksToBounds:YES];
             
             // Clean white text - normal weight
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
@@ -857,6 +886,10 @@ bool startScreenSelection() {
             [selectButton setTarget:g_delegate];
             [selectButton setAction:@selector(screenSelectButtonClicked:)];
             
+            // Remove focus ring and other default button behaviors
+            [selectButton setFocusRingType:NSFocusRingTypeNone];
+            [selectButton setShowsBorderOnlyWhileMouseInside:NO];
+            
             // Create cancel button for screen selection
             NSButton *screenCancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
             [screenCancelButton setTitle:@"Cancel"];
@@ -870,6 +903,12 @@ bool startScreenSelection() {
             [screenCancelButton.layer setCornerRadius:8.0];
             [screenCancelButton.layer setBorderWidth:0.0];
             
+            // Remove all button borders and decorations
+            [screenCancelButton.layer setShadowOpacity:0.0];
+            [screenCancelButton.layer setShadowRadius:0.0];
+            [screenCancelButton.layer setShadowOffset:NSMakeSize(0, 0)];
+            [screenCancelButton.layer setMasksToBounds:YES];
+            
             // Clean white text for cancel button
             [screenCancelButton setFont:[NSFont systemFontOfSize:15 weight:NSFontWeightRegular]];
             NSMutableAttributedString *screenCancelTitleString = [[NSMutableAttributedString alloc] 
@@ -881,6 +920,10 @@ bool startScreenSelection() {
             
             [screenCancelButton setTarget:g_delegate];
             [screenCancelButton setAction:@selector(cancelButtonClicked:)];
+            
+            // Remove focus ring and other default button behaviors
+            [screenCancelButton setFocusRingType:NSFocusRingTypeNone];
+            [screenCancelButton setShowsBorderOnlyWhileMouseInside:NO];
             
             // Create info label for screen
             NSTextField *screenInfoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, screenFrame.size.width - 40, 60)];
@@ -1042,6 +1085,12 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             [overlayWindow setAlphaValue:1.0];
             [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
             
+            // Remove any default window decorations and borders
+            [overlayWindow setTitlebarAppearsTransparent:YES];
+            [overlayWindow setTitleVisibility:NSWindowTitleHidden];
+            [overlayWindow setMovable:NO];
+            [overlayWindow setMovableByWindowBackground:NO];
+            
             [overlayWindow orderFront:nil];
             [overlayWindow makeKeyAndOrderFront:nil];
             
@@ -1099,9 +1148,19 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setAlphaValue:1.0];
         [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
         
+        // Remove any default window decorations and borders
+        [g_overlayWindow setTitlebarAppearsTransparent:YES];
+        [g_overlayWindow setTitleVisibility:NSWindowTitleHidden];
+        [g_overlayWindow setMovable:NO];
+        [g_overlayWindow setMovableByWindowBackground:NO];
+        
         // Create overlay view
         g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:initialFrame];
         [g_overlayWindow setContentView:g_overlayView];
+        
+        // Additional window styling to ensure no borders or decorations
+        [g_overlayWindow setMovable:NO];
+        [g_overlayWindow setMovableByWindowBackground:NO];
         
         // Create select button with purple theme
         g_selectButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
@@ -1116,6 +1175,12 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_selectButton.layer setCornerRadius:8.0];
         [g_selectButton.layer setBorderWidth:0.0];
         
+        // Remove all button borders and decorations
+        [g_selectButton.layer setShadowOpacity:0.0];
+        [g_selectButton.layer setShadowRadius:0.0];
+        [g_selectButton.layer setShadowOffset:NSMakeSize(0, 0)];
+        [g_selectButton.layer setMasksToBounds:YES];
+        
         // Clean white text - normal weight
         NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
             initWithString:[g_selectButton title]];
@@ -1128,6 +1193,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         g_delegate = [[WindowSelectorDelegate alloc] init];
         [g_selectButton setTarget:g_delegate];
         [g_selectButton setAction:@selector(selectButtonClicked:)];
+        
+        // Remove focus ring and other default button behaviors
+        [g_selectButton setFocusRingType:NSFocusRingTypeNone];
+        [g_selectButton setShowsBorderOnlyWhileMouseInside:NO];
         
         // Add select button directly to window (not view) for proper layering
         [g_overlayWindow.contentView addSubview:g_selectButton];
@@ -1145,6 +1214,12 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [cancelButton.layer setCornerRadius:8.0];
         [cancelButton.layer setBorderWidth:0.0];
         
+        // Remove all button borders and decorations
+        [cancelButton.layer setShadowOpacity:0.0];
+        [cancelButton.layer setShadowRadius:0.0];
+        [cancelButton.layer setShadowOffset:NSMakeSize(0, 0)];
+        [cancelButton.layer setMasksToBounds:YES];
+        
         // Clean white text for cancel button
         NSMutableAttributedString *cancelTitleString = [[NSMutableAttributedString alloc] 
             initWithString:[cancelButton title]];
@@ -1155,6 +1230,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         [cancelButton setTarget:g_delegate];
         [cancelButton setAction:@selector(cancelButtonClicked:)];
+        
+        // Remove focus ring and other default button behaviors
+        [cancelButton setFocusRingType:NSFocusRingTypeNone];
+        [cancelButton setShowsBorderOnlyWhileMouseInside:NO];
         
         // Add cancel button to window
         [g_overlayWindow.contentView addSubview:cancelButton];
