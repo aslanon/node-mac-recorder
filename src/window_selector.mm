@@ -108,29 +108,19 @@ void updateScreenOverlays();
                                                                   xRadius:8.0
                                                                   yRadius:8.0];
     
-    // Fill color and border based on toggle state
+    // Fill color only - no border
     NSColor *fillColor;
-    NSColor *strokeColor;
-    CGFloat lineWidth;
     
     if (self.isToggled) {
-        // Locked state: same 1px border but different color
-        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
-        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
-        lineWidth = 1.0;
+        // Locked state: slightly different opacity
+        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.5];
     } else {
-        // Normal state: 1px border
+        // Normal state: standard fill
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
-        strokeColor = [NSColor whiteColor];
-        lineWidth = 1.0;
     }
     
     [fillColor setFill];
     [highlightPath fill];
-    
-    [strokeColor setStroke];
-    [highlightPath setLineWidth:lineWidth];
-    [highlightPath stroke];
 }
 
 - (void)updateAppearance {
@@ -201,6 +191,9 @@ void updateScreenOverlays();
     self = [super initWithFrame:frameRect];
     if (self) {
         self.isHovered = NO;
+        self.wantsLayer = YES;
+        // Set anchor point to center once for consistent scaling
+        self.layer.anchorPoint = CGPointMake(0.5, 0.5);
         [self setupHoverTracking];
     }
     return self;
@@ -218,17 +211,16 @@ void updateScreenOverlays();
 - (void)mouseEntered:(NSEvent *)event {
     self.isHovered = YES;
     [self animateScale:1.2 duration:0.15];
+    [[NSCursor pointingHandCursor] set];
 }
 
 - (void)mouseExited:(NSEvent *)event {
     self.isHovered = NO;
     [self animateScale:1.0 duration:0.15];
+    [[NSCursor arrowCursor] set];
 }
 
 - (void)animateScale:(CGFloat)scale duration:(NSTimeInterval)duration {
-    // Set anchor point to center for center-based scaling
-    self.layer.anchorPoint = CGPointMake(0.5, 0.5);
-    
     [NSAnimationContext beginGrouping];
     [NSAnimationContext currentContext].duration = duration;
     [NSAnimationContext currentContext].timingFunction = 
@@ -590,6 +582,13 @@ NSDictionary* getWindowUnderCursor(CGPoint point) {
         
         // Find window that contains the cursor point
         for (NSDictionary *window in g_allWindows) {
+            NSString *appName = [window objectForKey:@"appName"];
+            
+            // Skip Electron windows (our own overlay)
+            if (appName && ([appName containsString:@"Electron"] || [appName containsString:@"node"])) {
+                continue;
+            }
+            
             int x = [[window objectForKey:@"x"] intValue];
             int y = [[window objectForKey:@"y"] intValue];
             int width = [[window objectForKey:@"width"] intValue];
