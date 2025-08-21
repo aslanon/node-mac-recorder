@@ -499,9 +499,39 @@ void updateOverlay() {
         NSDictionary *targetWindow = nil;
         
         if (windowUnderCursor) {
-            if (!g_currentWindowUnderCursor || 
+            // Check if we're in lock mode (toggled window)
+            if (g_hasToggledWindow && g_currentWindowUnderCursor) {
+                // Check if cursor moved to different window while locked
+                int toggledWindowId = [[g_currentWindowUnderCursor objectForKey:@"id"] intValue];
+                int cursorWindowId = [[windowUnderCursor objectForKey:@"id"] intValue];
+                
+                if (toggledWindowId != cursorWindowId) {
+                    // Cursor moved to different window - cancel toggle and switch to new window
+                    NSLog(@"🔓 TOGGLE CANCELLED: Cursor moved to different window");
+                    g_hasToggledWindow = NO;
+                    needsUpdate = YES;
+                    targetWindow = windowUnderCursor;
+                } else {
+                    // Same window - check for position changes
+                    NSArray *allWindows = getAllSelectableWindows();
+                    NSDictionary *freshWindowData = allWindows ? 
+                        [[allWindows filteredArrayUsingPredicate:
+                            [NSPredicate predicateWithFormat:@"id == %d", toggledWindowId]] firstObject] : nil;
+                    
+                    if (freshWindowData && ![freshWindowData isEqualToDictionary:g_currentWindowUnderCursor]) {
+                        // Toggled window position changed - update
+                        needsUpdate = YES;
+                        targetWindow = freshWindowData;
+                        NSLog(@"📍 TOGGLED WINDOW MOVED: Updating overlay position");
+                    } else {
+                        // No change needed
+                        needsUpdate = NO;
+                        targetWindow = g_currentWindowUnderCursor;
+                    }
+                }
+            } else if (!g_currentWindowUnderCursor || 
                 ![windowUnderCursor isEqualToDictionary:g_currentWindowUnderCursor]) {
-                // New window under cursor
+                // Normal mode - new window under cursor
                 needsUpdate = YES;
                 targetWindow = windowUnderCursor;
             } else {
@@ -592,9 +622,16 @@ void updateOverlay() {
             // Ensure overlay is on the correct screen
             [g_overlayWindow setFrame:overlayFrame display:YES];
             
-            // Update overlay view window info and reset toggle state for new window
+            // Update overlay view window info
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:targetWindow];
-            [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
+            
+            // Only reset toggle state when switching to different window (not for position updates)
+            if (!g_hasToggledWindow) {
+                [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
+            } else {
+                // Keep toggle state for locked window
+                [(WindowSelectorOverlayView *)g_overlayView setIsToggled:YES];
+            }
             
             // Add/update info label above button
             NSTextField *infoLabel = nil;
