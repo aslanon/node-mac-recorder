@@ -210,13 +210,11 @@ void updateScreenOverlays();
 
 - (void)mouseEntered:(NSEvent *)event {
     self.isHovered = YES;
-    [self animateScale:1.2 duration:0.15];
     [[NSCursor pointingHandCursor] set];
 }
 
 - (void)mouseExited:(NSEvent *)event {
     self.isHovered = NO;
-    [self animateScale:1.0 duration:0.15];
     [[NSCursor arrowCursor] set];
 }
 
@@ -545,6 +543,9 @@ NSArray* getAllSelectableWindows() {
                 if (!windowOwner || [windowOwner length] == 0) continue;
                 if ([windowOwner isEqualToString:@"WindowServer"]) continue;
                 if ([windowOwner isEqualToString:@"Dock"]) continue;
+                
+                // Skip Electron windows (our own overlay)
+                if ([windowOwner containsString:@"Electron"] || [windowOwner containsString:@"node"]) continue;
                 
                 // Extract bounds
                 int x = [[bounds objectForKey:@"X"] intValue];
@@ -1358,7 +1359,7 @@ bool startScreenSelection() {
             
             // Modern button styling with new RGB color
             [selectButton setWantsLayer:YES];
-            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:0.95] CGColor]];
+            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor]];
             [selectButton.layer setCornerRadius:8.0];
             [selectButton.layer setBorderWidth:0.0];
             
@@ -1400,7 +1401,7 @@ bool startScreenSelection() {
             
             // Modern cancel button styling - darker gray, clean
             [screenCancelButton setWantsLayer:YES];
-            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.35 green:0.35 blue:0.4 alpha:0.9] CGColor]];
+            [screenCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.45 alpha:1.0] CGColor]];
             [screenCancelButton.layer setCornerRadius:8.0];
             [screenCancelButton.layer setBorderWidth:0.0];
             
@@ -1775,7 +1776,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Modern button styling with new RGB color
         [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:0.95] CGColor]];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor]];
         [g_selectButton.layer setCornerRadius:8.0];
         [g_selectButton.layer setBorderWidth:0.0];
         
@@ -1816,7 +1817,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Modern cancel button styling - darker gray, clean
         [cancelButton setWantsLayer:YES];
-        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.35 green:0.35 blue:0.4 alpha:0.9] CGColor]];
+        [cancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.4 green:0.4 blue:0.45 alpha:1.0] CGColor]];
         [cancelButton.layer setCornerRadius:8.0];
         [cancelButton.layer setBorderWidth:0.0];
         
