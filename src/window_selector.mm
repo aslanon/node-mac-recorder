@@ -494,25 +494,47 @@ void updateOverlay() {
         // Find window under cursor
         NSDictionary *windowUnderCursor = getWindowUnderCursor(globalPoint);
         
-        if (windowUnderCursor && ![windowUnderCursor isEqualToDictionary:g_currentWindowUnderCursor]) {
-            // If there's a toggled window, don't switch to a different window
-            if (g_hasToggledWindow && g_currentWindowUnderCursor) {
-                // Check if current toggled window is different from window under cursor
-                BOOL isSameWindow = [[g_currentWindowUnderCursor objectForKey:@"id"] isEqual:[windowUnderCursor objectForKey:@"id"]];
-                if (!isSameWindow) {
-                    NSLog(@"🔒 BLOCKED: Not switching overlay - current window is toggled");
-                    return; // Don't update overlay for different window
-                }
-            }
-            // Update current window
-            [g_currentWindowUnderCursor release];
-            g_currentWindowUnderCursor = [windowUnderCursor retain];
+        // Decide which window to track (cursor or toggled)
+        NSDictionary *targetWindow = nil;
+        
+        if (g_hasToggledWindow && g_currentWindowUnderCursor) {
+            // Use current toggled window, but get fresh position data
+            int windowId = [[g_currentWindowUnderCursor objectForKey:@"id"] intValue];
+            NSArray *allWindows = getAllSelectableWindows();
+            targetWindow = allWindows != nil ? 
+                [[allWindows filteredArrayUsingPredicate:
+                    [NSPredicate predicateWithFormat:@"id == %d", windowId]] firstObject] : nil;
             
-            // Update overlay position and size
-            int x = [[windowUnderCursor objectForKey:@"x"] intValue];
-            int y = [[windowUnderCursor objectForKey:@"y"] intValue];
-            int width = [[windowUnderCursor objectForKey:@"width"] intValue];
-            int height = [[windowUnderCursor objectForKey:@"height"] intValue];
+            if (!targetWindow) {
+                NSLog(@"⚠️ Toggled window no longer exists - resetting toggle");
+                g_hasToggledWindow = false;
+                targetWindow = windowUnderCursor;
+            }
+        } else {
+            targetWindow = windowUnderCursor;
+        }
+        
+        if (targetWindow) {
+            // Update current window if different or if we need fresh position data
+            BOOL shouldUpdate = !g_currentWindowUnderCursor ||
+                              ![targetWindow isEqualToDictionary:g_currentWindowUnderCursor] ||
+                              g_hasToggledWindow; // Always update position for toggled windows
+            
+            if (shouldUpdate && !g_hasToggledWindow) {
+                // Only switch windows if not toggled
+                [g_currentWindowUnderCursor release];
+                g_currentWindowUnderCursor = [targetWindow retain];
+            } else if (g_hasToggledWindow) {
+                // Update position data for toggled window
+                [g_currentWindowUnderCursor release];
+                g_currentWindowUnderCursor = [targetWindow retain];
+            }
+            
+            // Update overlay position and size with fresh data
+            int x = [[targetWindow objectForKey:@"x"] intValue];
+            int y = [[targetWindow objectForKey:@"y"] intValue];
+            int width = [[targetWindow objectForKey:@"width"] intValue];
+            int height = [[targetWindow objectForKey:@"height"] intValue];
             
             // Find which screen contains the window center
             NSArray *screens = [NSScreen screens];
@@ -548,8 +570,8 @@ void updateOverlay() {
             // Only convert Y from top-left to bottom-left coordinate system
             NSRect overlayFrame = NSMakeRect(x, adjustedY, width, height);
             
-            NSString *windowTitle = [windowUnderCursor objectForKey:@"title"] ?: @"Untitled";
-            NSString *appName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown";
+            NSString *windowTitle = [targetWindow objectForKey:@"title"] ?: @"Untitled";
+            NSString *appName = [targetWindow objectForKey:@"appName"] ?: @"Unknown";
             
             NSLog(@"🎯 WINDOW DETECTED: %@ - \"%@\"", appName, windowTitle);
             NSLog(@"   📍 Position: (%d, %d)  📏 Size: %d × %d", x, y, width, height);
@@ -560,7 +582,7 @@ void updateOverlay() {
             
             // Bring window to front if enabled
             if (g_bringToFrontEnabled) {
-                int windowId = [[windowUnderCursor objectForKey:@"id"] intValue];
+                int windowId = [[targetWindow objectForKey:@"id"] intValue];
                 if (windowId > 0) {
                     bool success = bringWindowToFront(windowId);
                     if (!success) {
@@ -572,10 +594,14 @@ void updateOverlay() {
             // Ensure overlay is on the correct screen
             [g_overlayWindow setFrame:overlayFrame display:YES];
             
-            // Update overlay view window info and reset toggle state for new window
-            [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:windowUnderCursor];
-            [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
-            g_hasToggledWindow = NO; // Reset global toggle state when switching windows
+            // Update overlay view window info
+            [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:targetWindow];
+            
+            // Only reset toggle state when switching to a different window (not for position updates)
+            if (shouldUpdate && !g_hasToggledWindow) {
+                [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
+                g_hasToggledWindow = NO; // Reset global toggle state when switching windows
+            }
             
             // Add/update info label above button
             NSTextField *infoLabel = nil;
@@ -727,8 +753,11 @@ void updateOverlay() {
             [g_overlayWindow orderFront:nil];
             [g_overlayWindow makeKeyAndOrderFront:nil];
             
-            // Ensure all subviews have no borders after positioning, but preserve corner radius for buttons and icons
+            // Ensure subviews (except overlay view itself) have no borders after positioning
             for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+                // Skip the main overlay view - it handles its own borders
+                if ([subview isKindOfClass:[WindowSelectorOverlayView class]]) continue;
+                
                 if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
                     [subview setWantsLayer:YES];
                     if (subview.layer) {
@@ -745,8 +774,8 @@ void updateOverlay() {
             NSLog(@"   ✅ Overlay Status: Level=%ld, Alpha=%.1f, Visible=%s, Frame Set=YES", 
                   [g_overlayWindow level], [g_overlayWindow alphaValue], 
                   [g_overlayWindow isVisible] ? "YES" : "NO");
-        } else if (!windowUnderCursor && g_currentWindowUnderCursor) {
-            // No window under cursor, hide overlay
+        } else if (!targetWindow && g_currentWindowUnderCursor && !g_hasToggledWindow) {
+            // No window under cursor and no toggle active, hide overlay
             NSString *leftWindowTitle = [g_currentWindowUnderCursor objectForKey:@"title"] ?: @"Untitled";
             NSString *leftAppName = [g_currentWindowUnderCursor objectForKey:@"appName"] ?: @"Unknown";
             
@@ -1604,8 +1633,11 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         // Add cancel button to window
         [g_overlayWindow.contentView addSubview:cancelButton];
         
-        // Force all subviews to have no borders, but preserve corner radius for buttons and icons
+        // Force subviews (except overlay view itself) to have no borders
         for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+            // Skip the main overlay view - it handles its own borders
+            if ([subview isKindOfClass:[WindowSelectorOverlayView class]]) continue;
+            
             if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
                 [subview setWantsLayer:YES];
                 if (subview.layer) {
