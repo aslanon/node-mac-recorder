@@ -56,6 +56,8 @@ void updateScreenOverlays();
 @property (nonatomic, strong) NSDictionary *windowInfo;
 @property (nonatomic) BOOL isActiveWindow;
 @property (nonatomic) BOOL isToggled;
+@property (nonatomic) NSRect highlightFrame;
+- (void)setHighlightFrame:(NSRect)frame;
 @end
 
 @implementation WindowSelectorOverlayView
@@ -63,41 +65,62 @@ void updateScreenOverlays();
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
-        // Use layer for background instead of custom drawing
+        // Full-screen transparent overlay for window highlighting
         self.wantsLayer = YES;
-        self.isActiveWindow = YES; // Default to active for current window under mouse
+        self.isActiveWindow = YES;
+        self.highlightFrame = NSZeroRect;
         
-        // Set purple background with border using layer
-        [self updateAppearance];
+        // Transparent background for full-screen overlay
+        self.layer.backgroundColor = [[NSColor clearColor] CGColor];
         
         // Window selector overlay view created
     }
     return self;
 }
 
-- (void)updateAppearance {
-    if (self.isToggled) {
-        // Toggled window: same background, thick border with darker version of fill color
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
-        self.layer.borderColor = [[NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9] CGColor]; // Darker purple
-        self.layer.borderWidth = 3.0;
-    } else if (self.isActiveWindow) {
-        // Active window: brighter background, thin white border
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] CGColor];
-        self.layer.borderColor = [[NSColor whiteColor] CGColor];
-        self.layer.borderWidth = 1.0;
-    } else {
-        // Inactive window: dimmer background, thin white border
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] CGColor];
-        self.layer.borderColor = [[NSColor whiteColor] CGColor];
-        self.layer.borderWidth = 1.0;
+- (void)setHighlightFrame:(NSRect)frame {
+    _highlightFrame = frame;
+    [self setNeedsDisplay:YES]; // Trigger redraw
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    
+    if (NSEqualRects(self.highlightFrame, NSZeroRect)) {
+        return; // No window to highlight
     }
     
-    self.layer.cornerRadius = 8.0;
-    self.layer.masksToBounds = YES;
-    self.layer.shadowOpacity = 0.0;
-    self.layer.shadowRadius = 0.0;
-    self.layer.shadowOffset = NSMakeSize(0, 0);
+    // Draw highlight rectangle for the selected window
+    NSBezierPath *highlightPath = [NSBezierPath bezierPathWithRoundedRect:self.highlightFrame
+                                                                  xRadius:8.0
+                                                                  yRadius:8.0];
+    
+    // Fill color based on toggle state
+    NSColor *fillColor;
+    NSColor *strokeColor;
+    CGFloat lineWidth;
+    
+    if (self.isToggled) {
+        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
+        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
+        lineWidth = 3.0;
+    } else {
+        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
+        strokeColor = [NSColor whiteColor];
+        lineWidth = 1.0;
+    }
+    
+    [fillColor setFill];
+    [highlightPath fill];
+    
+    [strokeColor setStroke];
+    [highlightPath setLineWidth:lineWidth];
+    [highlightPath stroke];
+}
+
+- (void)updateAppearance {
+    // Appearance is now handled in drawRect
+    [self setNeedsDisplay:YES];
 }
 
 - (void)setIsActiveWindow:(BOOL)isActiveWindow {
@@ -500,7 +523,7 @@ void updateOverlay() {
         CGFloat screenHeight = [mainScreen frame].size.height;
         CGPoint globalPoint = CGPointMake(mouseLocation.x, screenHeight - mouseLocation.y);
         
-        // Find window under cursor
+        // Find window under cursor (no need to refresh g_allWindows frequently since windows can't move)
         NSDictionary *windowUnderCursor = getWindowUnderCursor(globalPoint);
         
         // Check if we need to update overlay (new window or position change of current window)
@@ -653,11 +676,10 @@ void updateOverlay() {
                 }
             }
             
-            // Ensure overlay is on the correct screen
-            [g_overlayWindow setFrame:overlayFrame display:YES];
-            
-            // Update overlay view window info
+            // No need to resize window since it's full-screen, just update the highlight area
+            // Update overlay view window info for highlighting
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:targetWindow];
+            [(WindowSelectorOverlayView *)g_overlayView setHighlightFrame:NSMakeRect(x, [g_overlayView frame].size.height - y - height, width, height)];
             
             // Only reset toggle state when switching to different window (not for position updates)
             if (!g_hasToggledWindow) {
@@ -755,18 +777,20 @@ void updateOverlay() {
             NSString *labelAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown App";
             [infoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", labelAppName, labelWindowTitle]];
             
-            // Position buttons - Start Record in center, Cancel below it
+            // Position buttons - Start Record in center of highlighted window
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
+                // Convert window coordinates to overlay view coordinates
+                NSRect highlightFrame = NSMakeRect(x, [g_overlayView frame].size.height - y - height, width, height);
                 NSPoint buttonCenter = NSMakePoint(
-                    (width - buttonSize.width) / 2,
-                    (height - buttonSize.height) / 2 + 15  // Slightly above center
+                    highlightFrame.origin.x + (highlightFrame.size.width - buttonSize.width) / 2,
+                    highlightFrame.origin.y + (highlightFrame.size.height - buttonSize.height) / 2 + 15
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position app icon above text label
+                // Position app icon above text label within highlighted area
                 NSPoint iconCenter = NSMakePoint(
-                    (width - 96) / 2,  // Center horizontally (icon is 96px wide)
+                    highlightFrame.origin.x + (highlightFrame.size.width - 96) / 2,  // Center horizontally within highlight
                     buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
                 );
                 [appIconView setFrameOrigin:iconCenter];
@@ -787,9 +811,9 @@ void updateOverlay() {
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
                 [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
                 
-                // Position info label at overlay center, above button
+                // Position info label within highlighted area, above button
                 NSPoint labelCenter = NSMakePoint(
-                    (width - [infoLabel frame].size.width) / 2,  // Center horizontally
+                    highlightFrame.origin.x + (highlightFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally within highlight
                     buttonCenter.y + buttonSize.height + 10  // 10px above button, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
@@ -807,7 +831,7 @@ void updateOverlay() {
                 if (cancelButton) {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
-                        (width - cancelButtonSize.width) / 2,
+                        highlightFrame.origin.x + (highlightFrame.size.width - cancelButtonSize.width) / 2,
                         buttonCenter.y - buttonSize.height - 20  // 20px below main button
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
@@ -1570,9 +1594,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             return env.Null();
         }
         
-        // Create overlay window (initially hidden)
-        NSRect initialFrame = NSMakeRect(0, 0, 100, 100);
-        g_overlayWindow = [[NSWindow alloc] initWithContentRect:initialFrame
+        // Create full-screen overlay window to prevent window dragging
+        NSScreen *mainScreen = [NSScreen mainScreen];
+        NSRect fullScreenFrame = [mainScreen frame];
+        g_overlayWindow = [[NSWindow alloc] initWithContentRect:fullScreenFrame
                                                       styleMask:NSWindowStyleMaskBorderless
                                                         backing:NSBackingStoreBuffered
                                                           defer:NO];
@@ -1583,11 +1608,11 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)]; // Absolute highest level
         [g_overlayWindow setOpaque:NO];
         [g_overlayWindow setBackgroundColor:[NSColor clearColor]];
-        [g_overlayWindow setIgnoresMouseEvents:NO];
+        [g_overlayWindow setIgnoresMouseEvents:NO]; // Capture mouse events to prevent window dragging
         [g_overlayWindow setAcceptsMouseMovedEvents:YES];
         [g_overlayWindow setHasShadow:NO];
         [g_overlayWindow setAlphaValue:1.0];
-        [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
+        [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary];
         
         // Remove any default window decorations and borders
         [g_overlayWindow setTitlebarAppearsTransparent:YES];
@@ -1600,8 +1625,8 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setOpaque:NO];
         [g_overlayWindow setBackgroundColor:[NSColor clearColor]];
         
-        // Create overlay view
-        g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:initialFrame];
+        // Create overlay view covering full screen
+        g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:fullScreenFrame];
         [g_overlayWindow setContentView:g_overlayView];
         
         // Note: NSWindow doesn't have setWantsLayer method, only NSView does
