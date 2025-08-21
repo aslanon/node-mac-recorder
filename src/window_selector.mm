@@ -494,41 +494,39 @@ void updateOverlay() {
         // Find window under cursor
         NSDictionary *windowUnderCursor = getWindowUnderCursor(globalPoint);
         
-        // Decide which window to track (cursor or toggled)
+        // Check if we need to update overlay (new window or position change of current window)
+        BOOL needsUpdate = NO;
         NSDictionary *targetWindow = nil;
         
-        if (g_hasToggledWindow && g_currentWindowUnderCursor) {
-            // Use current toggled window, but get fresh position data
-            int windowId = [[g_currentWindowUnderCursor objectForKey:@"id"] intValue];
-            NSArray *allWindows = getAllSelectableWindows();
-            targetWindow = allWindows != nil ? 
-                [[allWindows filteredArrayUsingPredicate:
-                    [NSPredicate predicateWithFormat:@"id == %d", windowId]] firstObject] : nil;
-            
-            if (!targetWindow) {
-                NSLog(@"⚠️ Toggled window no longer exists - resetting toggle");
-                g_hasToggledWindow = false;
+        if (windowUnderCursor) {
+            if (!g_currentWindowUnderCursor || 
+                ![windowUnderCursor isEqualToDictionary:g_currentWindowUnderCursor]) {
+                // New window under cursor
+                needsUpdate = YES;
                 targetWindow = windowUnderCursor;
+            } else {
+                // Same window, but check if position changed by getting fresh data
+                int currentWindowId = [[g_currentWindowUnderCursor objectForKey:@"id"] intValue];
+                NSArray *allWindows = getAllSelectableWindows();
+                NSDictionary *freshWindowData = allWindows ? 
+                    [[allWindows filteredArrayUsingPredicate:
+                        [NSPredicate predicateWithFormat:@"id == %d", currentWindowId]] firstObject] : nil;
+                
+                if (freshWindowData && ![freshWindowData isEqualToDictionary:g_currentWindowUnderCursor]) {
+                    // Same window but position/size changed
+                    needsUpdate = YES;
+                    targetWindow = freshWindowData;
+                    NSLog(@"📍 WINDOW MOVED: Updating overlay position");
+                } else {
+                    targetWindow = g_currentWindowUnderCursor;
+                }
             }
-        } else {
-            targetWindow = windowUnderCursor;
         }
         
-        if (targetWindow) {
-            // Update current window if different or if we need fresh position data
-            BOOL shouldUpdate = !g_currentWindowUnderCursor ||
-                              ![targetWindow isEqualToDictionary:g_currentWindowUnderCursor] ||
-                              g_hasToggledWindow; // Always update position for toggled windows
-            
-            if (shouldUpdate && !g_hasToggledWindow) {
-                // Only switch windows if not toggled
-                [g_currentWindowUnderCursor release];
-                g_currentWindowUnderCursor = [targetWindow retain];
-            } else if (g_hasToggledWindow) {
-                // Update position data for toggled window
-                [g_currentWindowUnderCursor release];
-                g_currentWindowUnderCursor = [targetWindow retain];
-            }
+        if (needsUpdate && targetWindow) {
+            // Update current window with target window (fresh data)
+            [g_currentWindowUnderCursor release];
+            g_currentWindowUnderCursor = [targetWindow retain];
             
             // Update overlay position and size with fresh data
             int x = [[targetWindow objectForKey:@"x"] intValue];
@@ -594,14 +592,9 @@ void updateOverlay() {
             // Ensure overlay is on the correct screen
             [g_overlayWindow setFrame:overlayFrame display:YES];
             
-            // Update overlay view window info
+            // Update overlay view window info and reset toggle state for new window
             [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:targetWindow];
-            
-            // Only reset toggle state when switching to a different window (not for position updates)
-            if (shouldUpdate && !g_hasToggledWindow) {
-                [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
-                g_hasToggledWindow = NO; // Reset global toggle state when switching windows
-            }
+            [(WindowSelectorOverlayView *)g_overlayView setIsToggled:NO];
             
             // Add/update info label above button
             NSTextField *infoLabel = nil;
@@ -774,7 +767,7 @@ void updateOverlay() {
             NSLog(@"   ✅ Overlay Status: Level=%ld, Alpha=%.1f, Visible=%s, Frame Set=YES", 
                   [g_overlayWindow level], [g_overlayWindow alphaValue], 
                   [g_overlayWindow isVisible] ? "YES" : "NO");
-        } else if (!targetWindow && g_currentWindowUnderCursor && !g_hasToggledWindow) {
+        } else if (!windowUnderCursor && g_currentWindowUnderCursor) {
             // No window under cursor and no toggle active, hide overlay
             NSString *leftWindowTitle = [g_currentWindowUnderCursor objectForKey:@"title"] ?: @"Untitled";
             NSString *leftAppName = [g_currentWindowUnderCursor objectForKey:@"appName"] ?: @"Unknown";
