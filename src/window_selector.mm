@@ -114,12 +114,12 @@ void updateScreenOverlays();
     CGFloat lineWidth;
     
     if (self.isToggled) {
-        // Locked state: thicker border
+        // Locked state: same 1px border but different color
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
         strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
-        lineWidth = 3.0;
+        lineWidth = 1.0;
     } else {
-        // Normal state: thin border
+        // Normal state: 1px border
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
         strokeColor = [NSColor whiteColor];
         lineWidth = 1.0;
@@ -933,7 +933,8 @@ void updateOverlay() {
             }
             
             [g_overlayWindow orderFront:nil];
-            [g_overlayWindow makeKeyAndOrderFront:nil];
+            // DON'T make key - prevents focus ring
+            // [g_overlayWindow makeKeyAndOrderFront:nil];
             
             // Ensure subviews (except overlay view itself) have no borders after positioning
             for (NSView *subview in [g_overlayWindow.contentView subviews]) {
@@ -1054,7 +1055,7 @@ bool showRecordingPreview(NSDictionary *windowInfo) {
         [g_recordingPreviewWindow setAcceptsMouseMovedEvents:NO];
         [g_recordingPreviewWindow setHasShadow:NO];
         [g_recordingPreviewWindow setAlphaValue:1.0];
-        [g_recordingPreviewWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle];
+        [g_recordingPreviewWindow setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle];
         
         // Remove any default window decorations and borders
         [g_recordingPreviewWindow setTitlebarAppearsTransparent:YES];
@@ -1183,7 +1184,7 @@ void updateScreenOverlays() {
                 // Ensure ALL overlays are visible, but active one is on top
                 [overlayWindow orderFront:nil];
                 if (isActiveScreen) {
-                    [overlayWindow makeKeyAndOrderFront:nil];
+                    [overlayWindow orderFront:nil]; // Don't make key
                 } else {
                     [overlayWindow orderFront:nil]; // Keep inactive screens visible too
                 }
@@ -1328,7 +1329,7 @@ bool startScreenSelection() {
             [overlayWindow setHasShadow:NO];
             [overlayWindow setAlphaValue:1.0];
             // Ensure window appears on all spaces and stays put - match g_overlayWindow
-            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle];
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle];
             
             // Remove any default window decorations and borders
             [overlayWindow setTitlebarAppearsTransparent:YES];
@@ -1501,12 +1502,12 @@ bool startScreenSelection() {
             // Show overlay - different strategy for secondary screens
             if (i == 0) {
                 // Primary screen
-                [overlayWindow makeKeyAndOrderFront:nil];
+                [overlayWindow orderFront:nil]; // Don't make key
                 // Primary screen overlay shown
             } else {
                 // Secondary screens - more aggressive approach
                 [overlayWindow orderFront:nil];
-                [overlayWindow makeKeyAndOrderFront:nil]; // Try makeKey too
+                [overlayWindow orderFront:nil]; // Don't make key // Try makeKey too
                 [overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)]; // Match g_overlayWindow level
                 
                 // Secondary screen overlay shown
@@ -1514,7 +1515,7 @@ bool startScreenSelection() {
                 // Double-check with delayed re-show
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [overlayWindow orderFront:nil];
-                    [overlayWindow makeKeyAndOrderFront:nil];
+                    [overlayWindow orderFront:nil]; // Don't make key
                 });
             }
             
@@ -1628,7 +1629,7 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             // no border
             [overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
             [overlayWindow setAlphaValue:1.0];
-            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle];
+            [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle];
             
 
             // Force content view to have no borders
@@ -1651,7 +1652,7 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
 
 
             [overlayWindow orderFront:nil];
-            [overlayWindow makeKeyAndOrderFront:nil];
+            // [overlayWindow makeKeyAndOrderFront:nil];
             
             // Note: NSWindow doesn't have setWantsLayer method, only NSView does
             
@@ -1724,7 +1725,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setAcceptsMouseMovedEvents:YES];
         [g_overlayWindow setHasShadow:NO];
         [g_overlayWindow setAlphaValue:1.0];
-        [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorIgnoresCycle];
+        [g_overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle];
         
         // Remove any default window decorations and borders
         [g_overlayWindow setTitlebarAppearsTransparent:YES];
