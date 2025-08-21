@@ -87,7 +87,7 @@ void updateScreenOverlays();
             // No border to match screen selector
         self.layer.borderColor = [[NSColor clearColor] CGColor];
         self.layer.borderWidth = 0.0;
-        self.layer.cornerRadius = 0.0;
+        self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
         self.layer.shadowRadius = 0.0;
@@ -119,7 +119,7 @@ void updateScreenOverlays();
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
         // Ensure no borders or decorations
         self.layer.borderWidth = 0.0;
-        self.layer.cornerRadius = 0.0;
+        self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
         self.layer.shadowRadius = 0.0;
@@ -179,7 +179,7 @@ void updateScreenOverlays();
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
         // Ensure no borders or decorations
         self.layer.borderWidth = 0.0;
-        self.layer.cornerRadius = 0.0;
+        self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
         self.layer.shadowRadius = 0.0;
@@ -681,14 +681,13 @@ void updateOverlay() {
             [g_overlayWindow orderFront:nil];
             [g_overlayWindow makeKeyAndOrderFront:nil];
             
-            // Ensure all subviews have no borders after positioning
+            // Ensure all subviews have no borders after positioning, but preserve corner radius for buttons and icons
             for (NSView *subview in [g_overlayWindow.contentView subviews]) {
                 if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
                     [subview setWantsLayer:YES];
                     if (subview.layer) {
                         subview.layer.borderWidth = 0.0;
                         subview.layer.borderColor = [[NSColor clearColor] CGColor];
-                        subview.layer.cornerRadius = 0.0;
                         subview.layer.masksToBounds = YES;
                         subview.layer.shadowOpacity = 0.0;
                         subview.layer.shadowRadius = 0.0;
@@ -1365,6 +1364,8 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             [overlayWindow setIgnoresMouseEvents:YES];
             [overlayWindow setAcceptsMouseMovedEvents:NO];
             [overlayWindow setHasShadow:NO];
+            // no border
+            [overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
             [overlayWindow setAlphaValue:1.0];
             [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
             
@@ -1549,14 +1550,13 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         // Add cancel button to window
         [g_overlayWindow.contentView addSubview:cancelButton];
         
-        // Force all subviews to have no borders
+        // Force all subviews to have no borders, but preserve corner radius for buttons and icons
         for (NSView *subview in [g_overlayWindow.contentView subviews]) {
             if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
                 [subview setWantsLayer:YES];
                 if (subview.layer) {
                     subview.layer.borderWidth = 0.0;
                     subview.layer.borderColor = [[NSColor clearColor] CGColor];
-                    subview.layer.cornerRadius = 0.0;
                     subview.layer.masksToBounds = YES;
                     subview.layer.shadowOpacity = 0.0;
                     subview.layer.shadowRadius = 0.0;
