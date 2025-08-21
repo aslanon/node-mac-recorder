@@ -862,14 +862,17 @@ void updateScreenOverlays() {
                     }
                 }
                 
+                // Log active screen changes for debugging (optional)
                 if (isActiveScreen) {
-                    NSLog(@"🖥️ ACTIVE SCREEN: Display %ld", (long)(i + 1));
+                    NSLog(@"🖥️ Active screen: Display %ld", (long)(i + 1));
                 }
                 
-                // Bring active screen overlay to front
+                // Ensure ALL overlays are visible, but active one is on top
+                [overlayWindow orderFront:nil];
                 if (isActiveScreen) {
-                    [overlayWindow orderFront:nil];
                     [overlayWindow makeKeyAndOrderFront:nil];
+                } else {
+                    [overlayWindow orderFront:nil]; // Keep inactive screens visible too
                 }
             }
         }
@@ -1112,8 +1115,13 @@ bool startScreenSelection() {
             [overlayView addSubview:screenInfoLabel];
             [overlayView addSubview:selectButton];
             [overlayView addSubview:screenCancelButton];
+            
             [overlayWindow orderFront:nil];
             [overlayWindow makeKeyAndOrderFront:nil];
+            
+            // Additional visibility settings
+            [overlayWindow setAlphaValue:1.0];
+            [overlayWindow setIsVisible:YES];
             
             [g_screenOverlayWindows addObject:overlayWindow];
             [screenInfo release];
@@ -1142,6 +1150,9 @@ bool startScreenSelection() {
                                                               selector:@selector(screenTimerUpdate:)
                                                               userInfo:nil
                                                                repeats:YES];
+        
+        // Initial update to set correct highlighting
+        updateScreenOverlays();
         
         NSLog(@"🖥️ SCREEN SELECTION: Started with %lu screens (ESC to cancel)", (unsigned long)[screens count]);
         NSLog(@"🖥️ SCREEN TRACKING: Timer started for overlay updates");
