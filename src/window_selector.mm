@@ -129,8 +129,9 @@ void updateScreenOverlays();
     [fillColor setFill];
     [highlightPath fill];
     
-    [strokeColor setStroke];
+    // 1px purple stroke
     [highlightPath setLineWidth:1.0];
+    [strokeColor setStroke];
     [highlightPath stroke];
 }
 
