@@ -66,6 +66,10 @@ void updateScreenOverlays();
 - (void)setupHoverTracking;
 @end
 
+// Window delegate to prevent focus
+@interface OverlayWindowDelegate : NSObject <NSWindowDelegate>
+@end
+
 @implementation WindowSelectorOverlayView
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -78,6 +82,9 @@ void updateScreenOverlays();
         
         // Transparent background for full-screen overlay
         self.layer.backgroundColor = [[NSColor clearColor] CGColor];
+        
+        // Disable focus ring completely
+        [self setFocusRingType:NSFocusRingTypeNone];
         
         // Window selector overlay view created
     }
@@ -129,6 +136,14 @@ void updateScreenOverlays();
 - (void)updateAppearance {
     // Appearance is now handled in drawRect
     [self setNeedsDisplay:YES];
+}
+
+- (BOOL)acceptsFirstResponder {
+    return NO; // Never accept focus to prevent blue ring
+}
+
+- (BOOL)canBecomeKeyView {
+    return NO; // Never become key view
 }
 
 - (void)setIsActiveWindow:(BOOL)isActiveWindow {
@@ -235,6 +250,18 @@ void updateScreenOverlays();
     
     // Add new tracking area
     [self setupHoverTracking];
+}
+
+@end
+
+@implementation OverlayWindowDelegate
+
+- (BOOL)windowShouldBecomeKey:(NSWindow *)window {
+    return NO; // Prevent window from becoming key to avoid focus ring
+}
+
+- (BOOL)windowShouldBecomeMain:(NSWindow *)window {
+    return NO; // Prevent window from becoming main
 }
 
 @end
@@ -1716,16 +1743,28 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Note: NSWindow doesn't have setWantsLayer method, only NSView does
         
-        // Force content view to have no borders
+        // Force content view to have no borders and no focus ring
         g_overlayWindow.contentView.wantsLayer = YES;
         g_overlayWindow.contentView.layer.borderWidth = 0.0;
         g_overlayWindow.contentView.layer.borderColor = [[NSColor clearColor] CGColor];
         g_overlayWindow.contentView.layer.cornerRadius = 0.0;
         g_overlayWindow.contentView.layer.masksToBounds = YES;
         
+        // Disable focus ring on overlay view
+        if ([g_overlayView respondsToSelector:@selector(setFocusRingType:)]) {
+            [(NSView*)g_overlayView setFocusRingType:NSFocusRingTypeNone];
+        }
+        
         // Additional window styling to ensure no borders or decorations
         [g_overlayWindow setMovable:NO];
         [g_overlayWindow setMovableByWindowBackground:NO];
+        
+        // Set delegate to prevent focus
+        static OverlayWindowDelegate *windowDelegate = nil;
+        if (!windowDelegate) {
+            windowDelegate = [[OverlayWindowDelegate alloc] init];
+        }
+        [g_overlayWindow setDelegate:windowDelegate];
         
         // Create select button with purple theme and hover effects
         g_selectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
