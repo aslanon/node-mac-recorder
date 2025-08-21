@@ -932,20 +932,22 @@ void updateOverlay() {
             NSString *labelAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown App";
             [infoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", labelAppName, labelWindowTitle]];
             
-            // Position buttons - Start Record in absolute center of overlay
+            // Position buttons - Start Record in center of selected window
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
-                NSRect overlayFrame = [g_overlayView frame];  // Use overlay view frame for proper centering
+                // Use window center for positioning
+                CGFloat windowCenterX = x + (width / 2);
+                CGFloat windowCenterY = y + (height / 2);
                 NSPoint buttonCenter = NSMakePoint(
-                    (overlayFrame.size.width - buttonSize.width) / 2,
-                    (overlayFrame.size.height - buttonSize.height) / 2  // Perfect center
+                    windowCenterX - (buttonSize.width / 2),
+                    windowCenterY - (buttonSize.height / 2)  // Perfect center of window
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position app icon above center
+                // Position app icon above window center
                 NSPoint iconCenter = NSMakePoint(
-                    (overlayFrame.size.width - 96) / 2,  // Center horizontally on overlay
-                    (overlayFrame.size.height / 2) + 120  // 120px above center
+                    windowCenterX - (96 / 2),  // Center horizontally on window
+                    windowCenterY + 120  // 120px above window center
                 );
                 [appIconView setFrameOrigin:iconCenter];
                 NSLog(@"🎯 Positioning app icon at: (%.0f, %.0f) for window size: (%.0f, %.0f)", 
@@ -965,10 +967,10 @@ void updateOverlay() {
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
                 [appIconView.layer addAnimation:floatAnimationX forKey:@"floatAnimationX"];
                 
-                // Position info label between icon and button
+                // Position info label between icon and button relative to window center
                 NSPoint labelCenter = NSMakePoint(
-                    (overlayFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on overlay
-                    (overlayFrame.size.height / 2) + 50  // 50px above center, below icon
+                    windowCenterX - ([infoLabel frame].size.width / 2),  // Center horizontally on window
+                    windowCenterY + 50  // 50px above window center, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
                 
@@ -985,8 +987,8 @@ void updateOverlay() {
                 if (cancelButton) {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
-                        (overlayFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on overlay
-                        (overlayFrame.size.height / 2) - 80  // 80px below center
+                        windowCenterX - (cancelButtonSize.width / 2),  // Center horizontally on window
+                        windowCenterY - 80  // 80px below window center
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
                 }
