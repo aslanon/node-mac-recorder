@@ -501,33 +501,28 @@ void updateOverlay() {
         if (windowUnderCursor) {
             // Check if we're in lock mode (toggled window)
             if (g_hasToggledWindow && g_currentWindowUnderCursor) {
-                // Check if cursor moved to different window while locked
+                // In lock mode - only track toggled window position, ignore cursor
                 int toggledWindowId = [[g_currentWindowUnderCursor objectForKey:@"id"] intValue];
-                int cursorWindowId = [[windowUnderCursor objectForKey:@"id"] intValue];
+                NSArray *allWindows = getAllSelectableWindows();
+                NSDictionary *freshWindowData = allWindows ? 
+                    [[allWindows filteredArrayUsingPredicate:
+                        [NSPredicate predicateWithFormat:@"id == %d", toggledWindowId]] firstObject] : nil;
                 
-                if (toggledWindowId != cursorWindowId) {
-                    // Cursor moved to different window - cancel toggle and switch to new window
-                    NSLog(@"🔓 TOGGLE CANCELLED: Cursor moved to different window");
-                    g_hasToggledWindow = NO;
+                if (freshWindowData && ![freshWindowData isEqualToDictionary:g_currentWindowUnderCursor]) {
+                    // Toggled window position changed - update
                     needsUpdate = YES;
-                    targetWindow = windowUnderCursor;
+                    targetWindow = freshWindowData;
+                    NSLog(@"📍 TOGGLED WINDOW MOVED: Updating overlay position");
                 } else {
-                    // Same window - check for position changes
-                    NSArray *allWindows = getAllSelectableWindows();
-                    NSDictionary *freshWindowData = allWindows ? 
-                        [[allWindows filteredArrayUsingPredicate:
-                            [NSPredicate predicateWithFormat:@"id == %d", toggledWindowId]] firstObject] : nil;
-                    
-                    if (freshWindowData && ![freshWindowData isEqualToDictionary:g_currentWindowUnderCursor]) {
-                        // Toggled window position changed - update
-                        needsUpdate = YES;
-                        targetWindow = freshWindowData;
-                        NSLog(@"📍 TOGGLED WINDOW MOVED: Updating overlay position");
-                    } else {
-                        // No change needed
-                        needsUpdate = NO;
-                        targetWindow = g_currentWindowUnderCursor;
-                    }
+                    // No change needed for toggled window
+                    needsUpdate = NO;
+                    targetWindow = g_currentWindowUnderCursor;
+                }
+                
+                // Log cursor movement but don't act on it
+                int cursorWindowId = [[windowUnderCursor objectForKey:@"id"] intValue];
+                if (toggledWindowId != cursorWindowId) {
+                    NSLog(@"🔒 LOCK ACTIVE: Cursor on different window but keeping toggle");
                 }
             } else if (!g_currentWindowUnderCursor || 
                 ![windowUnderCursor isEqualToDictionary:g_currentWindowUnderCursor]) {
