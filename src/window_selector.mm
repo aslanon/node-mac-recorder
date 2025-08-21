@@ -550,6 +550,13 @@ void updateOverlay() {
                 [infoLabel setFont:[NSFont systemFontOfSize:18 weight:NSFontWeightMedium]];
                 [infoLabel setTextColor:[NSColor whiteColor]];
                 
+                // Force no borders on info label
+                [infoLabel setWantsLayer:YES];
+                infoLabel.layer.borderWidth = 0.0;
+                infoLabel.layer.borderColor = [[NSColor clearColor] CGColor];
+                infoLabel.layer.cornerRadius = 0.0;
+                infoLabel.layer.masksToBounds = YES;
+                
                 [g_overlayWindow.contentView addSubview:infoLabel];
             }
             
@@ -569,6 +576,14 @@ void updateOverlay() {
                 [appIconView.layer setCornerRadius:8.0];
                 [appIconView.layer setMasksToBounds:YES];
                 [appIconView.layer setBackgroundColor:[[NSColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:0.3] CGColor]]; // Debug background
+                
+                // Force no borders on app icon view
+                appIconView.layer.borderWidth = 0.0;
+                appIconView.layer.borderColor = [[NSColor clearColor] CGColor];
+                appIconView.layer.shadowOpacity = 0.0;
+                appIconView.layer.shadowRadius = 0.0;
+                appIconView.layer.shadowOffset = NSMakeSize(0, 0);
+                
                 [g_overlayWindow.contentView addSubview:appIconView];
                 NSLog(@"🖼️ Created app icon view at frame: (%.0f, %.0f, %.0f, %.0f)", 
                       appIconView.frame.origin.x, appIconView.frame.origin.y, 
@@ -665,6 +680,22 @@ void updateOverlay() {
             
             [g_overlayWindow orderFront:nil];
             [g_overlayWindow makeKeyAndOrderFront:nil];
+            
+            // Ensure all subviews have no borders after positioning
+            for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+                if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
+                    [subview setWantsLayer:YES];
+                    if (subview.layer) {
+                        subview.layer.borderWidth = 0.0;
+                        subview.layer.borderColor = [[NSColor clearColor] CGColor];
+                        subview.layer.cornerRadius = 0.0;
+                        subview.layer.masksToBounds = YES;
+                        subview.layer.shadowOpacity = 0.0;
+                        subview.layer.shadowRadius = 0.0;
+                        subview.layer.shadowOffset = NSMakeSize(0, 0);
+                    }
+                }
+            }
             
             NSLog(@"   ✅ Overlay Status: Level=%ld, Alpha=%.1f, Visible=%s, Frame Set=YES", 
                   [g_overlayWindow level], [g_overlayWindow alphaValue], 
@@ -857,12 +888,12 @@ void updateScreenOverlays() {
                         NSButton *button = (NSButton *)subview;
                         if ([button.title isEqualToString:@"Start Record"]) {
                             if (isActiveScreen) {
-                                // Active screen: bright, prominent button
-                                [button.layer setBackgroundColor:[[NSColor colorWithRed:0.7 green:0.45 blue:0.9 alpha:1.0] CGColor]];
+                                // Active screen: bright, prominent button with new RGB color
+                                [button.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:1.0] CGColor]];
                                 [button setAlphaValue:1.0];
                             } else {
-                                // Inactive screen: dimmer button
-                                [button.layer setBackgroundColor:[[NSColor colorWithRed:0.4 green:0.25 blue:0.55 alpha:0.8] CGColor]];
+                                // Inactive screen: dimmer button with new RGB color
+                                [button.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:0.6] CGColor]];
                                 [button setAlphaValue:0.7];
                             }
                         }
@@ -1070,9 +1101,9 @@ bool startScreenSelection() {
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
             [selectButton setTag:i]; // Set screen index as tag
             
-            // Modern button styling with purple tone
+            // Modern button styling with new RGB color
             [selectButton setWantsLayer:YES];
-            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.55 green:0.3 blue:0.75 alpha:0.95] CGColor]];
+            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:0.95] CGColor]];
             [selectButton.layer setCornerRadius:8.0];
             [selectButton.layer setBorderWidth:0.0];
             
@@ -1408,6 +1439,9 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
                                                         backing:NSBackingStoreBuffered
                                                           defer:NO];
         
+        // Force completely borderless appearance
+        [g_overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
+        
         [g_overlayWindow setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)]; // Absolute highest level
         [g_overlayWindow setOpaque:NO];
         [g_overlayWindow setBackgroundColor:[NSColor clearColor]];
@@ -1439,6 +1473,13 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         g_overlayWindow.layer.cornerRadius = 0.0;
         g_overlayWindow.layer.masksToBounds = YES;
         
+        // Force content view to have no borders
+        g_overlayWindow.contentView.wantsLayer = YES;
+        g_overlayWindow.contentView.layer.borderWidth = 0.0;
+        g_overlayWindow.contentView.layer.borderColor = [[NSColor clearColor] CGColor];
+        g_overlayWindow.contentView.layer.cornerRadius = 0.0;
+        g_overlayWindow.contentView.layer.masksToBounds = YES;
+        
         // Additional window styling to ensure no borders or decorations
         [g_overlayWindow setMovable:NO];
         [g_overlayWindow setMovableByWindowBackground:NO];
@@ -1450,9 +1491,9 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_selectButton setBordered:NO];
         [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
         
-        // Modern button styling with purple tone
+        // Modern button styling with new RGB color
         [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:0.55 green:0.3 blue:0.75 alpha:0.95] CGColor]];
+        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:0.95] CGColor]];
         [g_selectButton.layer setCornerRadius:8.0];
         [g_selectButton.layer setBorderWidth:0.0];
         
@@ -1522,6 +1563,22 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         
         // Add cancel button to window
         [g_overlayWindow.contentView addSubview:cancelButton];
+        
+        // Force all subviews to have no borders
+        for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+            if ([subview respondsToSelector:@selector(setWantsLayer:)]) {
+                [subview setWantsLayer:YES];
+                if (subview.layer) {
+                    subview.layer.borderWidth = 0.0;
+                    subview.layer.borderColor = [[NSColor clearColor] CGColor];
+                    subview.layer.cornerRadius = 0.0;
+                    subview.layer.masksToBounds = YES;
+                    subview.layer.shadowOpacity = 0.0;
+                    subview.layer.shadowRadius = 0.0;
+                    subview.layer.shadowOffset = NSMakeSize(0, 0);
+                }
+            }
+        }
         
         // Cancel button reference will be found dynamically in positioning code
         
