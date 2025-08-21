@@ -326,8 +326,8 @@ void updateScreenOverlays();
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        // Semi-transparent purple background for screen/window overlay  
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18] CGColor];
+        // Semi-transparent black background for screen overlay (same as window overlay)
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.3] CGColor];
         // Ensure no borders or decorations
         self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
@@ -387,8 +387,8 @@ void updateScreenOverlays();
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        // Semi-transparent purple background for screen/window overlay  
-        self.layer.backgroundColor = [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18] CGColor];
+        // Semi-transparent black background for screen overlay (same as window overlay)
+        self.layer.backgroundColor = [[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.3] CGColor];
         // Ensure no borders or decorations
         self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
@@ -945,7 +945,7 @@ void updateOverlay() {
                 // Position app icon above center
                 NSPoint iconCenter = NSMakePoint(
                     (overlayFrame.size.width - 96) / 2,  // Center horizontally on overlay
-                    (overlayFrame.size.height / 2) + 80  // 80px above center
+                    (overlayFrame.size.height / 2) + 120  // 120px above center
                 );
                 [appIconView setFrameOrigin:iconCenter];
                 NSLog(@"🎯 Positioning app icon at: (%.0f, %.0f) for window size: (%.0f, %.0f)", 
@@ -968,7 +968,7 @@ void updateOverlay() {
                 // Position info label between icon and button
                 NSPoint labelCenter = NSMakePoint(
                     (overlayFrame.size.width - [infoLabel frame].size.width) / 2,  // Center horizontally on overlay
-                    (overlayFrame.size.height / 2) + 30  // 30px above center, below icon
+                    (overlayFrame.size.height / 2) + 50  // 50px above center, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
                 
@@ -986,7 +986,7 @@ void updateOverlay() {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
                         (overlayFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on overlay
-                        (overlayFrame.size.height / 2) - 60  // 60px below center
+                        (overlayFrame.size.height / 2) - 80  // 80px below center
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
                 }
@@ -1524,7 +1524,7 @@ bool startScreenSelection() {
             // Position screen icon above center
             NSPoint iconCenter = NSMakePoint(
                 (screenFrame.size.width - 96) / 2,  // Center horizontally (icon is 96px wide)
-                (screenFrame.size.height / 2) + 80  // 80px above center
+                (screenFrame.size.height / 2) + 120  // 120px above center
             );
             [screenIconView setFrameOrigin:iconCenter];
             
@@ -1541,13 +1541,13 @@ bool startScreenSelection() {
             // Position info label between icon and button
             NSPoint labelCenter = NSMakePoint(
                 (screenFrame.size.width - [screenInfoLabel frame].size.width) / 2,  // Center horizontally
-                (screenFrame.size.height / 2) + 30  // 30px above center, below icon
+                (screenFrame.size.height / 2) + 50  // 50px above center, below icon
             );
             [screenInfoLabel setFrameOrigin:labelCenter];
             
             NSPoint cancelButtonCenter = NSMakePoint(
                 (screenFrame.size.width - [screenCancelButton frame].size.width) / 2,
-                (screenFrame.size.height / 2) - 60  // 60px below center
+                (screenFrame.size.height / 2) - 80  // 80px below center
             );
             [screenCancelButton setFrameOrigin:cancelButtonCenter];
             
