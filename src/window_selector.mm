@@ -67,14 +67,14 @@ bool hideScreenRecordingPreview();
     
     if (!self.windowInfo) return;
     
-    // Background with transparency
-    [[NSColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.3] setFill];
+    // Background with transparency - purple tone
+    [[NSColor colorWithRed:0.4 green:0.3 blue:0.8 alpha:0.08] setFill];
     NSRectFill(self.bounds);
     
-    // Modern border with rounded corners
-    [[NSColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.8] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 2, 2) xRadius:12 yRadius:12];
-    [border setLineWidth:4.0];
+    // Thin border with darker purple
+    [[NSColor colorWithRed:0.3 green:0.2 blue:0.6 alpha:0.6] setStroke];
+    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:12 yRadius:12];
+    [border setLineWidth:1.0];
     [border stroke];
     
     // Text will be handled by separate label above button
@@ -155,14 +155,14 @@ bool hideScreenRecordingPreview();
     
     if (!self.screenInfo) return;
     
-    // Background with transparency
-    [[NSColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.25] setFill];
+    // Background with transparency - purple tone
+    [[NSColor colorWithRed:0.4 green:0.3 blue:0.8 alpha:0.12] setFill];
     NSRectFill(self.bounds);
     
-    // Modern border with rounded corners
-    [[NSColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.7] setStroke];
-    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 3, 3) xRadius:15 yRadius:15];
-    [border setLineWidth:6.0];
+    // Thin border with darker purple  
+    [[NSColor colorWithRed:0.3 green:0.2 blue:0.6 alpha:0.5] setStroke];
+    NSBezierPath *border = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:15 yRadius:15];
+    [border setLineWidth:1.0];
     [border stroke];
     
     // Text will be handled by separate label above button
@@ -504,16 +504,47 @@ void updateOverlay() {
                 [infoLabel setAlignment:NSTextAlignmentCenter];
                 [infoLabel setFont:[NSFont systemFontOfSize:18 weight:NSFontWeightMedium]];
                 [infoLabel setTextColor:[NSColor whiteColor]];
-                [infoLabel setWantsLayer:YES];
-                
-                // Add shadow for better visibility
-                [infoLabel.layer setShadowColor:[[NSColor blackColor] CGColor]];
-                [infoLabel.layer setShadowOffset:NSMakeSize(0, -1)];
-                [infoLabel.layer setShadowRadius:3.0];
-                [infoLabel.layer setShadowOpacity:0.8];
                 
                 [g_overlayWindow.contentView addSubview:infoLabel];
             }
+            
+            // Add/update app icon
+            NSImageView *appIconView = nil;
+            for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+                if ([subview isKindOfClass:[NSImageView class]]) {
+                    appIconView = (NSImageView*)subview;
+                    break;
+                }
+            }
+            
+            if (!appIconView) {
+                appIconView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, 96, 96)];
+                [appIconView setImageScaling:NSImageScaleProportionallyUpOrDown];
+                [appIconView setWantsLayer:YES];
+                [appIconView.layer setCornerRadius:16.0];  // Rounded corners like iOS
+                [appIconView.layer setMasksToBounds:YES];
+                [g_overlayWindow.contentView addSubview:appIconView];
+            }
+            
+            // Get app icon using NSWorkspace
+            NSString *iconAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown";
+            NSWorkspace *workspace = [NSWorkspace sharedWorkspace];
+            NSArray *runningApps = [workspace runningApplications];
+            NSImage *appIcon = nil;
+            
+            for (NSRunningApplication *app in runningApps) {
+                if ([[app localizedName] isEqualToString:iconAppName] || [[app bundleIdentifier] containsString:iconAppName]) {
+                    appIcon = [app icon];
+                    break;
+                }
+            }
+            
+            // Fallback to generic app icon if not found
+            if (!appIcon) {
+                appIcon = [workspace iconForFileType:NSFileTypeForHFSTypeCode(kGenericApplicationIcon)];
+            }
+            
+            [appIconView setImage:appIcon];
             
             // Update label text
             NSString *labelWindowTitle = [windowUnderCursor objectForKey:@"title"] ?: @"Unknown Window";
@@ -529,10 +560,17 @@ void updateOverlay() {
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
-                // Position info label above button
+                // Position app icon above text label
+                NSPoint iconCenter = NSMakePoint(
+                    (width - 96) / 2,  // Center horizontally (icon is 96px wide)
+                    buttonCenter.y + buttonSize.height + 60 + 10  // Above label + text height + margin
+                );
+                [appIconView setFrameOrigin:iconCenter];
+                
+                // Position info label at overlay center, above button
                 NSPoint labelCenter = NSMakePoint(
-                    20,
-                    buttonCenter.y + buttonSize.height + 10  // 10px above button
+                    (width - [infoLabel frame].size.width) / 2,  // Center horizontally
+                    buttonCenter.y + buttonSize.height + 10  // 10px above button, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
                 
@@ -857,13 +895,18 @@ bool startScreenSelection() {
             [screenInfoLabel setAlignment:NSTextAlignmentCenter];
             [screenInfoLabel setFont:[NSFont systemFontOfSize:20 weight:NSFontWeightMedium]];
             [screenInfoLabel setTextColor:[NSColor whiteColor]];
-            [screenInfoLabel setWantsLayer:YES];
             
-            // Add shadow for better visibility
-            [screenInfoLabel.layer setShadowColor:[[NSColor blackColor] CGColor]];
-            [screenInfoLabel.layer setShadowOffset:NSMakeSize(0, -2)];
-            [screenInfoLabel.layer setShadowRadius:4.0];
-            [screenInfoLabel.layer setShadowOpacity:0.8];
+            // Create screen icon (display icon)
+            NSImageView *screenIconView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, 96, 96)];
+            [screenIconView setImageScaling:NSImageScaleProportionallyUpOrDown];
+            [screenIconView setWantsLayer:YES];
+            [screenIconView.layer setCornerRadius:16.0];
+            [screenIconView.layer setMasksToBounds:YES];
+            
+            // Set display icon
+            NSWorkspace *workspace = [NSWorkspace sharedWorkspace];
+            NSImage *displayIcon = [workspace iconForFileType:NSFileTypeForHFSTypeCode(kComputerIcon)];
+            [screenIconView setImage:displayIcon];
             
             // Set screen info text
             NSString *screenName = [screenInfo objectForKey:@"name"] ?: @"Unknown Screen";
@@ -877,10 +920,17 @@ bool startScreenSelection() {
             );
             [selectButton setFrameOrigin:buttonCenter];
             
-            // Position info label above button
+            // Position screen icon above text label
+            NSPoint iconCenter = NSMakePoint(
+                (screenFrame.size.width - 96) / 2,  // Center horizontally (icon is 96px wide)
+                buttonCenter.y + [selectButton frame].size.height + 60 + 10  // Above label + text height + margin
+            );
+            [screenIconView setFrameOrigin:iconCenter];
+            
+            // Position info label at screen center, above button
             NSPoint labelCenter = NSMakePoint(
-                20,
-                buttonCenter.y + [selectButton frame].size.height + 10  // 10px above button
+                (screenFrame.size.width - [screenInfoLabel frame].size.width) / 2,  // Center horizontally
+                buttonCenter.y + [selectButton frame].size.height + 10  // 10px above button, below icon
             );
             [screenInfoLabel setFrameOrigin:labelCenter];
             
@@ -890,6 +940,7 @@ bool startScreenSelection() {
             );
             [screenCancelButton setFrameOrigin:cancelButtonCenter];
             
+            [overlayView addSubview:screenIconView];
             [overlayView addSubview:screenInfoLabel];
             [overlayView addSubview:selectButton];
             [overlayView addSubview:screenCancelButton];
