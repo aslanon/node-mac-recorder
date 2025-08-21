@@ -509,10 +509,25 @@ void updateOverlay() {
                         [NSPredicate predicateWithFormat:@"id == %d", toggledWindowId]] firstObject] : nil;
                 
                 if (freshWindowData && ![freshWindowData isEqualToDictionary:g_currentWindowUnderCursor]) {
-                    // Toggled window position changed - update
-                    needsUpdate = YES;
-                    targetWindow = freshWindowData;
-                    NSLog(@"📍 TOGGLED WINDOW MOVED: Updating overlay position");
+                    // Check if position change is significant enough to update
+                    int oldX = [[g_currentWindowUnderCursor objectForKey:@"x"] intValue];
+                    int oldY = [[g_currentWindowUnderCursor objectForKey:@"y"] intValue];
+                    int newX = [[freshWindowData objectForKey:@"x"] intValue];
+                    int newY = [[freshWindowData objectForKey:@"y"] intValue];
+                    
+                    int deltaX = abs(newX - oldX);
+                    int deltaY = abs(newY - oldY);
+                    
+                    if (deltaX >= 3 || deltaY >= 3) {
+                        // Significant position change - update
+                        needsUpdate = YES;
+                        targetWindow = freshWindowData;
+                        NSLog(@"📍 TOGGLED WINDOW MOVED: (%d,%d) → (%d,%d)", oldX, oldY, newX, newY);
+                    } else {
+                        // Minor change - ignore to prevent flickering
+                        needsUpdate = NO;
+                        targetWindow = g_currentWindowUnderCursor;
+                    }
                 } else {
                     // No change needed for toggled window
                     needsUpdate = NO;
@@ -538,10 +553,25 @@ void updateOverlay() {
                         [NSPredicate predicateWithFormat:@"id == %d", currentWindowId]] firstObject] : nil;
                 
                 if (freshWindowData && ![freshWindowData isEqualToDictionary:g_currentWindowUnderCursor]) {
-                    // Same window but position/size changed
-                    needsUpdate = YES;
-                    targetWindow = freshWindowData;
-                    NSLog(@"📍 WINDOW MOVED: Updating overlay position");
+                    // Check if position change is significant enough to update
+                    int oldX = [[g_currentWindowUnderCursor objectForKey:@"x"] intValue];
+                    int oldY = [[g_currentWindowUnderCursor objectForKey:@"y"] intValue];
+                    int newX = [[freshWindowData objectForKey:@"x"] intValue];
+                    int newY = [[freshWindowData objectForKey:@"y"] intValue];
+                    
+                    int deltaX = abs(newX - oldX);
+                    int deltaY = abs(newY - oldY);
+                    
+                    if (deltaX >= 3 || deltaY >= 3) {
+                        // Significant position change - update
+                        needsUpdate = YES;
+                        targetWindow = freshWindowData;
+                        NSLog(@"📍 WINDOW MOVED: (%d,%d) → (%d,%d)", oldX, oldY, newX, newY);
+                    } else {
+                        // Minor change - ignore to prevent flickering
+                        needsUpdate = NO;
+                        targetWindow = g_currentWindowUnderCursor;
+                    }
                 } else {
                     targetWindow = g_currentWindowUnderCursor;
                 }
