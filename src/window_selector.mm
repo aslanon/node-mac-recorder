@@ -84,10 +84,14 @@ void updateScreenOverlays();
         // Inactive window appearance set
     }
     
-    // No border to match screen selector
-    self.layer.borderColor = [[NSColor clearColor] CGColor];
-    self.layer.borderWidth = 0.0;
-    self.layer.cornerRadius = 0.0;
+            // No border to match screen selector
+        self.layer.borderColor = [[NSColor clearColor] CGColor];
+        self.layer.borderWidth = 0.0;
+        self.layer.cornerRadius = 0.0;
+        self.layer.masksToBounds = YES;
+        self.layer.shadowOpacity = 0.0;
+        self.layer.shadowRadius = 0.0;
+        self.layer.shadowOffset = NSMakeSize(0, 0);
 }
 
 - (void)setIsActiveWindow:(BOOL)isActiveWindow {
@@ -618,7 +622,7 @@ void updateOverlay() {
                 CABasicAnimation *floatAnimationX = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
                 floatAnimationX.fromValue = @(-4.0);
                 floatAnimationX.toValue = @(4.0);
-                floatAnimationX.duration = 2.5; // Faster animation
+                floatAnimationX.duration = 1.8; // Much faster animation
                 floatAnimationX.repeatCount = HUGE_VALF;
                 floatAnimationX.autoreverses = YES;
                 floatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -1161,7 +1165,7 @@ bool startScreenSelection() {
             CABasicAnimation *screenFloatAnimationX = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
             screenFloatAnimationX.fromValue = @(-4.0);
             screenFloatAnimationX.toValue = @(4.0);
-            screenFloatAnimationX.duration = 2.8; // Slightly different timing for variety
+            screenFloatAnimationX.duration = 1.6; // Much faster animation
             screenFloatAnimationX.repeatCount = HUGE_VALF;
             screenFloatAnimationX.autoreverses = YES;
             screenFloatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -1413,6 +1417,8 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_selectButton.layer setShadowRadius:0.0];
         [g_selectButton.layer setShadowOffset:NSMakeSize(0, 0)];
         [g_selectButton.layer setMasksToBounds:YES];
+        [g_selectButton.layer setBorderWidth:0.0];
+        [g_selectButton.layer setBorderColor:[[NSColor clearColor] CGColor]];
         
         // Clean white text - normal weight
         NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
@@ -1452,6 +1458,8 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [cancelButton.layer setShadowRadius:0.0];
         [cancelButton.layer setShadowOffset:NSMakeSize(0, 0)];
         [cancelButton.layer setMasksToBounds:YES];
+        [cancelButton.layer setBorderWidth:0.0];
+        [cancelButton.layer setBorderColor:[[NSColor clearColor] CGColor]];
         
         // Clean white text for cancel button
         NSMutableAttributedString *cancelTitleString = [[NSMutableAttributedString alloc] 
