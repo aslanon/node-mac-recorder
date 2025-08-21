@@ -117,13 +117,13 @@ void updateScreenOverlays();
     NSColor *strokeColor;
     
     if (self.isToggled) {
-        // Locked state: 50% less transparency (more opaque)
-        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.75];  // 0.5 -> 0.75
-        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.95];  // 0.9 -> 0.95
+        // Locked state: #3d00b047 (purple with 47 alpha = 0.278)
+        fillColor = [NSColor colorWithRed:0.24 green:0.0 blue:0.69 alpha:0.278];  // #3d00b0 with 47/255 alpha
+        strokeColor = [NSColor colorWithRed:0.24 green:0.0 blue:0.69 alpha:0.95];  
     } else {
-        // Normal state: 50% less transparency (more opaque)
-        fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.6];  // 0.4 -> 0.6
-        strokeColor = [NSColor colorWithRed:0.7 green:0.5 blue:0.95 alpha:0.9];  // 0.8 -> 0.9
+        // Normal state: #4400c52e (purple with 2e alpha = 0.18)
+        fillColor = [NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18];  // #4400c5 with 2e/255 alpha
+        strokeColor = [NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.9];  
     } 
     
     [fillColor setFill];
@@ -982,7 +982,7 @@ void updateOverlay() {
                 if (cancelButton) {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
-                        (screenFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on main screen
+                        (overlayFrame.size.width - cancelButtonSize.width) / 2,  // Center horizontally on overlay
                         buttonCenter.y - buttonSize.height - 20  // 20px below main button
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
