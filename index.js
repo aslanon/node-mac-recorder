@@ -37,7 +37,7 @@ class MacRecorder extends EventEmitter {
 
 		this.options = {
 			includeMicrophone: false, // Default olarak mikrofon kapalı
-			includeSystemAudio: true, // Default olarak sistem sesi açık
+			includeSystemAudio: false, // Default olarak sistem sesi kapalı - kullanıcı explicit olarak açmalı
 			quality: "medium",
 			frameRate: 30,
 			captureArea: null, // { x, y, width, height }
@@ -110,14 +110,61 @@ class MacRecorder extends EventEmitter {
 	 */
 	setOptions(options = {}) {
 		this.options = {
-			includeMicrophone: options.includeMicrophone || false,
-			includeSystemAudio: options.includeSystemAudio !== false, // Default true unless explicitly disabled
+			includeMicrophone: options.includeMicrophone === true, // Explicit true required, default false
+			includeSystemAudio: options.includeSystemAudio === true, // Explicit true required, default false  
 			captureCursor: options.captureCursor || false,
 			displayId: options.displayId || null, // null = ana ekran
 			windowId: options.windowId || null, // null = tam ekran
 			audioDeviceId: options.audioDeviceId || null, // null = default device
 			systemAudioDeviceId: options.systemAudioDeviceId || null, // null = auto-detect system audio device
 			captureArea: options.captureArea || null,
+		};
+	}
+
+	/**
+	 * Mikrofon kaydını açar/kapatır
+	 */
+	setMicrophoneEnabled(enabled) {
+		this.options.includeMicrophone = enabled === true;
+		return this.options.includeMicrophone;
+	}
+
+	/**
+	 * Sistem sesi kaydını açar/kapatır
+	 */
+	setSystemAudioEnabled(enabled) {
+		this.options.includeSystemAudio = enabled === true;
+		return this.options.includeSystemAudio;
+	}
+
+	/**
+	 * Mikrofon durumunu döndürür
+	 */
+	isMicrophoneEnabled() {
+		return this.options.includeMicrophone === true;
+	}
+
+	/**
+	 * Sistem sesi durumunu döndürür
+	 */
+	isSystemAudioEnabled() {
+		return this.options.includeSystemAudio === true;
+	}
+
+	/**
+	 * Audio ayarlarını toplu olarak değiştirir
+	 */
+	setAudioSettings(settings = {}) {
+		if (typeof settings.microphone === 'boolean') {
+			this.setMicrophoneEnabled(settings.microphone);
+		}
+		if (typeof settings.systemAudio === 'boolean') {
+			this.setSystemAudioEnabled(settings.systemAudio);
+		}
+		
+		return {
+			microphone: this.isMicrophoneEnabled(),
+			systemAudio: this.isSystemAudioEnabled()
 		};
 	}
 
@@ -266,8 +313,8 @@ class MacRecorder extends EventEmitter {
 			try {
 				// Native kayıt başlat
 				const recordingOptions = {
-					includeMicrophone: this.options.includeMicrophone || false,
-					includeSystemAudio: this.options.includeSystemAudio !== false, // Default true unless explicitly disabled
+					includeMicrophone: this.options.includeMicrophone === true, // Only if explicitly enabled
+					includeSystemAudio: this.options.includeSystemAudio === true, // Only if explicitly enabled
 					captureCursor: this.options.captureCursor || false,
 					displayId: this.options.displayId || null, // null = ana ekran
 					windowId: this.options.windowId || null, // null = tam ekran
