@@ -1369,6 +1369,14 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             [overlayWindow setAlphaValue:1.0];
             [overlayWindow setCollectionBehavior:NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces];
             
+
+            // Force content view to have no borders
+            overlayWindow.contentView.wantsLayer = YES;
+            overlayWindow.contentView.layer.borderWidth = 0.0;
+            overlayWindow.contentView.layer.borderColor = [[NSColor clearColor] CGColor];
+            overlayWindow.contentView.layer.cornerRadius = 0.0;
+            overlayWindow.contentView.layer.masksToBounds = YES;
+
             // Remove any default window decorations and borders
             [overlayWindow setTitlebarAppearsTransparent:YES];
             [overlayWindow setTitleVisibility:NSWindowTitleHidden];
@@ -1378,8 +1386,9 @@ bool showScreenRecordingPreview(NSDictionary *screenInfo) {
             // Force remove all borders and decorations
             [overlayWindow setHasShadow:NO];
             [overlayWindow setOpaque:NO];
-            [overlayWindow setBackgroundColor:[NSColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:0.5]];
-            
+            [overlayWindow setBackgroundColor:[NSColor clearColor]];
+
+
             [overlayWindow orderFront:nil];
             [overlayWindow makeKeyAndOrderFront:nil];
             
