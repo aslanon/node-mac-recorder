@@ -108,19 +108,26 @@ void updateScreenOverlays();
                                                                   xRadius:8.0
                                                                   yRadius:8.0];
     
-    // Fill color only - no border
+    // Fill color with 1px border
     NSColor *fillColor;
+    NSColor *strokeColor;
     
     if (self.isToggled) {
         // Locked state: slightly different opacity
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.5];
+        strokeColor = [NSColor colorWithRed:0.45 green:0.25 blue:0.75 alpha:0.9];
     } else {
         // Normal state: standard fill
         fillColor = [NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4];
+        strokeColor = [NSColor whiteColor];
     }
     
     [fillColor setFill];
     [highlightPath fill];
+    
+    [strokeColor setStroke];
+    [highlightPath setLineWidth:1.0];
+    [highlightPath stroke];
 }
 
 - (void)updateAppearance {
