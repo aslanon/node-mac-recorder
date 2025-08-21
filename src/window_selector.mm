@@ -53,6 +53,7 @@ void updateScreenOverlays();
 // Custom overlay view class
 @interface WindowSelectorOverlayView : NSView
 @property (nonatomic, strong) NSDictionary *windowInfo;
+@property (nonatomic) BOOL isActiveWindow;
 @end
 
 @implementation WindowSelectorOverlayView
@@ -65,6 +66,7 @@ void updateScreenOverlays();
         // Ensure no borders or decorations
         self.layer.borderWidth = 0.0;
         self.layer.cornerRadius = 0.0;
+        self.isActiveWindow = YES; // Default to active for current window under mouse
     }
     return self;
 }
@@ -74,8 +76,14 @@ void updateScreenOverlays();
     
     if (!self.windowInfo) return;
     
-    // Background with transparency - purple tone (no border)
-    [[NSColor colorWithRed:0.5 green:0.3 blue:0.8 alpha:0.25] setFill];
+    // Background with transparency - same style as screen overlay
+    if (self.isActiveWindow) {
+        // Active window: brighter, more opaque (same as active screen)
+        [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] setFill];
+    } else {
+        // Inactive window: dimmer, less opaque (same as inactive screen)
+        [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] setFill];
+    }
     NSRectFill(self.bounds);
 }
 
@@ -463,10 +471,13 @@ void updateOverlay() {
             if (!windowScreen) windowScreen = [NSScreen mainScreen];
             
             // Convert coordinates from CGWindow (top-left) to NSWindow (bottom-left) for the specific screen
-            CGFloat screenHeight = [windowScreen frame].size.height;
+            NSRect screenFrame = [windowScreen frame];
+            CGFloat screenHeight = screenFrame.size.height;
             CGFloat adjustedY = screenHeight - y - height;
             
-            // Use actual window coordinates without clamping to preserve overlay accuracy
+            // Window coordinates are in global space, overlay frame should be screen-relative
+            // Keep X coordinate as-is (already in global space which is what we want)
+            // Only convert Y from top-left to bottom-left coordinate system
             NSRect overlayFrame = NSMakeRect(x, adjustedY, width, height);
             
             NSString *windowTitle = [windowUnderCursor objectForKey:@"title"] ?: @"Untitled";
