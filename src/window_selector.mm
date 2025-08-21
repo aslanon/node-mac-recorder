@@ -84,9 +84,9 @@ void updateScreenOverlays();
         // Inactive window appearance set
     }
     
-            // No border to match screen selector
-        self.layer.borderColor = [[NSColor clearColor] CGColor];
-        self.layer.borderWidth = 0.0;
+            // 1px border for window highlight
+        self.layer.borderColor = [[NSColor whiteColor] CGColor];
+        self.layer.borderWidth = 1.0;
         self.layer.cornerRadius = 8.0;
         self.layer.masksToBounds = YES;
         self.layer.shadowOpacity = 0.0;
