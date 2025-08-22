@@ -188,6 +188,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig 
                                                                      delegate:g_delegate 
                                                                         error:&sckError]) {
+                    NSLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
                     NSLog(@"✅ ScreenCaptureKit recording started with window exclusion");
                     g_isRecording = true;
                     return Napi::Boolean::New(env, true);
@@ -198,6 +199,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         }
         
         // Fallback: Use AVFoundation (older macOS or ScreenCaptureKit failure)
+        NSLog(@"🎬 RECORDING METHOD: AVFoundation");
         NSLog(@"📼 Falling back to AVFoundation - overlay windows may appear in recording");
         
         // Create capture session
@@ -356,6 +358,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         NSURL *outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outputPath.c_str()]];
         [g_movieFileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:g_delegate];
         
+        NSLog(@"✅ AVFoundation recording started");
         g_isRecording = true;
         return Napi::Boolean::New(env, true);
         

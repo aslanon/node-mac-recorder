@@ -74,11 +74,43 @@ static BOOL g_isRecording = NO;
                 // Also try to exclude Electron app if running (common overlay use case)
                 for (SCWindow *window in content.windows) {
                     NSString *appName = window.owningApplication.applicationName;
+                    NSString *windowTitle = window.title ? window.title : @"<No Title>";
+                    
+                    // Debug: Log all windows to see what we're dealing with (only for small subset)
+                    if ([appName containsString:@"Electron"] || [windowTitle containsString:@"camera"]) {
+                        NSLog(@"📋 Found potential exclude window: '%@' from app: '%@' (PID: %d, Level: %ld)", 
+                              windowTitle, appName, window.owningApplication.processID, (long)window.windowLayer);
+                    }
+                    
+                    // Comprehensive Electron window detection
+                    BOOL shouldExclude = NO;
+                    
+                    // Check app name patterns
                     if ([appName containsString:@"Electron"] || 
                         [appName isEqualToString:@"electron"] ||
-                        [window.title containsString:@"Electron"]) {
+                        [appName isEqualToString:@"Electron Helper"]) {
+                        shouldExclude = YES;
+                    }
+                    
+                    // Check window title patterns
+                    if ([windowTitle containsString:@"Electron"] ||
+                        [windowTitle containsString:@"camera"] ||
+                        [windowTitle containsString:@"Camera"] ||
+                        [windowTitle containsString:@"overlay"] ||
+                        [windowTitle containsString:@"Overlay"]) {
+                        shouldExclude = YES;
+                    }
+                    
+                    // Check window properties (transparent, always on top windows)
+                    if (window.windowLayer > 100) { // High window levels (like alwaysOnTop)
+                        shouldExclude = YES;
+                        NSLog(@"📋 High-level window detected: '%@' (Level: %ld)", windowTitle, (long)window.windowLayer);
+                    }
+                    
+                    if (shouldExclude) {
                         [excludedWindows addObject:window];
-                        NSLog(@"🚫 Excluding Electron window: %@ from %@", window.title, appName);
+                        NSLog(@"🚫 Excluding window: '%@' from %@ (PID: %d, Level: %ld)", 
+                              windowTitle, appName, window.owningApplication.processID, (long)window.windowLayer);
                     }
                 }
                 
