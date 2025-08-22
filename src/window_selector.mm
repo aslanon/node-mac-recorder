@@ -1428,7 +1428,7 @@ bool startScreenSelection() {
             
             // Create select button with more padding and hover effects
             NSButton *selectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
-            [selectButton setTitle:@"Start Record"];
+            [selectButton setTitle:@"⚪ Start Record"];
             [selectButton setButtonType:NSButtonTypeMomentaryPushIn];
             [selectButton setBordered:NO];
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
