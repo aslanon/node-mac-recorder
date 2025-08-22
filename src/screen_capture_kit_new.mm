@@ -16,12 +16,11 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
 
 @implementation FrameCapturDelegate
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
-    NSLog(@"🛑 Stream stopped in delegate");
+    NSLog(@"🛑 Stream stopped");
     g_isRecording = NO;
     
-    if (error) {
-        NSLog(@"❌ Stream stopped with error: %@", error);
-    }
+    // Create video from captured frames
+    [ScreenCaptureKitRecorder createVideoFromFrames];
 }
 @end
 
@@ -131,13 +130,8 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
     [g_stream stopCaptureWithCompletionHandler:^(NSError *stopError) {
         if (stopError) {
             NSLog(@"❌ Stop error: %@", stopError);
-        } else {
-            NSLog(@"✅ Stream stopped successfully in completion handler");
         }
-        
-        // Call video creation directly since delegate might not be called
-        NSLog(@"🚀 About to call createVideoFromFrames");
-        [ScreenCaptureKitRecorder createVideoFromFrames];
+        // Video creation happens in delegate
     }];
 }
 
@@ -146,14 +140,12 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
 }
 
 + (void)createVideoFromFrames {
-    NSLog(@"🎬 createVideoFromFrames called with %lu frames", (unsigned long)g_capturedFrames.count);
-    
     if (g_capturedFrames.count == 0) {
         NSLog(@"❌ No frames captured");
         return;
     }
     
-    NSLog(@"🎬 Creating video from %lu frames to path: %@", (unsigned long)g_capturedFrames.count, g_outputPath);
+    NSLog(@"🎬 Creating video from %lu frames", (unsigned long)g_capturedFrames.count);
     
     // Use simple approach - write first frame as image to test
     NSImage *firstFrame = g_capturedFrames.firstObject;
@@ -193,15 +185,6 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
     AVAssetWriterInput *writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
     writerInput.expectsMediaDataInRealTime = NO;
     
-    // Create pixel buffer pool
-    NSDictionary *pixelBufferAttributes = @{
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32ARGB),
-        (NSString*)kCVPixelBufferWidthKey: @1280,
-        (NSString*)kCVPixelBufferHeightKey: @720
-    };
-    
-    AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:writerInput sourcePixelBufferAttributes:pixelBufferAttributes];
-    
     if ([assetWriter canAddInput:writerInput]) {
         [assetWriter addInput:writerInput];
     }
@@ -213,59 +196,27 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
     // Create simple 1-second video with first frame
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         
-        // Add captured frames
-        for (int i = 0; i < g_capturedFrames.count && i < 30; i++) { // Limit to 30 frames for now
+        // Create pixel buffer pool
+        NSDictionary *pixelBufferAttributes = @{
+            (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32ARGB),
+            (NSString*)kCVPixelBufferWidthKey: @1280,
+            (NSString*)kCVPixelBufferHeightKey: @720
+        };
+        
+        AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:writerInput sourcePixelBufferAttributes:pixelBufferAttributes];
+        
+        // Add some frames
+        for (int i = 0; i < 30 && i < g_capturedFrames.count; i++) { // 1 second worth
             if (writerInput.isReadyForMoreMediaData) {
                 
-                NSImage *frameImage = g_capturedFrames[i];
-                
-                // Create pixel buffer
                 CVPixelBufferRef pixelBuffer = NULL;
                 CVPixelBufferCreate(kCFAllocatorDefault, 1280, 720, kCVPixelFormatType_32ARGB, (__bridge CFDictionaryRef)pixelBufferAttributes, &pixelBuffer);
                 
                 if (pixelBuffer) {
-                    // Lock pixel buffer for writing
-                    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-                    
-                    // Get pixel buffer info
-                    void *pixelData = CVPixelBufferGetBaseAddress(pixelBuffer);
-                    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-                    
-                    // Create graphics context on pixel buffer
-                    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-                    CGContextRef context = CGBitmapContextCreate(pixelData, 1280, 720, 8, bytesPerRow, colorSpace, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
-                    
-                    if (context) {
-                        // Clear the context
-                        CGContextClearRect(context, CGRectMake(0, 0, 1280, 720));
-                        
-                        // Get CGImage from NSImage
-                        CGImageRef cgImage = [frameImage CGImageForProposedRect:NULL context:NULL hints:NULL];
-                        if (cgImage) {
-                            // Draw the image to fill the entire frame
-                            CGContextDrawImage(context, CGRectMake(0, 0, 1280, 720), cgImage);
-                        }
-                        
-                        CGContextRelease(context);
-                    }
-                    
-                    CGColorSpaceRelease(colorSpace);
-                    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-                    
-                    // Add frame with timing
                     CMTime frameTime = CMTimeMake(i, 30);
-                    BOOL success = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
-                    
-                    if (!success) {
-                        NSLog(@"❌ Failed to append frame %d", i);
-                    }
-                    
+                    [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
                     CVPixelBufferRelease(pixelBuffer);
                 }
-            } else {
-                // Wait for writer to be ready
-                [NSThread sleepForTimeInterval:0.01];
-                i--; // Retry this frame
             }
         }
         

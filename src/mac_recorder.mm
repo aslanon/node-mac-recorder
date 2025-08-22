@@ -14,8 +14,12 @@
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 
-// Window selector function declarations
+// Window selector function declarations  
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
+
+// Window selector overlay functions (external)
+extern "C" void hideOverlays();
+extern "C" void showOverlays();
 
 @interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
@@ -50,6 +54,10 @@ void cleanupRecording() {
     g_screenInput = nil;
     g_audioInput = nil;
     g_delegate = nil;
+    
+    // Show overlay windows again after cleanup
+    showOverlays();
+    
     g_isRecording = false;
 }
 
@@ -208,9 +216,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             NSLog(@"❌ macOS version too old for ScreenCaptureKit (< 12.3)");
         }
         
-        // Fallback: Use AVFoundation (older macOS or ScreenCaptureKit failure)
+        // Fallback: Use AVFoundation with overlay hiding
         NSLog(@"🎬 RECORDING METHOD: AVFoundation");
-        NSLog(@"📼 Falling back to AVFoundation - overlay windows may appear in recording");
+        NSLog(@"📼 Using AVFoundation with overlay hiding for video compatibility");
+        
+        // Hide overlay windows during recording
+        hideOverlays();
         
         // Create capture session
         g_captureSession = [[AVCaptureSession alloc] init];
@@ -382,11 +393,31 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
 Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
+    NSLog(@"📞 StopRecording native method called");
+    
+    // Check if ScreenCaptureKit is recording first
+    BOOL screenCaptureKitStopped = NO;
+    if (@available(macOS 12.3, *)) {
+        if ([ScreenCaptureKitRecorder isRecording]) {
+            NSLog(@"🛑 Stopping ScreenCaptureKit recording");
+            [ScreenCaptureKitRecorder stopRecording];
+            screenCaptureKitStopped = YES;
+        }
+    }
+    
+    // If ScreenCaptureKit handled it, return early
+    if (screenCaptureKitStopped) {
+        return Napi::Boolean::New(env, true);
+    }
+    
+    // Otherwise, handle AVFoundation recording
     if (!g_isRecording || !g_movieFileOutput) {
+        NSLog(@"❌ No AVFoundation recording in progress");
         return Napi::Boolean::New(env, false);
     }
     
     @try {
+        NSLog(@"🛑 Stopping AVFoundation recording");
         if (g_movieFileOutput) {
             [g_movieFileOutput stopRecording];
         }
@@ -394,10 +425,8 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
             [g_captureSession stopRunning];
         }
         
-        // Try to stop ScreenCaptureKit if it's being used
-        if (@available(macOS 12.3, *)) {
-            [ScreenCaptureKitRecorder stopRecording];
-        }
+        // Show overlay windows again after recording
+        showOverlays();
         
         g_isRecording = false;
         return Napi::Boolean::New(env, true);

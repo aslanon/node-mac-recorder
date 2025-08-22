@@ -2365,3 +2365,33 @@ Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports) {
     
     return exports;
 }
+
+// Extern C functions for overlay hiding/showing
+extern "C" void hideOverlays() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_screenOverlayWindows) {
+            NSLog(@"🙈 Hiding overlay windows for recording");
+            for (NSWindow *window in g_screenOverlayWindows) {
+                [window setIsVisible:NO];
+            }
+        }
+        if (g_overlayWindow) {
+            [g_overlayWindow setIsVisible:NO];
+        }
+    });
+}
+
+extern "C" void showOverlays() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_screenOverlayWindows) {
+            NSLog(@"👁️ Showing overlay windows after recording");
+            for (NSWindow *window in g_screenOverlayWindows) {
+                [window setIsVisible:YES];
+            }
+        }
+        if (g_overlayWindow) {
+            [g_overlayWindow setIsVisible:YES];
+        }
+    });
+}
+
