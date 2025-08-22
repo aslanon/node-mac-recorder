@@ -115,6 +115,7 @@ INCS_Release := \
 OBJS := \
 	$(obj).target/$(TARGET)/src/mac_recorder.o \
 	$(obj).target/$(TARGET)/src/screen_capture.o \
+	$(obj).target/$(TARGET)/src/screen_capture_kit.o \
 	$(obj).target/$(TARGET)/src/audio_capture.o \
 	$(obj).target/$(TARGET)/src/cursor_tracker.o \
 	$(obj).target/$(TARGET)/src/window_selector.o
