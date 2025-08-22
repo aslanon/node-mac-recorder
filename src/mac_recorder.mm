@@ -9,6 +9,7 @@
 
 // Import screen capture
 #import "screen_capture.h"
+#import "screen_capture_kit.h"
 
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
@@ -159,6 +160,46 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
+        // Try ScreenCaptureKit first (macOS 12.3+)
+        if (@available(macOS 12.3, *)) {
+            if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
+                NSLog(@"🎯 Using ScreenCaptureKit - overlay windows will be automatically excluded");
+                
+                // Create configuration for ScreenCaptureKit
+                NSMutableDictionary *sckConfig = [NSMutableDictionary dictionary];
+                sckConfig[@"displayId"] = @(displayID);
+                sckConfig[@"captureCursor"] = @(captureCursor);
+                sckConfig[@"includeSystemAudio"] = @(includeSystemAudio);
+                sckConfig[@"includeMicrophone"] = @(includeMicrophone);
+                sckConfig[@"audioDeviceId"] = audioDeviceId;
+                sckConfig[@"outputPath"] = [NSString stringWithUTF8String:outputPath.c_str()];
+                
+                if (!CGRectIsNull(captureRect)) {
+                    sckConfig[@"captureRect"] = @{
+                        @"x": @(captureRect.origin.x),
+                        @"y": @(captureRect.origin.y),
+                        @"width": @(captureRect.size.width),
+                        @"height": @(captureRect.size.height)
+                    };
+                }
+                
+                // Use ScreenCaptureKit (will exclude overlay windows automatically)
+                NSError *sckError = nil;
+                if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig 
+                                                                     delegate:g_delegate 
+                                                                        error:&sckError]) {
+                    NSLog(@"✅ ScreenCaptureKit recording started with automatic overlay exclusion");
+                    g_isRecording = true;
+                    return Napi::Boolean::New(env, true);
+                } else {
+                    NSLog(@"⚠️ ScreenCaptureKit failed (%@), falling back to AVFoundation", sckError.localizedDescription);
+                }
+            }
+        }
+        
+        // Fallback: Use AVFoundation (older macOS or ScreenCaptureKit failure)
+        NSLog(@"📼 Falling back to AVFoundation - overlay windows may appear in recording");
+        
         // Create capture session
         g_captureSession = [[AVCaptureSession alloc] init];
         [g_captureSession beginConfiguration];
@@ -175,6 +216,9 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         
         // Set cursor capture
         g_screenInput.capturesCursor = captureCursor;
+        
+        // Configure screen input options
+        g_screenInput.capturesMouseClicks = NO;
         
         if ([g_captureSession canAddInput:g_screenInput]) {
             [g_captureSession addInput:g_screenInput];
