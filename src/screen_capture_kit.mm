@@ -19,8 +19,30 @@ static BOOL g_isRecording = NO;
 
 + (BOOL)isScreenCaptureKitAvailable {
     if (@available(macOS 12.3, *)) {
-        return YES;
+        NSLog(@"🔍 ScreenCaptureKit availability check - macOS 12.3+ confirmed");
+        
+        // Try to access ScreenCaptureKit classes to verify they're actually available
+        @try {
+            Class scStreamClass = NSClassFromString(@"SCStream");
+            Class scContentFilterClass = NSClassFromString(@"SCContentFilter");
+            Class scShareableContentClass = NSClassFromString(@"SCShareableContent");
+            
+            if (scStreamClass && scContentFilterClass && scShareableContentClass) {
+                NSLog(@"✅ ScreenCaptureKit classes are available");
+                return YES;
+            } else {
+                NSLog(@"❌ ScreenCaptureKit classes not found");
+                NSLog(@"   SCStream: %@", scStreamClass ? @"✅" : @"❌");
+                NSLog(@"   SCContentFilter: %@", scContentFilterClass ? @"✅" : @"❌");
+                NSLog(@"   SCShareableContent: %@", scShareableContentClass ? @"✅" : @"❌");
+                return NO;
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"❌ Exception checking ScreenCaptureKit classes: %@", exception.reason);
+            return NO;
+        }
     }
+    NSLog(@"❌ macOS version < 12.3 - ScreenCaptureKit not available");
     return NO;
 }
 

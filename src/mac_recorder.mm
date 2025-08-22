@@ -161,8 +161,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     
     @try {
         // Try ScreenCaptureKit first (macOS 12.3+)
+        NSLog(@"🔍 System Version Check - macOS availability for ScreenCaptureKit");
         if (@available(macOS 12.3, *)) {
+            NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");
             if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
+                NSLog(@"✅ ScreenCaptureKit availability check passed");
                 NSLog(@"🎯 Using ScreenCaptureKit - overlay windows will be automatically excluded");
                 
                 // Create configuration for ScreenCaptureKit
@@ -193,9 +196,16 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     g_isRecording = true;
                     return Napi::Boolean::New(env, true);
                 } else {
-                    NSLog(@"⚠️ ScreenCaptureKit failed (%@), falling back to AVFoundation", sckError.localizedDescription);
+                    NSLog(@"❌ ScreenCaptureKit failed to start");
+                    NSLog(@"❌ Error: %@", sckError ? sckError.localizedDescription : @"Unknown error");
+                    NSLog(@"⚠️ Falling back to AVFoundation");
                 }
+            } else {
+                NSLog(@"❌ ScreenCaptureKit availability check failed");
+                NSLog(@"⚠️ Falling back to AVFoundation");
             }
+        } else {
+            NSLog(@"❌ macOS version too old for ScreenCaptureKit (< 12.3)");
         }
         
         // Fallback: Use AVFoundation (older macOS or ScreenCaptureKit failure)
