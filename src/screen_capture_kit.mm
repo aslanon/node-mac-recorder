@@ -3,21 +3,69 @@
 // Global state
 static SCStream *g_stream = nil;
 static id<SCStreamDelegate> g_streamDelegate = nil;
+static id<SCStreamOutput> g_streamOutput = nil;
 static BOOL g_isRecording = NO;
+static AVAssetWriter *g_assetWriter = nil;
+static AVAssetWriterInput *g_videoWriterInput = nil;
+static AVAssetWriterInput *g_audioWriterInput = nil;
+static NSString *g_outputPath = nil;
 
 @interface ScreenCaptureKitRecorderDelegate : NSObject <SCStreamDelegate>
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
 @end
 
+@interface ScreenCaptureKitStreamOutput : NSObject <SCStreamOutput>
+@end
+
 @implementation ScreenCaptureKitRecorderDelegate
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
     NSLog(@"ScreenCaptureKit recording stopped with error: %@", error);
+    
+    // Finalize video file
+    if (g_assetWriter && g_assetWriter.status == AVAssetWriterStatusWriting) {
+        [g_videoWriterInput markAsFinished];
+        if (g_audioWriterInput) {
+            [g_audioWriterInput markAsFinished];
+        }
+        [g_assetWriter finishWritingWithCompletionHandler:^{
+            NSLog(@"✅ ScreenCaptureKit video file finalized: %@", g_outputPath);
+        }];
+    }
+}
+@end
+
+@implementation ScreenCaptureKitStreamOutput
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
+    if (!g_assetWriter || g_assetWriter.status != AVAssetWriterStatusWriting) {
+        return;
+    }
+    
+    switch (type) {
+        case SCStreamOutputTypeScreen:
+            if (g_videoWriterInput && g_videoWriterInput.isReadyForMoreMediaData) {
+                [g_videoWriterInput appendSampleBuffer:sampleBuffer];
+            }
+            break;
+        case SCStreamOutputTypeAudio:
+            if (g_audioWriterInput && g_audioWriterInput.isReadyForMoreMediaData) {
+                [g_audioWriterInput appendSampleBuffer:sampleBuffer];
+            }
+            break;
+        case SCStreamOutputTypeMicrophone:
+            // Handle microphone input (if needed in future)
+            if (g_audioWriterInput && g_audioWriterInput.isReadyForMoreMediaData) {
+                [g_audioWriterInput appendSampleBuffer:sampleBuffer];
+            }
+            break;
+    }
 }
 @end
 
 @implementation ScreenCaptureKitRecorder
 
 + (BOOL)isScreenCaptureKitAvailable {
+    // ScreenCaptureKit'i tekrar etkinleştir - video writer ile
+    
     if (@available(macOS 12.3, *)) {
         NSLog(@"🔍 ScreenCaptureKit availability check - macOS 12.3+ confirmed");
         
@@ -163,13 +211,48 @@ static BOOL g_isRecording = NO;
                 streamConfig.showsCursor = [config[@"captureCursor"] boolValue];
                 streamConfig.capturesAudio = [config[@"includeSystemAudio"] boolValue];
                 
-                // Create delegate
+                // Setup video writer
+                g_outputPath = config[@"outputPath"];
+                if (![self setupVideoWriterWithWidth:streamConfig.width 
+                                               height:streamConfig.height 
+                                         outputPath:g_outputPath 
+                                      includeAudio:[config[@"includeSystemAudio"] boolValue] || [config[@"includeMicrophone"] boolValue]]) {
+                    NSLog(@"❌ Failed to setup video writer");
+                    contentError = [NSError errorWithDomain:@"ScreenCaptureKitError" code:-3 userInfo:@{NSLocalizedDescriptionKey: @"Video writer setup failed"}];
+                    dispatch_semaphore_signal(semaphore);
+                    return;
+                }
+                
+                // Create delegate and output
                 g_streamDelegate = [[ScreenCaptureKitRecorderDelegate alloc] init];
+                g_streamOutput = [[ScreenCaptureKitStreamOutput alloc] init];
                 
                 // Create and start stream
                 g_stream = [[SCStream alloc] initWithFilter:filter 
                                               configuration:streamConfig 
                                                    delegate:g_streamDelegate];
+                
+                // Add stream output using correct API
+                NSError *outputError = nil;
+                BOOL outputAdded = [g_stream addStreamOutput:g_streamOutput 
+                                                        type:SCStreamOutputTypeScreen 
+                                              sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0)
+                                                           error:&outputError];
+                if (!outputAdded) {
+                    NSLog(@"❌ Failed to add screen output: %@", outputError);
+                }
+                
+                if ([config[@"includeSystemAudio"] boolValue]) {
+                    if (@available(macOS 13.0, *)) {
+                        BOOL audioOutputAdded = [g_stream addStreamOutput:g_streamOutput 
+                                                                     type:SCStreamOutputTypeAudio 
+                                                           sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0)
+                                                                        error:&outputError];
+                        if (!audioOutputAdded) {
+                            NSLog(@"❌ Failed to add audio output: %@", outputError);
+                        }
+                    }
+                }
                 
                 [g_stream startCaptureWithCompletionHandler:^(NSError *streamError) {
                     if (streamError) {
@@ -225,9 +308,28 @@ static BOOL g_isRecording = NO;
                 } else {
                     NSLog(@"ScreenCaptureKit recording stopped successfully");
                 }
+                
+                // Finalize video file
+                if (g_assetWriter && g_assetWriter.status == AVAssetWriterStatusWriting) {
+                    [g_videoWriterInput markAsFinished];
+                    if (g_audioWriterInput) {
+                        [g_audioWriterInput markAsFinished];
+                    }
+                    [g_assetWriter finishWritingWithCompletionHandler:^{
+                        NSLog(@"✅ ScreenCaptureKit video file finalized: %@", g_outputPath);
+                        
+                        // Cleanup
+                        g_assetWriter = nil;
+                        g_videoWriterInput = nil;
+                        g_audioWriterInput = nil;
+                        g_outputPath = nil;
+                    }];
+                }
+                
                 g_isRecording = NO;
                 g_stream = nil;
                 g_streamDelegate = nil;
+                g_streamOutput = nil;
             }];
         }
     }
@@ -235,6 +337,70 @@ static BOOL g_isRecording = NO;
 
 + (BOOL)isRecording {
     return g_isRecording;
+}
+
++ (BOOL)setupVideoWriterWithWidth:(NSInteger)width 
+                           height:(NSInteger)height 
+                       outputPath:(NSString *)outputPath 
+                     includeAudio:(BOOL)includeAudio {
+    
+    // Create asset writer
+    NSURL *outputURL = [NSURL fileURLWithPath:outputPath];
+    NSError *error = nil;
+    g_assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
+    
+    if (error || !g_assetWriter) {
+        NSLog(@"❌ Failed to create asset writer: %@", error);
+        return NO;
+    }
+    
+    // Video writer input
+    NSDictionary *videoSettings = @{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoCompressionPropertiesKey: @{
+            AVVideoAverageBitRateKey: @(width * height * 8), // 8 bits per pixel
+            AVVideoExpectedSourceFrameRateKey: @(60)
+        }
+    };
+    
+    g_videoWriterInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
+    g_videoWriterInput.expectsMediaDataInRealTime = YES;
+    
+    if (![g_assetWriter canAddInput:g_videoWriterInput]) {
+        NSLog(@"❌ Cannot add video input to asset writer");
+        return NO;
+    }
+    [g_assetWriter addInput:g_videoWriterInput];
+    
+    // Audio writer input (if needed)
+    if (includeAudio) {
+        NSDictionary *audioSettings = @{
+            AVFormatIDKey: @(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: @(44100.0),
+            AVNumberOfChannelsKey: @(2),
+            AVEncoderBitRateKey: @(128000)
+        };
+        
+        g_audioWriterInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
+        g_audioWriterInput.expectsMediaDataInRealTime = YES;
+        
+        if ([g_assetWriter canAddInput:g_audioWriterInput]) {
+            [g_assetWriter addInput:g_audioWriterInput];
+        }
+    }
+    
+    // Start writing
+    if (![g_assetWriter startWriting]) {
+        NSLog(@"❌ Failed to start writing: %@", g_assetWriter.error);
+        return NO;
+    }
+    
+    [g_assetWriter startSessionAtSourceTime:kCMTimeZero];
+    NSLog(@"✅ ScreenCaptureKit video writer setup complete: %@", outputPath);
+    
+    return YES;
 }
 
 @end
