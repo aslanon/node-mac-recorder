@@ -11,6 +11,8 @@ API_AVAILABLE(macos(12.3))
                                   error:(NSError **)error;
 + (void)stopRecording;
 + (BOOL)isRecording;
-+ (void)createVideoFromFrames;
++ (void)setupVideoWriter;
++ (void)finalizeVideoWriter;
++ (void)cleanupVideoWriter;
 
 @end

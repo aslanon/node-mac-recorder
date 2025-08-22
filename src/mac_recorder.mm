@@ -168,7 +168,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // Try ScreenCaptureKit first (macOS 12.3+)
+        // Try ScreenCaptureKit first (macOS 12.3+) with Electron-safe implementation
         NSLog(@"🔍 System Version Check - macOS availability for ScreenCaptureKit");
         if (@available(macOS 12.3, *)) {
             NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");

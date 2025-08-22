@@ -6,51 +6,67 @@ static id<SCStreamDelegate> g_streamDelegate = nil;
 static id<SCStreamOutput> g_streamOutput = nil;
 static BOOL g_isRecording = NO;
 
-// Frame-based approach for working video
-static NSMutableArray<NSImage *> *g_capturedFrames = nil;
+// Electron-safe direct writing approach
+static AVAssetWriter *g_assetWriter = nil;
+static AVAssetWriterInput *g_assetWriterInput = nil;
+static AVAssetWriterInputPixelBufferAdaptor *g_pixelBufferAdaptor = nil;
 static NSString *g_outputPath = nil;
-static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
+static CMTime g_startTime;
+static CMTime g_currentTime;
+static BOOL g_writerStarted = NO;
 
-@interface FrameCapturDelegate : NSObject <SCStreamDelegate>
+@interface ElectronSafeDelegate : NSObject <SCStreamDelegate>
 @end
 
-@implementation FrameCapturDelegate
+@implementation ElectronSafeDelegate
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
-    NSLog(@"🛑 Stream stopped in delegate");
+    NSLog(@"🛑 ScreenCaptureKit stream stopped in delegate");
     g_isRecording = NO;
     
     if (error) {
         NSLog(@"❌ Stream stopped with error: %@", error);
+    } else {
+        NSLog(@"✅ ScreenCaptureKit stream stopped successfully");
     }
+    
+    // Finalize video writer
+    [ScreenCaptureKitRecorder finalizeVideoWriter];
 }
 @end
 
-@interface FrameCaptureOutput : NSObject <SCStreamOutput>
+@interface ElectronSafeOutput : NSObject <SCStreamOutput>
 @end
 
-@implementation FrameCaptureOutput
+@implementation ElectronSafeOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
-    if (!g_isRecording || type != SCStreamOutputTypeScreen) {
+    if (!g_isRecording || type != SCStreamOutputTypeScreen || !g_assetWriterInput) {
         return;
     }
     
     @autoreleasepool {
-        CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (pixelBuffer && g_capturedFrames.count < g_maxFrames) {
+        // Initialize video writer on first frame
+        if (!g_writerStarted && g_assetWriter && g_assetWriterInput) {
+            g_startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+            g_currentTime = g_startTime;
             
-            // Convert pixel buffer to UIImage
-            CIContext *context = [CIContext context];
-            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-            CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
-            
-            if (cgImage) {
-                NSImage *image = [[NSImage alloc] initWithCGImage:cgImage size:NSZeroSize];
-                [g_capturedFrames addObject:image];
+            [g_assetWriter startWriting];
+            [g_assetWriter startSessionAtSourceTime:g_startTime];
+            g_writerStarted = YES;
+            NSLog(@"✅ Electron-safe video writer started");
+        }
+        
+        // Write sample buffer directly (Electron-safe approach)
+        if (g_writerStarted && g_assetWriterInput.isReadyForMoreMediaData) {
+            CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+            if (pixelBuffer && g_pixelBufferAdaptor) {
+                CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+                CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
                 
-                CGImageRelease(cgImage);
-                
-                if (g_capturedFrames.count % 30 == 0) {
-                    NSLog(@"📸 Captured %lu frames", (unsigned long)g_capturedFrames.count);
+                BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
+                if (success) {
+                    g_currentTime = relativeTime;
+                } else {
+                    NSLog(@"⚠️ Failed to append pixel buffer");
                 }
             }
         }
@@ -73,9 +89,12 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
     }
     
     g_outputPath = config[@"outputPath"];
-    g_capturedFrames = [NSMutableArray array];
+    g_writerStarted = NO;
     
-    NSLog(@"🎬 Starting simple frame capture approach");
+    // Setup Electron-safe video writer
+    [ScreenCaptureKitRecorder setupVideoWriter];
+    
+    NSLog(@"🎬 Starting Electron-safe ScreenCaptureKit recording");
     
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
         if (contentError) {
@@ -96,9 +115,9 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
         streamConfig.minimumFrameInterval = CMTimeMake(1, 30);
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
         
-        // Create delegates
-        g_streamDelegate = [[FrameCapturDelegate alloc] init];
-        g_streamOutput = [[FrameCaptureOutput alloc] init];
+        // Create Electron-safe delegates
+        g_streamDelegate = [[ElectronSafeDelegate alloc] init];
+        g_streamOutput = [[ElectronSafeOutput alloc] init];
         
         // Create stream
         g_stream = [[SCStream alloc] initWithFilter:filter configuration:streamConfig delegate:g_streamDelegate];
@@ -126,18 +145,15 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
         return;
     }
     
-    NSLog(@"🛑 Stopping frame capture");
+    NSLog(@"🛑 Stopping Electron-safe ScreenCaptureKit recording");
     
     [g_stream stopCaptureWithCompletionHandler:^(NSError *stopError) {
         if (stopError) {
             NSLog(@"❌ Stop error: %@", stopError);
         } else {
-            NSLog(@"✅ Stream stopped successfully in completion handler");
+            NSLog(@"✅ ScreenCaptureKit stream stopped in completion handler");
         }
-        
-        // Call video creation directly since delegate might not be called
-        NSLog(@"🚀 About to call createVideoFromFrames");
-        [ScreenCaptureKitRecorder createVideoFromFrames];
+        // Video finalization happens in delegate
     }];
 }
 
@@ -145,145 +161,86 @@ static NSInteger g_maxFrames = 150; // 5 seconds at 30fps
     return g_isRecording;
 }
 
-+ (void)createVideoFromFrames {
-    NSLog(@"🎬 createVideoFromFrames called with %lu frames", (unsigned long)g_capturedFrames.count);
-    
-    if (g_capturedFrames.count == 0) {
-        NSLog(@"❌ No frames captured");
-        return;
++ (void)setupVideoWriter {
+    if (g_assetWriter) {
+        return; // Already setup
     }
     
-    NSLog(@"🎬 Creating video from %lu frames to path: %@", (unsigned long)g_capturedFrames.count, g_outputPath);
+    NSLog(@"🔧 Setting up Electron-safe video writer");
     
-    // Use simple approach - write first frame as image to test
-    NSImage *firstFrame = g_capturedFrames.firstObject;
-    if (firstFrame) {
-        NSString *testImagePath = [g_outputPath stringByReplacingOccurrencesOfString:@".mov" withString:@"_test.png"];
-        
-        // Convert NSImage to PNG data
-        CGImageRef cgImage = [firstFrame CGImageForProposedRect:NULL context:NULL hints:NULL];
-        NSBitmapImageRep *bitmapRep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
-        NSData *pngData = [bitmapRep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        [pngData writeToFile:testImagePath atomically:YES];
-        NSLog(@"✅ Test image saved: %@", testImagePath);
-    }
-    
-    // For now, just create a simple video file that works
     NSURL *outputURL = [NSURL fileURLWithPath:g_outputPath];
-    
-    // Create a working video using AVAssetWriter with frames
     NSError *error = nil;
-    AVAssetWriter *assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
     
-    if (error) {
-        NSLog(@"❌ Asset writer error: %@", error);
+    g_assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
+    
+    if (error || !g_assetWriter) {
+        NSLog(@"❌ Failed to create asset writer: %@", error);
         return;
     }
     
-    // Simple video settings that definitely work
+    // Electron-safe video settings
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @1280,
         AVVideoHeightKey: @720,
         AVVideoCompressionPropertiesKey: @{
-            AVVideoAverageBitRateKey: @(1280 * 720 * 3)
+            AVVideoAverageBitRateKey: @(1280 * 720 * 2),
+            AVVideoMaxKeyFrameIntervalKey: @30
         }
     };
     
-    AVAssetWriterInput *writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
-    writerInput.expectsMediaDataInRealTime = NO;
+    g_assetWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
+    g_assetWriterInput.expectsMediaDataInRealTime = YES; // Important for live capture
     
-    // Create pixel buffer pool
+    // Pixel buffer attributes matching ScreenCaptureKit format
     NSDictionary *pixelBufferAttributes = @{
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32ARGB),
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
         (NSString*)kCVPixelBufferWidthKey: @1280,
         (NSString*)kCVPixelBufferHeightKey: @720
     };
     
-    AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:writerInput sourcePixelBufferAttributes:pixelBufferAttributes];
+    g_pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_assetWriterInput sourcePixelBufferAttributes:pixelBufferAttributes];
     
-    if ([assetWriter canAddInput:writerInput]) {
-        [assetWriter addInput:writerInput];
+    if ([g_assetWriter canAddInput:g_assetWriterInput]) {
+        [g_assetWriter addInput:g_assetWriterInput];
+        NSLog(@"✅ Electron-safe video writer setup complete");
+    } else {
+        NSLog(@"❌ Failed to add input to asset writer");
+    }
+}
+
++ (void)finalizeVideoWriter {
+    NSLog(@"🎬 Finalizing Electron-safe video writer");
+    
+    if (!g_assetWriter || !g_writerStarted) {
+        NSLog(@"⚠️ Video writer not started, cleaning up");
+        [ScreenCaptureKitRecorder cleanupVideoWriter];
+        return;
     }
     
-    // Start writing session
-    [assetWriter startWriting];
-    [assetWriter startSessionAtSourceTime:kCMTimeZero];
+    [g_assetWriterInput markAsFinished];
     
-    // Create simple 1-second video with first frame
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        
-        // Add captured frames
-        for (int i = 0; i < g_capturedFrames.count && i < 30; i++) { // Limit to 30 frames for now
-            if (writerInput.isReadyForMoreMediaData) {
-                
-                NSImage *frameImage = g_capturedFrames[i];
-                
-                // Create pixel buffer
-                CVPixelBufferRef pixelBuffer = NULL;
-                CVPixelBufferCreate(kCFAllocatorDefault, 1280, 720, kCVPixelFormatType_32ARGB, (__bridge CFDictionaryRef)pixelBufferAttributes, &pixelBuffer);
-                
-                if (pixelBuffer) {
-                    // Lock pixel buffer for writing
-                    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-                    
-                    // Get pixel buffer info
-                    void *pixelData = CVPixelBufferGetBaseAddress(pixelBuffer);
-                    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-                    
-                    // Create graphics context on pixel buffer
-                    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-                    CGContextRef context = CGBitmapContextCreate(pixelData, 1280, 720, 8, bytesPerRow, colorSpace, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
-                    
-                    if (context) {
-                        // Clear the context
-                        CGContextClearRect(context, CGRectMake(0, 0, 1280, 720));
-                        
-                        // Get CGImage from NSImage
-                        CGImageRef cgImage = [frameImage CGImageForProposedRect:NULL context:NULL hints:NULL];
-                        if (cgImage) {
-                            // Draw the image to fill the entire frame
-                            CGContextDrawImage(context, CGRectMake(0, 0, 1280, 720), cgImage);
-                        }
-                        
-                        CGContextRelease(context);
-                    }
-                    
-                    CGColorSpaceRelease(colorSpace);
-                    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-                    
-                    // Add frame with timing
-                    CMTime frameTime = CMTimeMake(i, 30);
-                    BOOL success = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
-                    
-                    if (!success) {
-                        NSLog(@"❌ Failed to append frame %d", i);
-                    }
-                    
-                    CVPixelBufferRelease(pixelBuffer);
-                }
-            } else {
-                // Wait for writer to be ready
-                [NSThread sleepForTimeInterval:0.01];
-                i--; // Retry this frame
-            }
+    [g_assetWriter finishWritingWithCompletionHandler:^{
+        if (g_assetWriter.status == AVAssetWriterStatusCompleted) {
+            NSLog(@"✅ Electron-safe video created successfully: %@", g_outputPath);
+        } else {
+            NSLog(@"❌ Video creation failed: %@", g_assetWriter.error);
         }
         
-        [writerInput markAsFinished];
-        [assetWriter finishWritingWithCompletionHandler:^{
-            if (assetWriter.status == AVAssetWriterStatusCompleted) {
-                NSLog(@"✅ Simple video created: %@", g_outputPath);
-            } else {
-                NSLog(@"❌ Video creation failed: %@", assetWriter.error);
-            }
-            
-            // Cleanup
-            g_capturedFrames = nil;
-            g_stream = nil;
-            g_streamDelegate = nil;
-            g_streamOutput = nil;
-        }];
-    });
+        [ScreenCaptureKitRecorder cleanupVideoWriter];
+    }];
+}
+
++ (void)cleanupVideoWriter {
+    g_assetWriter = nil;
+    g_assetWriterInput = nil;
+    g_pixelBufferAdaptor = nil;
+    g_writerStarted = NO;
+    g_stream = nil;
+    g_streamDelegate = nil;
+    g_streamOutput = nil;
+    
+    NSLog(@"🧹 Video writer cleanup complete");
 }
 
 @end
