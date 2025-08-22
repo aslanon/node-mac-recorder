@@ -9,6 +9,8 @@ static AVAssetWriter *g_assetWriter = nil;
 static AVAssetWriterInput *g_videoWriterInput = nil;
 static AVAssetWriterInput *g_audioWriterInput = nil;
 static NSString *g_outputPath = nil;
+static BOOL g_sessionStarted = NO;
+static AVAssetWriterInputPixelBufferAdaptor *g_pixelBufferAdaptor = nil;
 
 @interface ScreenCaptureKitRecorderDelegate : NSObject <SCStreamDelegate>
 @property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
@@ -36,25 +38,51 @@ static NSString *g_outputPath = nil;
 
 @implementation ScreenCaptureKitStreamOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
-    if (!g_assetWriter || g_assetWriter.status != AVAssetWriterStatusWriting) {
+    if (!g_assetWriter) {
+        return;
+    }
+    
+    // Start session on first sample
+    if (!g_sessionStarted && g_assetWriter.status == AVAssetWriterStatusWriting) {
+        CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+        [g_assetWriter startSessionAtSourceTime:presentationTime];
+        g_sessionStarted = YES;
+        NSLog(@"📽️ ScreenCaptureKit video session started at time: %lld/%d", presentationTime.value, presentationTime.timescale);
+    }
+    
+    if (g_assetWriter.status != AVAssetWriterStatusWriting) {
         return;
     }
     
     switch (type) {
         case SCStreamOutputTypeScreen:
-            if (g_videoWriterInput && g_videoWriterInput.isReadyForMoreMediaData) {
-                [g_videoWriterInput appendSampleBuffer:sampleBuffer];
+            if (g_pixelBufferAdaptor && g_pixelBufferAdaptor.assetWriterInput.isReadyForMoreMediaData) {
+                // Convert sample buffer to pixel buffer
+                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+                if (pixelBuffer) {
+                    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+                    BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
+                    if (!success) {
+                        NSLog(@"❌ Failed to append pixel buffer: %@", g_assetWriter.error);
+                    }
+                }
             }
             break;
         case SCStreamOutputTypeAudio:
             if (g_audioWriterInput && g_audioWriterInput.isReadyForMoreMediaData) {
-                [g_audioWriterInput appendSampleBuffer:sampleBuffer];
+                BOOL success = [g_audioWriterInput appendSampleBuffer:sampleBuffer];
+                if (!success) {
+                    NSLog(@"❌ Failed to append audio sample: %@", g_assetWriter.error);
+                }
             }
             break;
         case SCStreamOutputTypeMicrophone:
             // Handle microphone input (if needed in future)
             if (g_audioWriterInput && g_audioWriterInput.isReadyForMoreMediaData) {
-                [g_audioWriterInput appendSampleBuffer:sampleBuffer];
+                BOOL success = [g_audioWriterInput appendSampleBuffer:sampleBuffer];
+                if (!success) {
+                    NSLog(@"❌ Failed to append microphone sample: %@", g_assetWriter.error);
+                }
             }
             break;
     }
@@ -322,7 +350,9 @@ static NSString *g_outputPath = nil;
                         g_assetWriter = nil;
                         g_videoWriterInput = nil;
                         g_audioWriterInput = nil;
+                        g_pixelBufferAdaptor = nil;
                         g_outputPath = nil;
+                        g_sessionStarted = NO;
                     }];
                 }
                 
@@ -344,24 +374,25 @@ static NSString *g_outputPath = nil;
                        outputPath:(NSString *)outputPath 
                      includeAudio:(BOOL)includeAudio {
     
-    // Create asset writer
+    // Create asset writer with MP4 format for better compatibility
     NSURL *outputURL = [NSURL fileURLWithPath:outputPath];
     NSError *error = nil;
-    g_assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
+    g_assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeMPEG4 error:&error];
     
     if (error || !g_assetWriter) {
         NSLog(@"❌ Failed to create asset writer: %@", error);
         return NO;
     }
     
-    // Video writer input
+    // Video writer input - simpler settings for better compatibility
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @(width),
         AVVideoHeightKey: @(height),
         AVVideoCompressionPropertiesKey: @{
-            AVVideoAverageBitRateKey: @(width * height * 8), // 8 bits per pixel
-            AVVideoExpectedSourceFrameRateKey: @(60)
+            AVVideoAverageBitRateKey: @(5000000), // 5 Mbps
+            AVVideoMaxKeyFrameIntervalKey: @(30),
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel
         }
     };
     
@@ -373,6 +404,23 @@ static NSString *g_outputPath = nil;
         return NO;
     }
     [g_assetWriter addInput:g_videoWriterInput];
+    
+    // Create pixel buffer adaptor for ScreenCaptureKit compatibility
+    NSDictionary *pixelBufferAttributes = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+    };
+    
+    g_pixelBufferAdaptor = [[AVAssetWriterInputPixelBufferAdaptor alloc] 
+        initWithAssetWriterInput:g_videoWriterInput 
+        sourcePixelBufferAttributes:pixelBufferAttributes];
+    
+    if (!g_pixelBufferAdaptor) {
+        NSLog(@"❌ Cannot create pixel buffer adaptor");
+        return NO;
+    }
     
     // Audio writer input (if needed)
     if (includeAudio) {
@@ -391,13 +439,13 @@ static NSString *g_outputPath = nil;
         }
     }
     
-    // Start writing
+    // Start writing (session will be started when first sample arrives)
     if (![g_assetWriter startWriting]) {
         NSLog(@"❌ Failed to start writing: %@", g_assetWriter.error);
         return NO;
     }
     
-    [g_assetWriter startSessionAtSourceTime:kCMTimeZero];
+    g_sessionStarted = NO;  // Reset session flag
     NSLog(@"✅ ScreenCaptureKit video writer setup complete: %@", outputPath);
     
     return YES;
