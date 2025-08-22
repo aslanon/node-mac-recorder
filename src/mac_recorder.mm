@@ -183,12 +183,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     };
                 }
                 
-                // Use ScreenCaptureKit (will exclude overlay windows automatically)
+                // Use ScreenCaptureKit with window exclusion
                 NSError *sckError = nil;
                 if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig 
                                                                      delegate:g_delegate 
                                                                         error:&sckError]) {
-                    NSLog(@"✅ ScreenCaptureKit recording started with automatic overlay exclusion");
+                    NSLog(@"✅ ScreenCaptureKit recording started with window exclusion");
                     g_isRecording = true;
                     return Napi::Boolean::New(env, true);
                 } else {
@@ -374,8 +374,17 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        [g_movieFileOutput stopRecording];
-        [g_captureSession stopRunning];
+        if (g_movieFileOutput) {
+            [g_movieFileOutput stopRecording];
+        }
+        if (g_captureSession) {
+            [g_captureSession stopRunning];
+        }
+        
+        // Try to stop ScreenCaptureKit if it's being used
+        if (@available(macOS 12.3, *)) {
+            [ScreenCaptureKitRecorder stopRecording];
+        }
         
         g_isRecording = false;
         return Napi::Boolean::New(env, true);

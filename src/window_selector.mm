@@ -15,6 +15,23 @@ static NSButton *g_selectButton = nil;
 static NSTimer *g_trackingTimer = nil;
 static NSDictionary *g_selectedWindowInfo = nil;
 static NSMutableArray *g_allWindows = nil;
+
+// Functions to hide/show main overlay window during recording
+void hideAllOverlayWindows() {
+    if (g_overlayWindow && [g_overlayWindow isVisible]) {
+        [g_overlayWindow setAlphaValue:0.0];
+        [g_overlayWindow orderOut:nil];
+        NSLog(@"🫥 Hidden main overlay window for recording");
+    }
+}
+
+void showAllOverlayWindows() {
+    if (g_overlayWindow) {
+        [g_overlayWindow setAlphaValue:1.0];
+        [g_overlayWindow orderFront:nil];
+        NSLog(@"👁️ Restored main overlay window after recording");
+    }
+}
 static NSDictionary *g_currentWindowUnderCursor = nil;
 static bool g_bringToFrontEnabled = false; // Default disabled for overlay-only highlighting
 static bool g_hasToggledWindow = false; // Track if any window is currently toggled

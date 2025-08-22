@@ -59,19 +59,36 @@ static BOOL g_isRecording = NO;
                     }
                 }
                 
-                // Get current app windows to exclude
+                // Get current process and Electron app windows to exclude
                 NSMutableArray *excludedWindows = [NSMutableArray array];
+                NSMutableArray *excludedApps = [NSMutableArray array];
+                
+                // Exclude current Node.js process windows (overlay selectors)
                 for (SCWindow *window in content.windows) {
                     if (window.owningApplication.processID == currentPID) {
                         [excludedWindows addObject:window];
-                        NSLog(@"🚫 Excluding overlay window: %@ (PID: %d)", window.title, currentPID);
+                        NSLog(@"🚫 Excluding Node.js overlay window: %@ (PID: %d)", window.title, currentPID);
                     }
                 }
                 
-                // Create content filter - exclude current app windows
+                // Also try to exclude Electron app if running (common overlay use case)
+                for (SCWindow *window in content.windows) {
+                    NSString *appName = window.owningApplication.applicationName;
+                    if ([appName containsString:@"Electron"] || 
+                        [appName isEqualToString:@"electron"] ||
+                        [window.title containsString:@"Electron"]) {
+                        [excludedWindows addObject:window];
+                        NSLog(@"🚫 Excluding Electron window: %@ from %@", window.title, appName);
+                    }
+                }
+                
+                NSLog(@"📊 Total windows to exclude: %lu", (unsigned long)excludedWindows.count);
+                
+                // Create content filter - exclude overlay windows from recording
                 SCContentFilter *filter = [[SCContentFilter alloc] 
                     initWithDisplay:targetDisplay 
                     excludingWindows:excludedWindows];
+                NSLog(@"🎯 Using window-level exclusion for overlay prevention");
                 
                 // Create stream configuration
                 SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
