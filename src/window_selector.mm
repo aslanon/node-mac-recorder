@@ -407,13 +407,13 @@ void updateScreenOverlays();
     
     if (!self.screenInfo) return;
     
-    // Background with transparency - purple tone varies by active state
+    // Background with transparency - blue tone (same as window highlight)
     if (self.isActiveScreen) {
-        // Active screen: brighter, more opaque
-        [[NSColor colorWithRed:0.6 green:0.4 blue:0.9 alpha:0.4] setFill];
+        // Active screen: locked state blue (#3d00b047)
+        [[NSColor colorWithRed:0.24 green:0.0 blue:0.69 alpha:0.278] setFill];
     } else {
-        // Inactive screen: dimmer, less opaque
-        [[NSColor colorWithRed:0.4 green:0.2 blue:0.6 alpha:0.25] setFill];
+        // Inactive screen: normal state blue (#4400c52e)
+        [[NSColor colorWithRed:0.27 green:0.0 blue:0.77 alpha:0.18] setFill];
     }
     NSRectFill(self.bounds);
     
