@@ -57,45 +57,45 @@ static BOOL g_writerStarted = NO;
             NSLog(@"✅ Electron-safe video writer started");
         }
         
-        // Write sample buffer with improved pixel buffer validation
-        if (g_writerStarted && g_assetWriterInput.isReadyForMoreMediaData) {
-            CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        // Ultra-conservative Electron-safe sample buffer processing
+        @autoreleasepool {
+            if (!g_writerStarted || !g_assetWriterInput || !g_pixelBufferAdaptor) {
+                return; // Skip if not ready
+            }
             
-            // Validate pixel buffer more thoroughly
-            if (pixelBuffer && g_pixelBufferAdaptor) {
-                // Check if pixel buffer has valid dimensions
-                size_t width = CVPixelBufferGetWidth(pixelBuffer);
-                size_t height = CVPixelBufferGetHeight(pixelBuffer);
+            // Rate limiting for Electron stability
+            static NSTimeInterval lastProcessTime = 0;
+            NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
+            if (currentTime - lastProcessTime < 0.1) { // Max 10 FPS for stability
+                return;
+            }
+            lastProcessTime = currentTime;
+            
+            if (g_assetWriterInput.isReadyForMoreMediaData) {
+                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
                 
-                if (width > 0 && height > 0) {
-                    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-                    CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
+                if (pixelBuffer && g_pixelBufferAdaptor) {
+                    // Ultra-conservative validation
+                    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+                    size_t height = CVPixelBufferGetHeight(pixelBuffer);
                     
-                    BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
-                    if (success) {
-                        g_currentTime = relativeTime;
-                        static int validFrameCount = 0;
-                        validFrameCount++;
-                        if (validFrameCount % 30 == 0) {
-                            NSLog(@"✅ Successfully wrote %d valid frames (%dx%d)", validFrameCount, (int)width, (int)height);
+                    if (width == 1280 && height == 720) { // Exact match only
+                        CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+                        CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
+                        
+                        // Conservative time validation
+                        if (CMTimeGetSeconds(relativeTime) >= 0 && CMTimeGetSeconds(relativeTime) < 30) {
+                            BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
+                            if (success) {
+                                g_currentTime = relativeTime;
+                                static int safeFrameCount = 0;
+                                safeFrameCount++;
+                                if (safeFrameCount % 10 == 0) {
+                                    NSLog(@"✅ Electron-safe: %d frames", safeFrameCount);
+                                }
+                            }
                         }
-                    } else {
-                        NSLog(@"⚠️ Failed to append valid pixel buffer (%dx%d) at time %f", (int)width, (int)height, CMTimeGetSeconds(relativeTime));
-                        NSLog(@"Asset writer status: %ld, error: %@", (long)g_assetWriter.status, g_assetWriter.error);
                     }
-                } else {
-                    static int invalidSizeCount = 0;
-                    invalidSizeCount++;
-                    if (invalidSizeCount % 50 == 0) {
-                        NSLog(@"⚠️ Invalid pixel buffer dimensions: %dx%d (%d times)", (int)width, (int)height, invalidSizeCount);
-                    }
-                }
-            } else {
-                // Only log occasionally to avoid spam
-                static int nullBufferCount = 0;
-                nullBufferCount++;
-                if (nullBufferCount % 100 == 0) {
-                    NSLog(@"⚠️ Null pixel buffer (%d times) - adaptor: %p", nullBufferCount, g_pixelBufferAdaptor);
                 }
             }
         }
@@ -137,12 +137,14 @@ static BOOL g_writerStarted = NO;
         // Simple content filter - no exclusions for now
         SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
         
-        // Stream configuration
+        // Electron-optimized stream configuration (lower resource usage)
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
         streamConfig.width = 1280;
         streamConfig.height = 720;
-        streamConfig.minimumFrameInterval = CMTimeMake(1, 30);
+        streamConfig.minimumFrameInterval = CMTimeMake(1, 10); // 10 FPS for stability
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
+        streamConfig.capturesAudio = NO; // Disable audio for simplicity
+        streamConfig.excludesCurrentProcessAudio = YES;
         
         // Create Electron-safe delegates
         g_streamDelegate = [[ElectronSafeDelegate alloc] init];
@@ -211,19 +213,20 @@ static BOOL g_writerStarted = NO;
         return;
     }
     
-    // Electron-safe video settings
+    // Ultra-conservative Electron video settings
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @1280,
         AVVideoHeightKey: @720,
         AVVideoCompressionPropertiesKey: @{
-            AVVideoAverageBitRateKey: @(1280 * 720 * 2),
-            AVVideoMaxKeyFrameIntervalKey: @30
+            AVVideoAverageBitRateKey: @(1280 * 720 * 1), // Lower bitrate
+            AVVideoMaxKeyFrameIntervalKey: @10,
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel
         }
     };
     
     g_assetWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
-    g_assetWriterInput.expectsMediaDataInRealTime = YES; // Important for live capture
+    g_assetWriterInput.expectsMediaDataInRealTime = NO; // Safer for Electron
     
     // Pixel buffer attributes matching ScreenCaptureKit format
     NSDictionary *pixelBufferAttributes = @{
