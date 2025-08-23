@@ -26,11 +26,13 @@ static BOOL g_writerStarted = NO;
     if (error) {
         NSLog(@"❌ Stream stopped with error: %@", error);
     } else {
-        NSLog(@"✅ ScreenCaptureKit stream stopped successfully");
+        NSLog(@"✅ ScreenCaptureKit stream stopped successfully in delegate");
     }
     
     // Finalize video writer
+    NSLog(@"🎬 Delegate calling finalizeVideoWriter...");
     [ScreenCaptureKitRecorder finalizeVideoWriter];
+    NSLog(@"🎬 Delegate finished calling finalizeVideoWriter");
 }
 @end
 
@@ -55,18 +57,45 @@ static BOOL g_writerStarted = NO;
             NSLog(@"✅ Electron-safe video writer started");
         }
         
-        // Write sample buffer directly (Electron-safe approach)
+        // Write sample buffer with improved pixel buffer validation
         if (g_writerStarted && g_assetWriterInput.isReadyForMoreMediaData) {
             CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+            
+            // Validate pixel buffer more thoroughly
             if (pixelBuffer && g_pixelBufferAdaptor) {
-                CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-                CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
+                // Check if pixel buffer has valid dimensions
+                size_t width = CVPixelBufferGetWidth(pixelBuffer);
+                size_t height = CVPixelBufferGetHeight(pixelBuffer);
                 
-                BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
-                if (success) {
-                    g_currentTime = relativeTime;
+                if (width > 0 && height > 0) {
+                    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+                    CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
+                    
+                    BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
+                    if (success) {
+                        g_currentTime = relativeTime;
+                        static int validFrameCount = 0;
+                        validFrameCount++;
+                        if (validFrameCount % 30 == 0) {
+                            NSLog(@"✅ Successfully wrote %d valid frames (%dx%d)", validFrameCount, (int)width, (int)height);
+                        }
+                    } else {
+                        NSLog(@"⚠️ Failed to append valid pixel buffer (%dx%d) at time %f", (int)width, (int)height, CMTimeGetSeconds(relativeTime));
+                        NSLog(@"Asset writer status: %ld, error: %@", (long)g_assetWriter.status, g_assetWriter.error);
+                    }
                 } else {
-                    NSLog(@"⚠️ Failed to append pixel buffer");
+                    static int invalidSizeCount = 0;
+                    invalidSizeCount++;
+                    if (invalidSizeCount % 50 == 0) {
+                        NSLog(@"⚠️ Invalid pixel buffer dimensions: %dx%d (%d times)", (int)width, (int)height, invalidSizeCount);
+                    }
+                }
+            } else {
+                // Only log occasionally to avoid spam
+                static int nullBufferCount = 0;
+                nullBufferCount++;
+                if (nullBufferCount % 100 == 0) {
+                    NSLog(@"⚠️ Null pixel buffer (%d times) - adaptor: %p", nullBufferCount, g_pixelBufferAdaptor);
                 }
             }
         }
@@ -153,7 +182,11 @@ static BOOL g_writerStarted = NO;
         } else {
             NSLog(@"✅ ScreenCaptureKit stream stopped in completion handler");
         }
-        // Video finalization happens in delegate
+        
+        // Finalize video since delegate might not be called
+        NSLog(@"🎬 Completion handler calling finalizeVideoWriter...");
+        [ScreenCaptureKitRecorder finalizeVideoWriter];
+        NSLog(@"🎬 Completion handler finished calling finalizeVideoWriter");
     }];
 }
 
@@ -210,25 +243,29 @@ static BOOL g_writerStarted = NO;
 }
 
 + (void)finalizeVideoWriter {
-    NSLog(@"🎬 Finalizing Electron-safe video writer");
+    NSLog(@"🎬 Finalizing video writer - writer: %p, started: %d", g_assetWriter, g_writerStarted);
     
     if (!g_assetWriter || !g_writerStarted) {
-        NSLog(@"⚠️ Video writer not started, cleaning up");
+        NSLog(@"⚠️ Video writer not started properly - writer: %p, started: %d", g_assetWriter, g_writerStarted);
         [ScreenCaptureKitRecorder cleanupVideoWriter];
         return;
     }
     
+    NSLog(@"🎬 Marking input as finished and finalizing...");
     [g_assetWriterInput markAsFinished];
     
     [g_assetWriter finishWritingWithCompletionHandler:^{
+        NSLog(@"🎬 Finalization completion handler called");
         if (g_assetWriter.status == AVAssetWriterStatusCompleted) {
-            NSLog(@"✅ Electron-safe video created successfully: %@", g_outputPath);
+            NSLog(@"✅ Video finalization successful: %@", g_outputPath);
         } else {
-            NSLog(@"❌ Video creation failed: %@", g_assetWriter.error);
+            NSLog(@"❌ Video finalization failed - status: %ld, error: %@", (long)g_assetWriter.status, g_assetWriter.error);
         }
         
         [ScreenCaptureKitRecorder cleanupVideoWriter];
     }];
+    
+    NSLog(@"🎬 Finalization request submitted, waiting for completion...");
 }
 
 + (void)cleanupVideoWriter {
