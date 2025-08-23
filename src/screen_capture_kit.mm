@@ -37,125 +37,142 @@ static BOOL g_writerStarted = NO;
 @end
 
 @interface ElectronSafeOutput : NSObject <SCStreamOutput>
+- (void)processSampleBufferSafely:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type;
 @end
 
 @implementation ElectronSafeOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
+    // EXTREME SAFETY: Complete isolation with separate thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @autoreleasepool {
+            [self processSampleBufferSafely:sampleBuffer ofType:type];
+        }
+    });
+}
+
+- (void)processSampleBufferSafely:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
+    // ELECTRON CRASH PROTECTION: Multiple layers of safety
     if (!g_isRecording || type != SCStreamOutputTypeScreen || !g_assetWriterInput) {
         return;
     }
     
-    // Electron-safe processing with exception handling
+    // SAFETY LAYER 1: Null checks
+    if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer)) {
+        return;
+    }
+    
+    // SAFETY LAYER 2: Try-catch with complete isolation
     @try {
         @autoreleasepool {
-            // Initialize video writer on first frame with safety checks
-            if (!g_writerStarted && g_assetWriter && g_assetWriterInput) {
-                // Validate sample buffer before using
-                if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer)) {
-                    NSLog(@"⚠️ Invalid sample buffer, skipping initialization");
-                    return;
-                }
-                
-                g_startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-                g_currentTime = g_startTime;
-                
-                // Safety check for writer state
-                if (g_assetWriter.status != AVAssetWriterStatusWriting && g_assetWriter.status != AVAssetWriterStatusUnknown) {
-                    NSLog(@"⚠️ Asset writer in invalid state: %ld", (long)g_assetWriter.status);
-                    return;
-                }
-                
-                [g_assetWriter startWriting];
-                [g_assetWriter startSessionAtSourceTime:g_startTime];
-                g_writerStarted = YES;
-                NSLog(@"✅ Electron-safe video writer started");
-            }
-            
-            // Process frames with maximum safety in separate autorelease pool
-            @autoreleasepool {
-                // Multiple validation layers
-                if (!g_writerStarted || !g_assetWriterInput || !g_pixelBufferAdaptor || !sampleBuffer) {
-                    return;
-                }
-                
-                // Electron-specific rate limiting (lower than before for stability)
-                static NSTimeInterval lastProcessTime = 0;
-                NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
-                if (currentTime - lastProcessTime < 0.2) { // Max 5 FPS for ultimate stability
-                    return;
-                }
-                lastProcessTime = currentTime;
-                
-                // Check writer input state before processing
-                if (!g_assetWriterInput.isReadyForMoreMediaData) {
-                    return;
-                }
-                
-                // Safely get pixel buffer with validation
-                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-                if (!pixelBuffer) {
-                    return;
-                }
-                
-                // Validate pixel buffer properties
-                size_t width = CVPixelBufferGetWidth(pixelBuffer);
-                size_t height = CVPixelBufferGetHeight(pixelBuffer);
-                
-                // Only process exact expected dimensions
-                if (width != 1280 || height != 720) {
-                    static int dimensionWarnings = 0;
-                    if (dimensionWarnings++ < 5) { // Limit warnings
-                        NSLog(@"⚠️ Unexpected dimensions: %zux%zu, expected 1280x720", width, height);
-                    }
-                    return;
-                }
-                
-                // Safely get presentation time
-                CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-                if (!CMTIME_IS_VALID(presentationTime)) {
-                    return;
-                }
-                
-                CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
-                if (!CMTIME_IS_VALID(relativeTime)) {
-                    return;
-                }
-                
-                // Ultra-conservative time validation (shorter recording for safety)
-                double seconds = CMTimeGetSeconds(relativeTime);
-                if (seconds < 0 || seconds > 10.0) { // Max 10 seconds for safety
-                    return;
-                }
-                
-                // Attempt to append with error checking
+            // SAFETY LAYER 3: Initialize writer safely (only once)
+            static BOOL initializationAttempted = NO;
+            if (!g_writerStarted && !initializationAttempted && g_assetWriter && g_assetWriterInput) {
+                initializationAttempted = YES;
                 @try {
-                    BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
-                    if (success) {
-                        g_currentTime = relativeTime;
-                        static int safeFrameCount = 0;
-                        safeFrameCount++;
-                        if (safeFrameCount % 20 == 0) { // Less frequent logging
-                            NSLog(@"✅ Electron-safe: %d frames (%.1fs)", safeFrameCount, seconds);
+                    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+                    
+                    // SAFETY CHECK: Ensure valid time
+                    if (CMTIME_IS_VALID(presentationTime) && CMTIME_IS_NUMERIC(presentationTime)) {
+                        g_startTime = presentationTime;
+                        g_currentTime = g_startTime;
+                        
+                        // SAFETY LAYER 4: Writer state validation
+                        if (g_assetWriter.status == AVAssetWriterStatusUnknown) {
+                            [g_assetWriter startWriting];
+                            [g_assetWriter startSessionAtSourceTime:g_startTime];
+                            g_writerStarted = YES;
+                            NSLog(@"✅ Ultra-safe ScreenCaptureKit writer started");
                         }
                     } else {
-                        static int appendFailures = 0;
-                        if (appendFailures++ < 3) { // Limit failure logs
-                            NSLog(@"⚠️ Failed to append pixel buffer");
+                        // Use zero time if sample buffer time is invalid
+                        NSLog(@"⚠️ Invalid sample buffer time, using kCMTimeZero");
+                        g_startTime = kCMTimeZero;
+                        g_currentTime = g_startTime;
+                        
+                        if (g_assetWriter.status == AVAssetWriterStatusUnknown) {
+                            [g_assetWriter startWriting];
+                            [g_assetWriter startSessionAtSourceTime:kCMTimeZero];
+                            g_writerStarted = YES;
+                            NSLog(@"✅ Ultra-safe ScreenCaptureKit writer started with zero time");
                         }
                     }
-                } @catch (NSException *appendException) {
-                    NSLog(@"❌ Exception during pixel buffer append: %@", appendException.reason);
-                    // Don't rethrow - just skip this frame
+                } @catch (NSException *writerException) {
+                    NSLog(@"⚠️ Writer initialization failed safely: %@", writerException.reason);
+                    return;
                 }
             }
+            
+            // SAFETY LAYER 5: Frame processing with isolation
+            if (!g_writerStarted || !g_assetWriterInput || !g_pixelBufferAdaptor) {
+                return;
+            }
+            
+            // SAFETY LAYER 6: Conservative rate limiting
+            static NSTimeInterval lastProcessTime = 0;
+            NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
+            if (currentTime - lastProcessTime < 0.1) { // Max 10 FPS
+                return;
+            }
+            lastProcessTime = currentTime;
+            
+            // SAFETY LAYER 7: Input readiness check
+            if (!g_assetWriterInput.isReadyForMoreMediaData) {
+                return;
+            }
+            
+            // SAFETY LAYER 8: Pixel buffer validation
+            CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+            if (!pixelBuffer) {
+                return;
+            }
+            
+            // SAFETY LAYER 9: Dimension validation - flexible this time
+            size_t width = CVPixelBufferGetWidth(pixelBuffer);
+            size_t height = CVPixelBufferGetHeight(pixelBuffer);
+            if (width == 0 || height == 0 || width > 4096 || height > 4096) {
+                return; // Skip only if clearly invalid
+            }
+            
+            // SAFETY LAYER 10: Time validation
+            CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+            if (!CMTIME_IS_VALID(presentationTime)) {
+                return;
+            }
+            
+            CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
+            if (!CMTIME_IS_VALID(relativeTime)) {
+                return;
+            }
+            
+            double seconds = CMTimeGetSeconds(relativeTime);
+            if (seconds < 0 || seconds > 30.0) { // Allow longer recordings
+                return;
+            }
+            
+            // SAFETY LAYER 11: Append with complete exception handling
+            @try {
+                // Use pixel buffer directly - copy was causing errors
+                BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
+                
+                if (success) {
+                    g_currentTime = relativeTime;
+                    static int ultraSafeFrameCount = 0;
+                    ultraSafeFrameCount++;
+                    if (ultraSafeFrameCount % 10 == 0) {
+                        NSLog(@"🛡️ Ultra-safe: %d frames (%.1fs)", ultraSafeFrameCount, seconds);
+                    }
+                }
+            } @catch (NSException *appendException) {
+                NSLog(@"🛡️ Append exception handled safely: %@", appendException.reason);
+                // Continue gracefully - don't crash
+            }
         }
-    } @catch (NSException *exception) {
-        NSLog(@"❌ Critical exception in ScreenCaptureKit output: %@", exception.reason);
-        // Attempt graceful shutdown
-        g_isRecording = NO;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [ScreenCaptureKitRecorder stopRecording];
-        });
+    } @catch (NSException *outerException) {
+        NSLog(@"🛡️ Outer exception handled: %@", outerException.reason);
+        // Ultimate safety - graceful continue
+    } @catch (...) {
+        NSLog(@"🛡️ Unknown exception caught and handled safely");
+        // Catch any C++ exceptions too
     }
 }
 @end

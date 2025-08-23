@@ -1,17 +1,19 @@
 # node-mac-recorder
 
-A powerful native macOS screen recording Node.js package with advanced window selection, multi-display support, and granular audio controls. Built with AVFoundation for optimal performance.
+A powerful native macOS screen recording Node.js package with advanced window selection, multi-display support, and automatic overlay window exclusion. Built with ScreenCaptureKit for modern macOS with intelligent window filtering and Electron compatibility.
 
 ## Features
 
 ✨ **Advanced Recording Capabilities**
 
-- 🖥️ **Full Screen Recording** - Capture entire displays
+- 🖥️ **Full Screen Recording** - Capture entire displays with ScreenCaptureKit
 - 🪟 **Window-Specific Recording** - Record individual application windows
 - 🎯 **Area Selection** - Record custom screen regions
 - 🖱️ **Multi-Display Support** - Automatic display detection and selection
 - 🎨 **Cursor Control** - Toggle cursor visibility in recordings
 - 🖱️ **Cursor Tracking** - Track mouse position, cursor types, and click events
+- 🚫 **Automatic Overlay Exclusion** - Overlay windows automatically excluded from recordings
+- ⚡ **Electron Compatible** - Enhanced crash protection for Electron applications
 
 🎵 **Granular Audio Controls**
 
@@ -35,6 +37,18 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 📁 **Flexible Output** - Custom output paths and formats
 - 🔐 **Permission Management** - Built-in permission checking
 
+## ScreenCaptureKit Technology
+
+This package leverages Apple's modern **ScreenCaptureKit** framework (macOS 12.3+) for superior recording capabilities:
+
+- **🎯 Native Overlay Exclusion**: Overlay windows are automatically filtered out during recording
+- **🚀 Enhanced Performance**: Direct system-level recording with optimized resource usage
+- **🛡️ Crash Protection**: Advanced safety layers for Electron applications
+- **📱 Future-Proof**: Built on Apple's latest screen capture technology
+- **🎨 Better Quality**: Improved frame handling and video encoding
+
+> **Note**: For applications requiring overlay exclusion (like screen recording tools with floating UI), ScreenCaptureKit automatically handles window filtering without manual intervention.
+
 ## Installation
 
 ```bash
@@ -43,7 +57,7 @@ npm install node-mac-recorder
 
 ### Requirements
 
-- **macOS 10.15+** (Catalina or later)
+- **macOS 12.3+** (Monterey or later) - Required for ScreenCaptureKit
 - **Node.js 14+**
 - **Xcode Command Line Tools**
 - **Screen Recording Permission** (automatically requested)

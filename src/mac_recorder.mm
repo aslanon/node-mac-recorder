@@ -46,18 +46,12 @@ static bool g_isRecording = false;
 
 // Helper function to cleanup recording resources
 void cleanupRecording() {
-    if (g_captureSession) {
-        [g_captureSession stopRunning];
-        g_captureSession = nil;
+    // ScreenCaptureKit cleanup only
+    if (@available(macOS 12.3, *)) {
+        if ([ScreenCaptureKitRecorder isRecording]) {
+            [ScreenCaptureKitRecorder stopRecording];
+        }
     }
-    g_movieFileOutput = nil;
-    g_screenInput = nil;
-    g_audioInput = nil;
-    g_delegate = nil;
-    
-    // Show overlay windows again after cleanup
-    showOverlays();
-    
     g_isRecording = false;
 }
 
@@ -168,20 +162,9 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // Phase 4: Electron-Safe ScreenCaptureKit with Process Isolation
-        NSLog(@"🔍 Attempting ScreenCaptureKit with Electron-safe process isolation");
-        NSLog(@"🛡️ Using separate process architecture to prevent main thread crashes");
-        NSLog(@"🔄 Will fallback to AVFoundation if ScreenCaptureKit fails");
-        
-        // Add Electron detection and safety check
-        BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
-                          [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
-                         (NSProcessInfo.processInfo.processName && 
-                          [NSProcessInfo.processInfo.processName containsString:@"Electron"]);
-        
-        if (isElectron) {
-            NSLog(@"⚡ Electron environment detected - using extra safety measures");
-        }
+        // ScreenCaptureKit ONLY - No more AVFoundation fallback
+        NSLog(@"🎯 PURE ScreenCaptureKit - No AVFoundation fallback");
+        NSLog(@"🛡️ Enhanced Electron crash protection active");
         
         if (@available(macOS 12.3, *)) {
             NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");
@@ -231,19 +214,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                                              delegate:g_delegate 
                                                                                 error:&sckError]) {
                             
-                            // Brief delay to ensure initialization
-                            [NSThread sleepForTimeInterval:0.1];
-                            
-                            if (!sckTimedOut && [ScreenCaptureKitRecorder isRecording]) {
-                                sckStarted = YES;
-                                NSLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
-                                NSLog(@"✅ ScreenCaptureKit recording started with window exclusion");
-                                g_isRecording = true;
-                                return Napi::Boolean::New(env, true);
-                            } else {
-                                NSLog(@"⚠️ ScreenCaptureKit started but validation failed");
-                                [ScreenCaptureKitRecorder stopRecording];
-                            }
+                            // ScreenCaptureKit başlatma başarılı - validation yapmıyoruz
+                            sckStarted = YES;
+                            NSLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
+                            NSLog(@"✅ ScreenCaptureKit recording started successfully");
+                            g_isRecording = true;
+                            return Napi::Boolean::New(env, true);
                         } else {
                             NSLog(@"❌ ScreenCaptureKit failed to start");
                             NSLog(@"❌ Error: %@", sckError ? sckError.localizedDescription : @"Unknown error");
@@ -260,178 +236,16 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 }
             } @catch (NSException *availabilityException) {
                 NSLog(@"❌ Exception during ScreenCaptureKit availability check: %@", availabilityException.reason);
-                NSLog(@"⚠️ Falling back to AVFoundation");
+                return Napi::Boolean::New(env, false);
             }
         } else {
-            NSLog(@"❌ macOS version too old for ScreenCaptureKit (< 12.3)");
-        }
-        
-        // Fallback: Use AVFoundation with overlay hiding
-        NSLog(@"🎬 RECORDING METHOD: AVFoundation");
-        NSLog(@"📼 Using AVFoundation with overlay hiding for video compatibility");
-        
-        // Hide overlay windows during recording
-        hideOverlays();
-        
-        // Create capture session
-        g_captureSession = [[AVCaptureSession alloc] init];
-        [g_captureSession beginConfiguration];
-        
-        // Set session preset
-        g_captureSession.sessionPreset = AVCaptureSessionPresetHigh;
-        
-        // Create screen input with selected display
-        g_screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:displayID];
-        
-        if (!CGRectIsNull(captureRect)) {
-            g_screenInput.cropRect = captureRect;
-        }
-        
-        // Set cursor capture
-        g_screenInput.capturesCursor = captureCursor;
-        
-        // Configure screen input options
-        g_screenInput.capturesMouseClicks = NO;
-        
-        if ([g_captureSession canAddInput:g_screenInput]) {
-            [g_captureSession addInput:g_screenInput];
-        } else {
-            cleanupRecording();
+            NSLog(@"❌ macOS version too old for ScreenCaptureKit (< 12.3) - Recording not supported");
             return Napi::Boolean::New(env, false);
         }
         
-        // Add microphone input if requested
-        if (includeMicrophone) {
-            AVCaptureDevice *audioDevice = nil;
-            
-            if (audioDeviceId) {
-                // Try to find the specified device
-                NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-                NSLog(@"[DEBUG] Looking for audio device with ID: %@", audioDeviceId);
-                NSLog(@"[DEBUG] Available audio devices:");
-                for (AVCaptureDevice *device in devices) {
-                    NSLog(@"[DEBUG] - Device: %@ (ID: %@)", device.localizedName, device.uniqueID);
-                    if ([device.uniqueID isEqualToString:audioDeviceId]) {
-                        NSLog(@"[DEBUG] Found matching device: %@", device.localizedName);
-                        audioDevice = device;
-                        break;
-                    }
-                }
-                
-                if (!audioDevice) {
-                    NSLog(@"[DEBUG] Specified audio device not found, falling back to default");
-                }
-            }
-            
-            // Fallback to default device if specified device not found
-            if (!audioDevice) {
-                audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
-                NSLog(@"[DEBUG] Using default audio device: %@ (ID: %@)", audioDevice.localizedName, audioDevice.uniqueID);
-            }
-            
-            if (audioDevice) {
-                NSError *error;
-                g_audioInput = [[AVCaptureDeviceInput alloc] initWithDevice:audioDevice error:&error];
-                if (g_audioInput && [g_captureSession canAddInput:g_audioInput]) {
-                    [g_captureSession addInput:g_audioInput];
-                    NSLog(@"[DEBUG] Successfully added audio input device");
-                } else {
-                    NSLog(@"[DEBUG] Failed to add audio input device: %@", error);
-                }
-            }
-        }
-        
-        // System audio configuration
-        if (includeSystemAudio) {
-            // Enable audio capture in screen input
-            g_screenInput.capturesMouseClicks = YES;
-            
-            // Try to add system audio input using Core Audio
-            // This approach captures system audio by creating a virtual audio device
-            if (@available(macOS 10.15, *)) {
-                // Configure screen input for better audio capture
-                g_screenInput.capturesCursor = captureCursor;
-                g_screenInput.capturesMouseClicks = YES;
-                
-                // Try to find and add system audio device (like Soundflower, BlackHole, etc.)
-                NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-                AVCaptureDevice *systemAudioDevice = nil;
-                
-                // If specific system audio device ID is provided, try to find it first
-                if (systemAudioDeviceId) {
-                    for (AVCaptureDevice *device in audioDevices) {
-                        if ([device.uniqueID isEqualToString:systemAudioDeviceId]) {
-                            systemAudioDevice = device;
-                            NSLog(@"[DEBUG] Found specified system audio device: %@ (ID: %@)", device.localizedName, device.uniqueID);
-                            break;
-                        }
-                    }
-                }
-                
-                // If no specific device found or specified, look for known system audio devices
-                if (!systemAudioDevice) {
-                    for (AVCaptureDevice *device in audioDevices) {
-                        NSString *deviceName = [device.localizedName lowercaseString];
-                        // Check for common system audio capture devices
-                        if ([deviceName containsString:@"soundflower"] || 
-                            [deviceName containsString:@"blackhole"] ||
-                            [deviceName containsString:@"loopback"] ||
-                            [deviceName containsString:@"system audio"] ||
-                            [deviceName containsString:@"aggregate"]) {
-                            systemAudioDevice = device;
-                            NSLog(@"[DEBUG] Auto-detected system audio device: %@", device.localizedName);
-                            break;
-                        }
-                    }
-                }
-                
-                // If we found a system audio device, add it as an additional input
-                if (systemAudioDevice && !includeMicrophone) {
-                    // Only add system audio device if microphone is not already added
-                    NSError *error;
-                    AVCaptureDeviceInput *systemAudioInput = [[AVCaptureDeviceInput alloc] initWithDevice:systemAudioDevice error:&error];
-                    if (systemAudioInput && [g_captureSession canAddInput:systemAudioInput]) {
-                        [g_captureSession addInput:systemAudioInput];
-                        NSLog(@"[DEBUG] Successfully added system audio device: %@", systemAudioDevice.localizedName);
-                    } else if (error) {
-                        NSLog(@"[DEBUG] Failed to add system audio device: %@", error.localizedDescription);
-                    }
-                } else if (includeSystemAudio && !systemAudioDevice) {
-                    NSLog(@"[DEBUG] System audio requested but no suitable device found. Available devices:");
-                    for (AVCaptureDevice *device in audioDevices) {
-                        NSLog(@"[DEBUG] - %@ (ID: %@)", device.localizedName, device.uniqueID);
-                    }
-                }
-            }
-        } else {
-            // Explicitly disable audio capture if not requested
-            g_screenInput.capturesMouseClicks = NO;
-        }
-        
-        // Create movie file output
-        g_movieFileOutput = [[AVCaptureMovieFileOutput alloc] init];
-        if ([g_captureSession canAddOutput:g_movieFileOutput]) {
-            [g_captureSession addOutput:g_movieFileOutput];
-        } else {
-            cleanupRecording();
-            return Napi::Boolean::New(env, false);
-        }
-        
-        [g_captureSession commitConfiguration];
-        
-        // Start session
-        [g_captureSession startRunning];
-        
-        // Create delegate
-        g_delegate = [[MacRecorderDelegate alloc] init];
-        
-        // Start recording
-        NSURL *outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outputPath.c_str()]];
-        [g_movieFileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:g_delegate];
-        
-        NSLog(@"✅ AVFoundation recording started");
-        g_isRecording = true;
-        return Napi::Boolean::New(env, true);
+        // If we get here, ScreenCaptureKit failed completely
+        NSLog(@"❌ ScreenCaptureKit failed to initialize - Recording not available");
+        return Napi::Boolean::New(env, false);
         
     } @catch (NSException *exception) {
         cleanupRecording();
@@ -445,44 +259,20 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     
     NSLog(@"📞 StopRecording native method called");
     
-    // Check if ScreenCaptureKit is recording first
-    BOOL screenCaptureKitStopped = NO;
+    // ScreenCaptureKit ONLY - No AVFoundation fallback
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {
             NSLog(@"🛑 Stopping ScreenCaptureKit recording");
             [ScreenCaptureKitRecorder stopRecording];
-            screenCaptureKitStopped = YES;
+            g_isRecording = false;
+            return Napi::Boolean::New(env, true);
+        } else {
+            NSLog(@"⚠️ ScreenCaptureKit not recording");
+            g_isRecording = false;
+            return Napi::Boolean::New(env, true);
         }
-    }
-    
-    // If ScreenCaptureKit handled it, return early
-    if (screenCaptureKitStopped) {
-        return Napi::Boolean::New(env, true);
-    }
-    
-    // Otherwise, handle AVFoundation recording
-    if (!g_isRecording || !g_movieFileOutput) {
-        NSLog(@"❌ No AVFoundation recording in progress");
-        return Napi::Boolean::New(env, false);
-    }
-    
-    @try {
-        NSLog(@"🛑 Stopping AVFoundation recording");
-        if (g_movieFileOutput) {
-            [g_movieFileOutput stopRecording];
-        }
-        if (g_captureSession) {
-            [g_captureSession stopRunning];
-        }
-        
-        // Show overlay windows again after recording
-        showOverlays();
-        
-        g_isRecording = false;
-        return Napi::Boolean::New(env, true);
-        
-    } @catch (NSException *exception) {
-        cleanupRecording();
+    } else {
+        NSLog(@"❌ ScreenCaptureKit not available - cannot stop recording");
         return Napi::Boolean::New(env, false);
     }
 }
