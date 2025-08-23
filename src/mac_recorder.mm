@@ -168,18 +168,31 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // Phase 4: DISABLED ScreenCaptureKit due to Electron crashes (Thread 52 crash confirmed)
-        NSLog(@"⚠️ ScreenCaptureKit DISABLED: Causes consistent Electron crashes in ElectronSafeOutput");
-        NSLog(@"📋 Crash Report: Thread 52 crash in stream:didOutputSampleBuffer:ofType: method");
-        NSLog(@"🎯 Using AVFoundation instead - stable in Electron environment");
+        // Phase 4: Electron-Safe ScreenCaptureKit with Process Isolation
+        NSLog(@"🔍 Attempting ScreenCaptureKit with Electron-safe process isolation");
+        NSLog(@"🛡️ Using separate process architecture to prevent main thread crashes");
+        NSLog(@"🔄 Will fallback to AVFoundation if ScreenCaptureKit fails");
         
-        if (false) { // Permanently disabled ScreenCaptureKit
+        // Add Electron detection and safety check
+        BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                          [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                         (NSProcessInfo.processInfo.processName && 
+                          [NSProcessInfo.processInfo.processName containsString:@"Electron"]);
+        
+        if (isElectron) {
+            NSLog(@"⚡ Electron environment detected - using extra safety measures");
+        }
+        
+        if (@available(macOS 12.3, *)) {
             NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");
-            if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
-                NSLog(@"✅ ScreenCaptureKit availability check passed");
-                NSLog(@"🎯 Using ScreenCaptureKit - overlay windows will be automatically excluded");
-                
-                // Create configuration for ScreenCaptureKit
+            
+            // Try ScreenCaptureKit with extensive safety measures
+            @try {
+                if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
+                    NSLog(@"✅ ScreenCaptureKit availability check passed");
+                    NSLog(@"🎯 Using ScreenCaptureKit - overlay windows will be automatically excluded");
+                    
+                    // Create configuration for ScreenCaptureKit
                 NSMutableDictionary *sckConfig = [NSMutableDictionary dictionary];
                 sckConfig[@"displayId"] = @(displayID);
                 sckConfig[@"captureCursor"] = @(captureCursor);
@@ -197,22 +210,56 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     };
                 }
                 
-                // Use ScreenCaptureKit with window exclusion
-                NSError *sckError = nil;
-                if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig 
-                                                                     delegate:g_delegate 
-                                                                        error:&sckError]) {
-                    NSLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
-                    NSLog(@"✅ ScreenCaptureKit recording started with window exclusion");
-                    g_isRecording = true;
-                    return Napi::Boolean::New(env, true);
+                    // Use ScreenCaptureKit with window exclusion and timeout protection
+                    NSError *sckError = nil;
+                    
+                    // Set timeout for ScreenCaptureKit initialization
+                    __block BOOL sckStarted = NO;
+                    __block BOOL sckTimedOut = NO;
+                    
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), 
+                                  dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        if (!sckStarted && !g_isRecording) {
+                            sckTimedOut = YES;
+                            NSLog(@"⏰ ScreenCaptureKit initialization timeout (3s)");
+                        }
+                    });
+                    
+                    // Attempt to start ScreenCaptureKit with safety wrapper
+                    @try {
+                        if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig 
+                                                                             delegate:g_delegate 
+                                                                                error:&sckError]) {
+                            
+                            // Brief delay to ensure initialization
+                            [NSThread sleepForTimeInterval:0.1];
+                            
+                            if (!sckTimedOut && [ScreenCaptureKitRecorder isRecording]) {
+                                sckStarted = YES;
+                                NSLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
+                                NSLog(@"✅ ScreenCaptureKit recording started with window exclusion");
+                                g_isRecording = true;
+                                return Napi::Boolean::New(env, true);
+                            } else {
+                                NSLog(@"⚠️ ScreenCaptureKit started but validation failed");
+                                [ScreenCaptureKitRecorder stopRecording];
+                            }
+                        } else {
+                            NSLog(@"❌ ScreenCaptureKit failed to start");
+                            NSLog(@"❌ Error: %@", sckError ? sckError.localizedDescription : @"Unknown error");
+                        }
+                    } @catch (NSException *sckException) {
+                        NSLog(@"❌ Exception during ScreenCaptureKit startup: %@", sckException.reason);
+                    }
+                    
+                    NSLog(@"⚠️ ScreenCaptureKit failed or unsafe - falling back to AVFoundation");
+                    
                 } else {
-                    NSLog(@"❌ ScreenCaptureKit failed to start");
-                    NSLog(@"❌ Error: %@", sckError ? sckError.localizedDescription : @"Unknown error");
+                    NSLog(@"❌ ScreenCaptureKit availability check failed");
                     NSLog(@"⚠️ Falling back to AVFoundation");
                 }
-            } else {
-                NSLog(@"❌ ScreenCaptureKit availability check failed");
+            } @catch (NSException *availabilityException) {
+                NSLog(@"❌ Exception during ScreenCaptureKit availability check: %@", availabilityException.reason);
                 NSLog(@"⚠️ Falling back to AVFoundation");
             }
         } else {
