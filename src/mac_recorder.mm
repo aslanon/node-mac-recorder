@@ -168,9 +168,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // Phase 4: Pure ScreenCaptureKit with memory-optimized implementation
-        NSLog(@"🔍 Phase 4: Pure ScreenCaptureKit with Electron-safe memory optimization");
-        if (@available(macOS 12.3, *)) {
+        // Phase 4: DISABLED ScreenCaptureKit due to Electron crashes (Thread 52 crash confirmed)
+        NSLog(@"⚠️ ScreenCaptureKit DISABLED: Causes consistent Electron crashes in ElectronSafeOutput");
+        NSLog(@"📋 Crash Report: Thread 52 crash in stream:didOutputSampleBuffer:ofType: method");
+        NSLog(@"🎯 Using AVFoundation instead - stable in Electron environment");
+        
+        if (false) { // Permanently disabled ScreenCaptureKit
             NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");
             if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
                 NSLog(@"✅ ScreenCaptureKit availability check passed");
