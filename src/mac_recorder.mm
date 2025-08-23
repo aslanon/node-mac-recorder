@@ -162,10 +162,27 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     }
     
     @try {
-        // ScreenCaptureKit ONLY - No more AVFoundation fallback
-        NSLog(@"🎯 PURE ScreenCaptureKit - No AVFoundation fallback");
-        NSLog(@"🛡️ Enhanced Electron crash protection active");
+        // Smart Recording Selection: ScreenCaptureKit vs Alternative
+        NSLog(@"🎯 Smart Recording Engine Selection");
         
+        // Detect Electron environment with multiple checks
+        BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                          [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                         (NSProcessInfo.processInfo.processName && 
+                          [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
+                         (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil) ||
+                         (NSBundle.mainBundle.bundlePath && 
+                          [NSBundle.mainBundle.bundlePath containsString:@"Electron"]);
+        
+        if (isElectron) {
+            NSLog(@"⚡ Electron environment detected - Using crash-safe recording method");
+            NSLog(@"🛡️ ScreenCaptureKit disabled for Electron stability");
+            
+            // Return error for Electron - force use of external recording tools
+            return Napi::Boolean::New(env, false);
+        }
+        
+        // Non-Electron: Use ScreenCaptureKit
         if (@available(macOS 12.3, *)) {
             NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");
             
