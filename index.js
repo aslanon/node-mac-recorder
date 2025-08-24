@@ -404,13 +404,11 @@ class MacRecorder extends EventEmitter {
 					this.emit("started", this.outputPath);
 					resolve(this.outputPath);
 				} else {
-					// Try alternative recording method for Electron
-					console.log('🎬 Native recording failed, trying alternative method for Electron compatibility');
-					this.startAlternativeRecording(outputPath, recordingOptions)
-						.then(() => resolve(outputPath))
-						.catch((altError) => {
-							reject(new Error(`All recording methods failed. Native: Check permissions. Alternative: ${altError.message}`));
-						});
+					reject(
+						new Error(
+							"ScreenCaptureKit failed to start. Check permissions and try again."
+						)
+					);
 				}
 			} catch (error) {
 				reject(error);
@@ -418,109 +416,6 @@ class MacRecorder extends EventEmitter {
 		});
 	}
 
-	/**
-	 * Alternative recording method for Electron compatibility - REAL VIDEO
-	 */
-	async startAlternativeRecording(outputPath, options = {}) {
-		const { spawn } = require('child_process');
-		const fs = require('fs');
-		const path = require('path');
-		
-		try {
-			console.log('🎬 Starting REAL video recording with FFmpeg for Electron');
-			
-			// Check if FFmpeg is available
-			const ffmpegArgs = [
-				'-f', 'avfoundation',  // Use AVFoundation input
-				'-framerate', '30',    // 30 FPS
-				'-video_size', '1280x720', // Resolution
-				'-i', '3:none',       // Screen capture device 3, no audio
-				'-c:v', 'libx264',    // H.264 codec
-				'-preset', 'ultrafast', // Fast encoding
-				'-crf', '23',         // Quality
-				'-t', '30',           // Max 30 seconds
-				'-y',                 // Overwrite output
-				outputPath
-			];
-			
-			// Add capture area if specified (crop filter)
-			if (options.captureArea) {
-				const cropFilter = `crop=${options.captureArea.width}:${options.captureArea.height}:${options.captureArea.x}:${options.captureArea.y}`;
-				const index = ffmpegArgs.indexOf(outputPath);
-				ffmpegArgs.splice(index, 0, '-vf', cropFilter);
-			}
-			
-			console.log('🎥 Starting FFmpeg with args:', ffmpegArgs);
-			
-			this.alternativeProcess = spawn('ffmpeg', ffmpegArgs);
-			
-			this.alternativeProcess.stdout.on('data', (data) => {
-				console.log('FFmpeg stdout:', data.toString());
-			});
-			
-			this.alternativeProcess.stderr.on('data', (data) => {
-				const output = data.toString();
-				if (output.includes('frame=')) {
-					// This indicates recording is working
-					console.log('🎬 Recording frames...');
-				}
-			});
-			
-			this.alternativeProcess.on('close', (code) => {
-				console.log(`🎬 FFmpeg recording finished with code: ${code}`);
-				this.isRecording = false;
-				
-				if (this.recordingTimer) {
-					clearInterval(this.recordingTimer);
-					this.recordingTimer = null;
-				}
-				
-				this.emit('stopped', { code, outputPath });
-				
-				// Check if file was created
-				setTimeout(() => {
-					if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-						this.emit('completed', outputPath);
-						console.log('✅ Real video file created with FFmpeg');
-					} else {
-						console.log('❌ FFmpeg video creation failed');
-					}
-				}, 500);
-			});
-			
-			this.alternativeProcess.on('error', (error) => {
-				console.error('❌ FFmpeg error:', error.message);
-				if (error.code === 'ENOENT') {
-					console.log('💡 FFmpeg not found. Install with: brew install ffmpeg');
-					throw new Error('FFmpeg not installed. Run: brew install ffmpeg');
-				}
-				throw error;
-			});
-			
-			this.isRecording = true;
-			this.recordingStartTime = Date.now();
-			
-			// Timer başlat
-			this.recordingTimer = setInterval(() => {
-				const elapsed = Math.floor((Date.now() - this.recordingStartTime) / 1000);
-				this.emit("timeUpdate", elapsed);
-			}, 1000);
-			
-			this.emit('recordingStarted', {
-				outputPath,
-				options,
-				timestamp: Date.now(),
-				method: 'ffmpeg'
-			});
-			
-			this.emit('started');
-			return true;
-			
-		} catch (error) {
-			console.error('Alternative recording failed:', error);
-			throw new Error(`FFmpeg recording failed: ${error.message}`);
-		}
-	}
 
 	/**
 	 * Ekran kaydını durdurur
@@ -534,24 +429,12 @@ class MacRecorder extends EventEmitter {
 			try {
 				let success = false;
 				
-				// Check if using alternative recording (FFmpeg)
-				if (this.alternativeProcess) {
-					console.log('🛑 Stopping FFmpeg recording');
-					
-					// Send SIGTERM to FFmpeg to stop recording gracefully
-					this.alternativeProcess.kill('SIGTERM');
-					
-					// Wait for FFmpeg to finish
-					success = true;
-					this.alternativeProcess = null;
-				} else {
-					// Try native stop
-					try {
-						success = nativeBinding.stopRecording();
-					} catch (nativeError) {
-						console.log('Native stop failed:', nativeError.message);
-						success = true; // Assume success to avoid throwing
-					}
+				// Use native ScreenCaptureKit stop only
+				try {
+					success = nativeBinding.stopRecording();
+				} catch (nativeError) {
+					console.log('Native stop failed:', nativeError.message);
+					success = true; // Assume success to avoid throwing
 				}
 
 				// Timer durdur

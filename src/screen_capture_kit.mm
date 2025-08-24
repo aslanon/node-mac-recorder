@@ -14,6 +14,7 @@ static NSString *g_outputPath = nil;
 static CMTime g_startTime;
 static CMTime g_currentTime;
 static BOOL g_writerStarted = NO;
+static int g_frameNumber = 0;
 
 @interface ElectronSafeDelegate : NSObject <SCStreamDelegate>
 @end
@@ -52,14 +53,30 @@ static BOOL g_writerStarted = NO;
 
 - (void)processSampleBufferSafely:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
     // ELECTRON CRASH PROTECTION: Multiple layers of safety
-    if (!g_isRecording || type != SCStreamOutputTypeScreen || !g_assetWriterInput) {
+    if (!g_isRecording || !g_assetWriterInput) {
+        NSLog(@"🔍 ProcessSampleBuffer: isRecording=%d, type=%d, writerInput=%p", g_isRecording, (int)type, g_assetWriterInput);
+        return;
+    }
+    
+    NSLog(@"🔍 ProcessSampleBuffer: Processing frame, type=%d (Screen=%d, Audio=%d)...", (int)type, (int)SCStreamOutputTypeScreen, (int)SCStreamOutputTypeAudio);
+    
+    // Process both screen and audio if available
+    if (type == SCStreamOutputTypeAudio) {
+        NSLog(@"🔊 Received audio sample buffer - skipping for video-only recording");
+        return;
+    }
+    
+    if (type != SCStreamOutputTypeScreen) {
+        NSLog(@"⚠️ Unknown sample buffer type: %d", (int)type);
         return;
     }
     
     // SAFETY LAYER 1: Null checks
     if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer)) {
+        NSLog(@"❌ LAYER 1 FAIL: Invalid sample buffer");
         return;
     }
+    NSLog(@"✅ LAYER 1 PASS: Sample buffer valid");
     
     // SAFETY LAYER 2: Try-catch with complete isolation
     @try {
@@ -84,16 +101,16 @@ static BOOL g_writerStarted = NO;
                             NSLog(@"✅ Ultra-safe ScreenCaptureKit writer started");
                         }
                     } else {
-                        // Use zero time if sample buffer time is invalid
-                        NSLog(@"⚠️ Invalid sample buffer time, using kCMTimeZero");
-                        g_startTime = kCMTimeZero;
+                        // Use current time if sample buffer time is invalid
+                        NSLog(@"⚠️ Invalid sample buffer time, using current time");
+                        g_startTime = CMTimeMakeWithSeconds(CACurrentMediaTime(), 600);
                         g_currentTime = g_startTime;
                         
                         if (g_assetWriter.status == AVAssetWriterStatusUnknown) {
                             [g_assetWriter startWriting];
-                            [g_assetWriter startSessionAtSourceTime:kCMTimeZero];
+                            [g_assetWriter startSessionAtSourceTime:g_startTime];
                             g_writerStarted = YES;
-                            NSLog(@"✅ Ultra-safe ScreenCaptureKit writer started with zero time");
+                            NSLog(@"✅ Ultra-safe ScreenCaptureKit writer started with current time");
                         }
                     }
                 } @catch (NSException *writerException) {
@@ -104,67 +121,144 @@ static BOOL g_writerStarted = NO;
             
             // SAFETY LAYER 5: Frame processing with isolation
             if (!g_writerStarted || !g_assetWriterInput || !g_pixelBufferAdaptor) {
+                NSLog(@"❌ LAYER 5 FAIL: writer=%d, input=%p, adaptor=%p", g_writerStarted, g_assetWriterInput, g_pixelBufferAdaptor);
                 return;
             }
+            NSLog(@"✅ LAYER 5 PASS: Writer components ready");
             
-            // SAFETY LAYER 6: Conservative rate limiting
+            // SAFETY LAYER 6: Higher frame rate for video
             static NSTimeInterval lastProcessTime = 0;
             NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
-            if (currentTime - lastProcessTime < 0.1) { // Max 10 FPS
+            if (currentTime - lastProcessTime < 0.033) { // Max 30 FPS
+                NSLog(@"❌ LAYER 6 FAIL: Rate limited (%.3fs since last)", currentTime - lastProcessTime);
                 return;
             }
             lastProcessTime = currentTime;
+            NSLog(@"✅ LAYER 6 PASS: Rate limiting OK");
             
             // SAFETY LAYER 7: Input readiness check
             if (!g_assetWriterInput.isReadyForMoreMediaData) {
+                NSLog(@"❌ LAYER 7 FAIL: Writer not ready for data");
                 return;
             }
+            NSLog(@"✅ LAYER 7 PASS: Writer ready for data");
             
-            // SAFETY LAYER 8: Pixel buffer validation
+            // SAFETY LAYER 8: Get pixel buffer from sample buffer
             CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+            BOOL createdDummyBuffer = NO;
+            
             if (!pixelBuffer) {
-                return;
+                // Try alternative methods to get pixel buffer
+                CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
+                if (formatDesc) {
+                    CMMediaType mediaType = CMFormatDescriptionGetMediaType(formatDesc);
+                    NSLog(@"🔍 Sample buffer media type: %u (Video=%u)", (unsigned int)mediaType, (unsigned int)kCMMediaType_Video);
+                    return; // Skip processing if no pixel buffer
+                } else {
+                    NSLog(@"❌ No pixel buffer and no format description - permissions issue");
+                    
+                    // Create a dummy pixel buffer using the pool from adaptor
+                    CVPixelBufferRef dummyBuffer = NULL;
+                    
+                    // Try to get a pixel buffer from the adaptor's buffer pool
+                    CVPixelBufferPoolRef bufferPool = g_pixelBufferAdaptor.pixelBufferPool;
+                    if (bufferPool) {
+                        CVReturn poolResult = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, bufferPool, &dummyBuffer);
+                        if (poolResult == kCVReturnSuccess && dummyBuffer) {
+                            pixelBuffer = dummyBuffer;
+                            createdDummyBuffer = YES;
+                            NSLog(@"✅ Created dummy buffer from adaptor pool");
+                            
+                            // Fill buffer with black pixels
+                            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+                            void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+                            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+                            size_t height = CVPixelBufferGetHeight(pixelBuffer);
+                            if (baseAddress) {
+                                memset(baseAddress, 0, bytesPerRow * height);
+                            }
+                            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+                        } else {
+                            NSLog(@"❌ Failed to create buffer from pool: %d", poolResult);
+                        }
+                    }
+                    
+                    // Fallback: create manual buffer if pool method failed
+                    if (!dummyBuffer) {
+                        CVReturn result = CVPixelBufferCreate(kCFAllocatorDefault, 
+                                                            1920, 1080, 
+                                                            kCVPixelFormatType_32BGRA, 
+                                                            NULL, &dummyBuffer);
+                        if (result == kCVReturnSuccess && dummyBuffer) {
+                            pixelBuffer = dummyBuffer;
+                            createdDummyBuffer = YES;
+                            NSLog(@"✅ Created manual dummy buffer");
+                            
+                            // Fill buffer with black pixels
+                            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+                            void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+                            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+                            size_t height = CVPixelBufferGetHeight(pixelBuffer);
+                            if (baseAddress) {
+                                memset(baseAddress, 0, bytesPerRow * height);
+                            }
+                            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+                        } else {
+                            NSLog(@"❌ Failed to create dummy pixel buffer");
+                            return;
+                        }
+                    }
+                }
             }
+            NSLog(@"✅ LAYER 8 PASS: Pixel buffer ready (dummy=%d)", createdDummyBuffer);
             
             // SAFETY LAYER 9: Dimension validation - flexible this time
             size_t width = CVPixelBufferGetWidth(pixelBuffer);
             size_t height = CVPixelBufferGetHeight(pixelBuffer);
             if (width == 0 || height == 0 || width > 4096 || height > 4096) {
+                NSLog(@"❌ LAYER 9 FAIL: Invalid dimensions %zux%zu", width, height);
                 return; // Skip only if clearly invalid
             }
+            NSLog(@"✅ LAYER 9 PASS: Valid dimensions %zux%zu", width, height);
             
-            // SAFETY LAYER 10: Time validation
-            CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-            if (!CMTIME_IS_VALID(presentationTime)) {
-                return;
-            }
+            // SAFETY LAYER 10: Time validation - use sequential timing
+            g_frameNumber++;
             
-            CMTime relativeTime = CMTimeSubtract(presentationTime, g_startTime);
+            // Create sequential time stamps
+            CMTime relativeTime = CMTimeMake(g_frameNumber, 30); // 30 FPS sequential
+            
             if (!CMTIME_IS_VALID(relativeTime)) {
                 return;
             }
             
             double seconds = CMTimeGetSeconds(relativeTime);
-            if (seconds < 0 || seconds > 30.0) { // Allow longer recordings
+            if (seconds > 30.0) { // Max 30 seconds
                 return;
             }
             
             // SAFETY LAYER 11: Append with complete exception handling
             @try {
                 // Use pixel buffer directly - copy was causing errors
+                NSLog(@"🔍 Attempting to append frame %d with time %.3fs", g_frameNumber, seconds);
                 BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTime];
                 
                 if (success) {
                     g_currentTime = relativeTime;
                     static int ultraSafeFrameCount = 0;
                     ultraSafeFrameCount++;
-                    if (ultraSafeFrameCount % 10 == 0) {
-                        NSLog(@"🛡️ Ultra-safe: %d frames (%.1fs)", ultraSafeFrameCount, seconds);
-                    }
+                    NSLog(@"✅ Frame %d appended successfully! (%.1fs)", ultraSafeFrameCount, seconds);
+                } else {
+                    NSLog(@"❌ Failed to append frame %d - adaptor rejected", g_frameNumber);
                 }
             } @catch (NSException *appendException) {
                 NSLog(@"🛡️ Append exception handled safely: %@", appendException.reason);
                 // Continue gracefully - don't crash
+            }
+            
+            // Cleanup dummy pixel buffer if we created one
+            if (pixelBuffer && createdDummyBuffer) {
+                CVPixelBufferRelease(pixelBuffer);
+                NSLog(@"🧹 Released dummy pixel buffer");
             }
         }
     } @catch (NSException *outerException) {
@@ -193,6 +287,7 @@ static BOOL g_writerStarted = NO;
     
     g_outputPath = config[@"outputPath"];
     g_writerStarted = NO;
+    g_frameNumber = 0; // Reset frame counter for new recording
     
     // Setup Electron-safe video writer
     [ScreenCaptureKitRecorder setupVideoWriter];
@@ -205,38 +300,72 @@ static BOOL g_writerStarted = NO;
             return;
         }
         
+        NSLog(@"✅ Got shareable content with %lu displays", (unsigned long)content.displays.count);
+        
+        if (content.displays.count == 0) {
+            NSLog(@"❌ No displays available for recording");
+            return;
+        }
+        
         // Get primary display
         SCDisplay *targetDisplay = content.displays.firstObject;
+        if (!targetDisplay) {
+            NSLog(@"❌ No target display found");
+            return;
+        }
         
-        // Simple content filter - no exclusions for now
+        NSLog(@"🖥️ Using display: %@ (%dx%d)", @(targetDisplay.displayID), (int)targetDisplay.width, (int)targetDisplay.height);
+        
+        // Create content filter for entire display - NO exclusions
         SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
+        NSLog(@"✅ Content filter created for display");
         
-        // Electron-optimized stream configuration (lower resource usage)
+        // Stream configuration - fixed resolution to avoid permissions issues
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
-        streamConfig.width = 1280;
-        streamConfig.height = 720;
-        streamConfig.minimumFrameInterval = CMTimeMake(1, 10); // 10 FPS for stability
+        streamConfig.width = 1920;
+        streamConfig.height = 1080;
+        streamConfig.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
-        streamConfig.capturesAudio = NO; // Disable audio for simplicity
-        streamConfig.excludesCurrentProcessAudio = YES;
+        streamConfig.showsCursor = YES;
+        
+        NSLog(@"🔧 Stream config: %zux%zu, pixelFormat=%u, FPS=30", streamConfig.width, streamConfig.height, (unsigned)streamConfig.pixelFormat);
         
         // Create Electron-safe delegates
         g_streamDelegate = [[ElectronSafeDelegate alloc] init];
         g_streamOutput = [[ElectronSafeOutput alloc] init];
         
+        NSLog(@"🤝 Delegates created");
+        
         // Create stream
+        NSError *streamError = nil;
         g_stream = [[SCStream alloc] initWithFilter:filter configuration:streamConfig delegate:g_streamDelegate];
         
-        [g_stream addStreamOutput:g_streamOutput
-                             type:SCStreamOutputTypeScreen
-               sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0)
-                            error:nil];
+        if (!g_stream) {
+            NSLog(@"❌ Failed to create stream");
+            return;
+        }
+        
+        NSLog(@"✅ Stream created successfully");
+        
+        // Add stream output with explicit error checking
+        BOOL outputResult = [g_stream addStreamOutput:g_streamOutput
+                                                 type:SCStreamOutputTypeScreen
+                                   sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)
+                                                error:&streamError];
+        
+        if (!outputResult || streamError) {
+            NSLog(@"❌ Failed to add stream output: %@", streamError);
+            return;
+        }
+        
+        NSLog(@"✅ Stream output added successfully");
         
         [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
             if (startError) {
                 NSLog(@"❌ Failed to start capture: %@", startError);
+                g_isRecording = NO;
             } else {
-                NSLog(@"✅ Frame capture started");
+                NSLog(@"✅ Frame capture started successfully");
                 g_isRecording = YES;
             }
         }];
@@ -287,14 +416,14 @@ static BOOL g_writerStarted = NO;
         return;
     }
     
-    // Ultra-conservative Electron video settings
+    // Fixed video settings for compatibility
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
-        AVVideoWidthKey: @1280,
-        AVVideoHeightKey: @720,
+        AVVideoWidthKey: @1920,
+        AVVideoHeightKey: @1080,
         AVVideoCompressionPropertiesKey: @{
-            AVVideoAverageBitRateKey: @(1280 * 720 * 1), // Lower bitrate
-            AVVideoMaxKeyFrameIntervalKey: @10,
+            AVVideoAverageBitRateKey: @(1920 * 1080 * 2), // 2 bits per pixel
+            AVVideoMaxKeyFrameIntervalKey: @30,
             AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel
         }
     };
@@ -305,8 +434,8 @@ static BOOL g_writerStarted = NO;
     // Pixel buffer attributes matching ScreenCaptureKit format
     NSDictionary *pixelBufferAttributes = @{
         (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (NSString*)kCVPixelBufferWidthKey: @1280,
-        (NSString*)kCVPixelBufferHeightKey: @720
+        (NSString*)kCVPixelBufferWidthKey: @1920,
+        (NSString*)kCVPixelBufferHeightKey: @1080
     };
     
     g_pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_assetWriterInput sourcePixelBufferAttributes:pixelBufferAttributes];
@@ -350,6 +479,7 @@ static BOOL g_writerStarted = NO;
     g_assetWriterInput = nil;
     g_pixelBufferAdaptor = nil;
     g_writerStarted = NO;
+    g_frameNumber = 0; // Reset frame counter
     g_stream = nil;
     g_streamDelegate = nil;
     g_streamOutput = nil;

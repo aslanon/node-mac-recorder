@@ -175,11 +175,9 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                           [NSBundle.mainBundle.bundlePath containsString:@"Electron"]);
         
         if (isElectron) {
-            NSLog(@"⚡ Electron environment detected - Using crash-safe recording method");
-            NSLog(@"🛡️ ScreenCaptureKit disabled for Electron stability");
-            
-            // Return error for Electron - force use of external recording tools
-            return Napi::Boolean::New(env, false);
+            NSLog(@"⚡ Electron environment detected - Using ULTRA-SAFE ScreenCaptureKit");
+            NSLog(@"🛡️ Maximum crash protection enabled for Electron");
+            // Continue to ScreenCaptureKit but with extreme safety
         }
         
         // Non-Electron: Use ScreenCaptureKit
