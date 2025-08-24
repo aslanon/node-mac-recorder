@@ -1,7 +1,7 @@
 const MacRecorder = require('./index');
 
-// Simulate Electron environment
-process.env.ELECTRON_RUN_AS_NODE = '1';
+// Test video creation in Node.js
+// process.env.ELECTRON_RUN_AS_NODE = '1';
 
 console.log('🎯 Quick ScreenCaptureKit Test');
 
