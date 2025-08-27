@@ -165,7 +165,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         // Smart Recording Selection: ScreenCaptureKit vs Alternative
         NSLog(@"🎯 Smart Recording Engine Selection");
         
-        // Detect Electron environment with multiple checks
+        // Electron environment detection (removed disable logic)
         BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
                           [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
                          (NSProcessInfo.processInfo.processName && 
@@ -175,11 +175,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                           [NSBundle.mainBundle.bundlePath containsString:@"Electron"]);
         
         if (isElectron) {
-            NSLog(@"⚡ Electron environment detected - ScreenCaptureKit DISABLED for crash prevention");
-            NSLog(@"🛡️ Recording not supported in Electron to prevent crashes");
-            // Skip ScreenCaptureKit completely for Electron 
-            NSLog(@"❌ Recording disabled in Electron for stability - use Node.js environment instead");
-            return Napi::Boolean::New(env, false);
+            NSLog(@"⚡ Electron environment detected - continuing with ScreenCaptureKit");
+            NSLog(@"⚠️ Warning: ScreenCaptureKit in Electron may require additional stability measures");
         }
         
         // Non-Electron: Use ScreenCaptureKit
