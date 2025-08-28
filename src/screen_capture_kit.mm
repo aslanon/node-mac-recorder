@@ -187,20 +187,24 @@ static NSString *g_outputPath = nil;
         NSLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
               recordingWidth, recordingHeight, shouldShowCursor);
         
-        // AUDIO SUPPORT - Enable only for system audio in Electron
+        // AUDIO SUPPORT - Enable both microphone and system audio
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
         BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
         
-        // Only enable system audio, mic causes crashes in Electron
+        // Enable audio if either microphone or system audio is requested
         if (@available(macOS 13.0, *)) {
-            if (shouldCaptureSystemAudio && !shouldCaptureMic) {
+            if (shouldCaptureMic || shouldCaptureSystemAudio) {
                 streamConfig.capturesAudio = YES;
                 streamConfig.sampleRate = 44100;
                 streamConfig.channelCount = 2;
-                NSLog(@"🎵 System audio only enabled (safe for Electron)");
-            } else if (shouldCaptureMic) {
-                NSLog(@"🚫 Microphone audio disabled in Electron for stability");
-                streamConfig.capturesAudio = NO;
+                
+                if (shouldCaptureMic && shouldCaptureSystemAudio) {
+                    NSLog(@"🎵 Both microphone and system audio enabled");
+                } else if (shouldCaptureMic) {
+                    NSLog(@"🎤 Microphone audio enabled");
+                } else {
+                    NSLog(@"🔊 System audio enabled");
+                }
             } else {
                 streamConfig.capturesAudio = NO;
                 NSLog(@"🔇 Audio disabled");
@@ -236,8 +240,12 @@ static NSString *g_outputPath = nil;
             // Create recording output with correct initializer
             g_recordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recordingConfig 
                                                                         delegate:nil];
-            if (shouldCaptureSystemAudio && !shouldCaptureMic) {
-                NSLog(@"🔧 Created SCRecordingOutput with system audio only");
+            if (shouldCaptureMic && shouldCaptureSystemAudio) {
+                NSLog(@"🔧 Created SCRecordingOutput with microphone and system audio");
+            } else if (shouldCaptureMic) {
+                NSLog(@"🔧 Created SCRecordingOutput with microphone audio");
+            } else if (shouldCaptureSystemAudio) {
+                NSLog(@"🔧 Created SCRecordingOutput with system audio");
             } else {
                 NSLog(@"🔧 Created SCRecordingOutput (audio disabled)");
             }
