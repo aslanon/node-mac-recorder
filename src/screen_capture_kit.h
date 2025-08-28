@@ -1,8 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
-#import <AVFoundation/AVFoundation.h>
+// NO AVFoundation - Pure ScreenCaptureKit implementation
 
-API_AVAILABLE(macos(12.3))
+API_AVAILABLE(macos(15.0))
 @interface ScreenCaptureKitRecorder : NSObject
 
 + (BOOL)isScreenCaptureKitAvailable;
@@ -12,6 +12,7 @@ API_AVAILABLE(macos(12.3))
 + (void)stopRecording;
 + (BOOL)isRecording;
 + (BOOL)setupVideoWriter;
++ (void)finalizeRecording;
 + (void)finalizeVideoWriter;
 + (void)cleanupVideoWriter;
 

@@ -1,114 +1,35 @@
 #import "screen_capture_kit.h"
-#import <CoreImage/CoreImage.h>
 
-static SCStream *g_stream = nil;
-static id<SCStreamDelegate> g_streamDelegate = nil;
-static id<SCStreamOutput> g_streamOutput = nil;
+// Pure ScreenCaptureKit implementation - NO AVFoundation
+static SCStream * API_AVAILABLE(macos(12.3)) g_stream = nil;
+static SCRecordingOutput * API_AVAILABLE(macos(15.0)) g_recordingOutput = nil;
+static id<SCStreamDelegate> API_AVAILABLE(macos(12.3)) g_streamDelegate = nil;
 static BOOL g_isRecording = NO;
-
-// Modern ScreenCaptureKit writer
-static AVAssetWriter *g_assetWriter = nil;
-static AVAssetWriterInput *g_assetWriterInput = nil;
-static AVAssetWriterInputPixelBufferAdaptor *g_pixelBufferAdaptor = nil;
 static NSString *g_outputPath = nil;
-static BOOL g_writerStarted = NO;
-static int g_frameCount = 0;
 
-@interface ModernStreamDelegate : NSObject <SCStreamDelegate>
+@interface PureScreenCaptureDelegate : NSObject <SCStreamDelegate>
 @end
 
-@implementation ModernStreamDelegate
-- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
-    NSLog(@"🛑 Stream stopped");
+@implementation PureScreenCaptureDelegate
+- (void)stream:(SCStream * API_AVAILABLE(macos(12.3)))stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
+    NSLog(@"🛑 Pure ScreenCapture stream stopped");
     g_isRecording = NO;
     
     if (error) {
         NSLog(@"❌ Stream error: %@", error);
-    }
-    
-    [ScreenCaptureKitRecorder finalizeVideoWriter];
-}
-@end
-
-@interface ModernStreamOutput : NSObject <SCStreamOutput>
-@end
-
-@implementation ModernStreamOutput
-- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
-    if (!g_isRecording) return;
-    
-    // Only process screen frames
-    if (type != SCStreamOutputTypeScreen) return;
-    
-    // Validate sample buffer
-    if (!sampleBuffer || !CMSampleBufferIsValid(sampleBuffer)) {
-        NSLog(@"⚠️ Invalid sample buffer");
-        return;
-    }
-    
-    // Get pixel buffer
-    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (!pixelBuffer) {
-        NSLog(@"⚠️ No pixel buffer in sample");
-        return;
-    }
-    
-    // Initialize writer on first frame
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        [self initializeWriterWithSampleBuffer:sampleBuffer];
-    });
-    
-    if (!g_writerStarted) {
-        return;
-    }
-    
-    // Write frame
-    [self writePixelBuffer:pixelBuffer];
-}
-
-- (void)initializeWriterWithSampleBuffer:(CMSampleBufferRef)sampleBuffer {
-    if (!g_assetWriter) return;
-    
-    NSLog(@"🎬 Initializing writer with first sample");
-    
-    CMTime startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-    if (!CMTIME_IS_VALID(startTime)) {
-        startTime = CMTimeMakeWithSeconds(0, 600);
-    }
-    
-    [g_assetWriter startWriting];
-    [g_assetWriter startSessionAtSourceTime:startTime];
-    g_writerStarted = YES;
-    
-    NSLog(@"✅ Writer initialized");
-}
-
-- (void)writePixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    if (!g_assetWriterInput.isReadyForMoreMediaData) {
-        return;
-    }
-    
-    // Create time for this frame
-    CMTime frameTime = CMTimeMakeWithSeconds(g_frameCount / 30.0, 600);
-    g_frameCount++;
-    
-    // Write the frame
-    BOOL success = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
-    
-    if (success) {
-        NSLog(@"✅ Frame %d written", g_frameCount);
     } else {
-        NSLog(@"❌ Failed to write frame %d", g_frameCount);
+        NSLog(@"✅ Stream stopped cleanly");
     }
+    
+    [ScreenCaptureKitRecorder finalizeRecording];
 }
 @end
 
 @implementation ScreenCaptureKitRecorder
 
 + (BOOL)isScreenCaptureKitAvailable {
-    if (@available(macOS 12.3, *)) {
-        return [SCShareableContent class] != nil && [SCStream class] != nil;
+    if (@available(macOS 15.0, *)) {
+        return [SCShareableContent class] != nil && [SCStream class] != nil && [SCRecordingOutput class] != nil;
     }
     return NO;
 }
@@ -120,15 +41,18 @@ static int g_frameCount = 0;
     }
     
     g_outputPath = config[@"outputPath"];
-    g_frameCount = 0;
     
-    NSLog(@"🎬 Starting modern ScreenCaptureKit recording");
+    // Extract configuration options
+    NSNumber *displayId = config[@"displayId"];
+    NSNumber *windowId = config[@"windowId"];
+    NSValue *captureAreaValue = config[@"captureArea"];
+    NSNumber *captureCursor = config[@"captureCursor"];
+    NSNumber *includeMicrophone = config[@"includeMicrophone"];
+    NSNumber *includeSystemAudio = config[@"includeSystemAudio"];
     
-    // Setup writer first
-    if (![self setupVideoWriter]) {
-        NSLog(@"❌ Failed to setup video writer");
-        return NO;
-    }
+    NSLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
+    NSLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@", 
+          captureCursor, includeMicrophone, includeSystemAudio, displayId, windowId);
     
     // Get shareable content
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
@@ -137,69 +61,155 @@ static int g_frameCount = 0;
             return;
         }
         
-        NSLog(@"✅ Got %lu displays", content.displays.count);
+        NSLog(@"✅ Got %lu displays, %lu windows for pure recording", 
+              content.displays.count, content.windows.count);
         
-        if (content.displays.count == 0) {
-            NSLog(@"❌ No displays found");
+        SCContentFilter *filter = nil;
+        NSInteger recordingWidth = 0;
+        NSInteger recordingHeight = 0;
+        
+        // WINDOW RECORDING
+        if (windowId && [windowId integerValue] != 0) {
+            SCRunningApplication *targetApp = nil;
+            SCWindow *targetWindow = nil;
+            
+            for (SCWindow *window in content.windows) {
+                if (window.windowID == [windowId unsignedIntValue]) {
+                    targetWindow = window;
+                    targetApp = window.owningApplication;
+                    break;
+                }
+            }
+            
+            if (targetWindow && targetApp) {
+                NSLog(@"🪟 Recording window: %@ (%ux%u)", 
+                      targetWindow.title, (unsigned)targetWindow.frame.size.width, (unsigned)targetWindow.frame.size.height);
+                filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
+                recordingWidth = (NSInteger)targetWindow.frame.size.width;
+                recordingHeight = (NSInteger)targetWindow.frame.size.height;
+            } else {
+                NSLog(@"❌ Window ID %@ not found", windowId);
+                return;
+            }
+        }
+        // DISPLAY RECORDING
+        else {
+            SCDisplay *targetDisplay = nil;
+            
+            if (displayId && [displayId integerValue] != 0) {
+                // Find specific display
+                for (SCDisplay *display in content.displays) {
+                    if (display.displayID == [displayId unsignedIntValue]) {
+                        targetDisplay = display;
+                        break;
+                    }
+                }
+            } else {
+                // Use first display
+                targetDisplay = content.displays.firstObject;
+            }
+            
+            if (!targetDisplay) {
+                NSLog(@"❌ Display not found");
+                return;
+            }
+            
+            NSLog(@"🖥️ Recording display %u (%dx%d)", 
+                  targetDisplay.displayID, (int)targetDisplay.width, (int)targetDisplay.height);
+            filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
+            recordingWidth = targetDisplay.width;
+            recordingHeight = targetDisplay.height;
+        }
+        
+        // Configure stream with extracted options
+        SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
+        streamConfig.width = recordingWidth;
+        streamConfig.height = recordingHeight;
+        streamConfig.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
+        streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
+        streamConfig.scalesToFit = NO;
+        
+        // CURSOR SUPPORT
+        BOOL shouldShowCursor = captureCursor ? [captureCursor boolValue] : YES;
+        streamConfig.showsCursor = shouldShowCursor;
+        
+        NSLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
+              recordingWidth, recordingHeight, shouldShowCursor);
+        
+        // AUDIO SUPPORT - Configure stream audio settings
+        BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
+        BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
+        
+        if (@available(macOS 13.0, *)) {
+            if (shouldCaptureMic || shouldCaptureSystemAudio) {
+                streamConfig.capturesAudio = YES;
+                streamConfig.sampleRate = 44100;
+                streamConfig.channelCount = 2;
+                NSLog(@"🎵 Audio enabled: mic=%d system=%d", shouldCaptureMic, shouldCaptureSystemAudio);
+            } else {
+                streamConfig.capturesAudio = NO;
+                NSLog(@"🔇 Audio disabled");
+            }
+        }
+        
+        // Create pure ScreenCaptureKit recording output
+        NSURL *outputURL = [NSURL fileURLWithPath:g_outputPath];
+        if (@available(macOS 15.0, *)) {
+            // Create recording output configuration
+            SCRecordingOutputConfiguration *recordingConfig = [[SCRecordingOutputConfiguration alloc] init];
+            recordingConfig.outputURL = outputURL;
+            recordingConfig.videoCodecType = AVVideoCodecTypeH264;
+            
+            // Audio configuration - using available properties
+            // Note: Specific audio routing handled by ScreenCaptureKit automatically
+            
+            // Create recording output with correct initializer
+            g_recordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recordingConfig 
+                                                                        delegate:nil];
+            NSLog(@"🔧 Created SCRecordingOutput with audio config: mic=%d system=%d", 
+                  shouldCaptureMic, shouldCaptureSystemAudio);
+        }
+        
+        if (!g_recordingOutput) {
+            NSLog(@"❌ Failed to create SCRecordingOutput");
             return;
         }
         
-        // Use first display
-        SCDisplay *display = content.displays.firstObject;
-        NSLog(@"🖥️ Using display %u (%dx%d)", display.displayID, (int)display.width, (int)display.height);
+        NSLog(@"✅ Pure ScreenCaptureKit recording output created");
         
-        // Create filter for entire display
-        SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
+        // Create delegate
+        g_streamDelegate = [[PureScreenCaptureDelegate alloc] init];
         
-        // Configure stream
-        SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
-        
-        // Use display's actual dimensions but scale if too large
-        NSInteger targetWidth = MIN(display.width, 1920);
-        NSInteger targetHeight = MIN(display.height, 1080);
-        
-        streamConfig.width = targetWidth;
-        streamConfig.height = targetHeight;
-        streamConfig.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
-        streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
-        streamConfig.showsCursor = YES;
-        streamConfig.scalesToFit = YES;
-        
-        NSLog(@"🔧 Stream: %ldx%ld @ 30fps", targetWidth, targetHeight);
-        
-        // Create delegates
-        g_streamDelegate = [[ModernStreamDelegate alloc] init];
-        g_streamOutput = [[ModernStreamOutput alloc] init];
-        
-        // Create and start stream
+        // Create and configure stream
         g_stream = [[SCStream alloc] initWithFilter:filter configuration:streamConfig delegate:g_streamDelegate];
         
         if (!g_stream) {
-            NSLog(@"❌ Failed to create stream");
+            NSLog(@"❌ Failed to create pure stream");
             return;
         }
         
-        // Add output
+        // Add recording output directly to stream
         NSError *outputError = nil;
-        BOOL outputAdded = [g_stream addStreamOutput:g_streamOutput
-                                                type:SCStreamOutputTypeScreen
-                                  sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)
-                                               error:&outputError];
+        BOOL outputAdded = NO;
+        
+        if (@available(macOS 15.0, *)) {
+            outputAdded = [g_stream addRecordingOutput:g_recordingOutput error:&outputError];
+        }
         
         if (!outputAdded || outputError) {
-            NSLog(@"❌ Output error: %@", outputError);
+            NSLog(@"❌ Failed to add recording output: %@", outputError);
             return;
         }
         
-        NSLog(@"✅ Output added");
+        NSLog(@"✅ Pure recording output added to stream");
         
-        // Start capture
+        // Start capture with recording
         [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
             if (startError) {
-                NSLog(@"❌ Start error: %@", startError);
+                NSLog(@"❌ Failed to start pure capture: %@", startError);
                 g_isRecording = NO;
             } else {
-                NSLog(@"✅ Capture started successfully!");
+                NSLog(@"🎉 PURE ScreenCaptureKit recording started successfully!");
                 g_isRecording = YES;
             }
         }];
@@ -213,14 +223,14 @@ static int g_frameCount = 0;
         return;
     }
     
-    NSLog(@"🛑 Stopping recording");
+    NSLog(@"🛑 Stopping pure ScreenCaptureKit recording");
     
     [g_stream stopCaptureWithCompletionHandler:^(NSError *error) {
         if (error) {
             NSLog(@"❌ Stop error: %@", error);
         }
-        NSLog(@"✅ Stream stopped");
-        [ScreenCaptureKitRecorder finalizeVideoWriter];
+        NSLog(@"✅ Pure stream stopped");
+        [ScreenCaptureKitRecorder finalizeRecording];
     }];
 }
 
@@ -229,90 +239,36 @@ static int g_frameCount = 0;
 }
 
 + (BOOL)setupVideoWriter {
-    if (g_assetWriter) return YES;
-    
-    NSLog(@"🔧 Setting up video writer");
-    
-    NSURL *outputURL = [NSURL fileURLWithPath:g_outputPath];
-    NSError *error = nil;
-    
-    g_assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
-    
-    if (error || !g_assetWriter) {
-        NSLog(@"❌ Writer creation error: %@", error);
-        return NO;
-    }
-    
-    // Video settings
-    NSDictionary *videoSettings = @{
-        AVVideoCodecKey: AVVideoCodecTypeH264,
-        AVVideoWidthKey: @1920,
-        AVVideoHeightKey: @1080,
-        AVVideoCompressionPropertiesKey: @{
-            AVVideoAverageBitRateKey: @(5000000), // 5 Mbps
-            AVVideoMaxKeyFrameIntervalKey: @30
-        }
-    };
-    
-    g_assetWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
-    g_assetWriterInput.expectsMediaDataInRealTime = YES;
-    
-    // Pixel buffer adaptor
-    NSDictionary *pixelBufferAttributes = @{
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (NSString*)kCVPixelBufferWidthKey: @1920,
-        (NSString*)kCVPixelBufferHeightKey: @1080
-    };
-    
-    g_pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor 
-                            assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_assetWriterInput 
-                            sourcePixelBufferAttributes:pixelBufferAttributes];
-    
-    if ([g_assetWriter canAddInput:g_assetWriterInput]) {
-        [g_assetWriter addInput:g_assetWriterInput];
-        NSLog(@"✅ Video writer ready");
-        return YES;
-    } else {
-        NSLog(@"❌ Cannot add input to writer");
-        return NO;
-    }
+    // No setup needed - SCRecordingOutput handles everything
+    return YES;
 }
 
-+ (void)finalizeVideoWriter {
-    NSLog(@"🎬 Finalizing video");
++ (void)finalizeRecording {
+    NSLog(@"🎬 Finalizing pure ScreenCaptureKit recording");
     
     g_isRecording = NO;
     
-    if (!g_assetWriter || !g_writerStarted) {
-        NSLog(@"⚠️ Writer not ready for finalization");
-        [self cleanupVideoWriter];
-        return;
+    if (g_recordingOutput) {
+        // SCRecordingOutput finalizes automatically
+        NSLog(@"✅ Pure recording output finalized");
     }
     
-    [g_assetWriterInput markAsFinished];
-    
-    [g_assetWriter finishWritingWithCompletionHandler:^{
-        if (g_assetWriter.status == AVAssetWriterStatusCompleted) {
-            NSLog(@"✅ Video saved: %@", g_outputPath);
-        } else {
-            NSLog(@"❌ Write failed: %@", g_assetWriter.error);
-        }
-        
-        [ScreenCaptureKitRecorder cleanupVideoWriter];
-    }];
+    [ScreenCaptureKitRecorder cleanupVideoWriter];
+}
+
++ (void)finalizeVideoWriter {
+    // Alias for finalizeRecording to maintain compatibility
+    [ScreenCaptureKitRecorder finalizeRecording];
 }
 
 + (void)cleanupVideoWriter {
-    g_assetWriter = nil;
-    g_assetWriterInput = nil;
-    g_pixelBufferAdaptor = nil;
-    g_writerStarted = NO;
-    g_frameCount = 0;
     g_stream = nil;
+    g_recordingOutput = nil;
     g_streamDelegate = nil;
-    g_streamOutput = nil;
+    g_isRecording = NO;
+    g_outputPath = nil;
     
-    NSLog(@"🧹 Cleanup complete");
+    NSLog(@"🧹 Pure ScreenCaptureKit cleanup complete");
 }
 
 @end

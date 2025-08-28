@@ -76,6 +76,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     bool includeMicrophone = false; // Default olarak mikrofon kapalı
     bool includeSystemAudio = true; // Default olarak sistem sesi açık
     CGDirectDisplayID displayID = CGMainDisplayID(); // Default ana ekran
+    uint32_t windowID = 0; // Default no window selection
     NSString *audioDeviceId = nil; // Default audio device ID
     NSString *systemAudioDeviceId = nil; // System audio device ID
     
@@ -154,10 +155,10 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             }
         }
         
-        // Window ID için gelecekte kullanım (şimdilik captureArea ile hallediliyor)
+        // Window ID support 
         if (options.Has("windowId") && !options.Get("windowId").IsNull()) {
-            // WindowId belirtilmiş ama captureArea JavaScript tarafında ayarlanıyor
-            // Bu parametre gelecekte native level pencere seçimi için kullanılabilir
+            windowID = options.Get("windowId").As<Napi::Number>().Uint32Value();
+            NSLog(@"🪟 Window ID specified: %u", windowID);
         }
     }
     
@@ -192,6 +193,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     // Create configuration for ScreenCaptureKit
                 NSMutableDictionary *sckConfig = [NSMutableDictionary dictionary];
                 sckConfig[@"displayId"] = @(displayID);
+                sckConfig[@"windowId"] = @(windowID);
                 sckConfig[@"captureCursor"] = @(captureCursor);
                 sckConfig[@"includeSystemAudio"] = @(includeSystemAudio);
                 sckConfig[@"includeMicrophone"] = @(includeMicrophone);
