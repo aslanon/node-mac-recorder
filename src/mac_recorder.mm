@@ -401,10 +401,37 @@ Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
         for (NSUInteger i = 0; i < devices.count; i++) {
             NSDictionary *device = devices[i];
             Napi::Object deviceObj = Napi::Object::New(env);
-            deviceObj.Set("id", Napi::String::New(env, [device[@"id"] UTF8String]));
-            deviceObj.Set("name", Napi::String::New(env, [device[@"name"] UTF8String]));
-            deviceObj.Set("manufacturer", Napi::String::New(env, [device[@"manufacturer"] UTF8String]));
-            deviceObj.Set("isDefault", Napi::Boolean::New(env, [device[@"isDefault"] boolValue]));
+            
+            // Safe string conversion with null checks
+            NSString *deviceId = device[@"id"];
+            NSString *deviceName = device[@"name"]; 
+            NSString *deviceManufacturer = device[@"manufacturer"];
+            NSNumber *isDefault = device[@"isDefault"];
+            
+            if (deviceId && [deviceId isKindOfClass:[NSString class]]) {
+                deviceObj.Set("id", Napi::String::New(env, [deviceId UTF8String]));
+            } else {
+                deviceObj.Set("id", Napi::String::New(env, "default"));
+            }
+            
+            if (deviceName && [deviceName isKindOfClass:[NSString class]]) {
+                deviceObj.Set("name", Napi::String::New(env, [deviceName UTF8String]));
+            } else {
+                deviceObj.Set("name", Napi::String::New(env, "Default Audio Device"));
+            }
+            
+            if (deviceManufacturer && [deviceManufacturer isKindOfClass:[NSString class]]) {
+                deviceObj.Set("manufacturer", Napi::String::New(env, [deviceManufacturer UTF8String]));
+            } else {
+                deviceObj.Set("manufacturer", Napi::String::New(env, "System"));
+            }
+            
+            if (isDefault && [isDefault isKindOfClass:[NSNumber class]]) {
+                deviceObj.Set("isDefault", Napi::Boolean::New(env, [isDefault boolValue]));
+            } else {
+                deviceObj.Set("isDefault", Napi::Boolean::New(env, true));
+            }
+            
             result[i] = deviceObj;
         }
         
