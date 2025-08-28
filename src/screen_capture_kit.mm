@@ -58,7 +58,12 @@ static NSString *g_outputPath = nil;
         g_isCleaningUp = NO;
     }
     
-    g_outputPath = config[@"outputPath"];
+    NSString *outputPath = config[@"outputPath"];
+    if (!outputPath || [outputPath length] == 0) {
+        NSLog(@"❌ Invalid output path provided");
+        return NO;
+    }
+    g_outputPath = outputPath;
     
     // Extract configuration options
     NSNumber *displayId = config[@"displayId"];
@@ -182,24 +187,24 @@ static NSString *g_outputPath = nil;
         NSLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
               recordingWidth, recordingHeight, shouldShowCursor);
         
-        // AUDIO SUPPORT - Configure stream audio settings
-        BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
-        BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
-        
-        if (@available(macOS 13.0, *)) {
-            if (shouldCaptureMic || shouldCaptureSystemAudio) {
-                streamConfig.capturesAudio = YES;
-                streamConfig.sampleRate = 44100;
-                streamConfig.channelCount = 2;
-                NSLog(@"🎵 Audio enabled: mic=%d system=%d", shouldCaptureMic, shouldCaptureSystemAudio);
-            } else {
-                streamConfig.capturesAudio = NO;
-                NSLog(@"🔇 Audio disabled");
-            }
-        }
+        // AUDIO SUPPORT - Disabled for Electron stability
+        NSLog(@"🔇 Audio capture disabled for Electron compatibility");
+        streamConfig.capturesAudio = NO;
         
         // Create pure ScreenCaptureKit recording output
-        NSURL *outputURL = [NSURL fileURLWithPath:g_outputPath];
+        // Use local copy to prevent race conditions
+        NSString *safeOutputPath = outputPath;  // Local variable from outer scope
+        if (!safeOutputPath || [safeOutputPath length] == 0) {
+            NSLog(@"❌ Output path is nil or empty");
+            return;
+        }
+        
+        NSURL *outputURL = [NSURL fileURLWithPath:safeOutputPath];
+        if (!outputURL) {
+            NSLog(@"❌ Failed to create output URL from path: %@", safeOutputPath);
+            return;
+        }
+        
         if (@available(macOS 15.0, *)) {
             // Create recording output configuration
             SCRecordingOutputConfiguration *recordingConfig = [[SCRecordingOutputConfiguration alloc] init];
@@ -212,8 +217,7 @@ static NSString *g_outputPath = nil;
             // Create recording output with correct initializer
             g_recordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recordingConfig 
                                                                         delegate:nil];
-            NSLog(@"🔧 Created SCRecordingOutput with audio config: mic=%d system=%d", 
-                  shouldCaptureMic, shouldCaptureSystemAudio);
+            NSLog(@"🔧 Created SCRecordingOutput (audio disabled for Electron)");
         }
         
         if (!g_recordingOutput) {
