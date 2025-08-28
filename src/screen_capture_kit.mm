@@ -45,14 +45,14 @@ static NSString *g_outputPath = nil;
     // Extract configuration options
     NSNumber *displayId = config[@"displayId"];
     NSNumber *windowId = config[@"windowId"];
-    NSValue *captureAreaValue = config[@"captureArea"];
+    NSDictionary *captureRect = config[@"captureRect"];
     NSNumber *captureCursor = config[@"captureCursor"];
     NSNumber *includeMicrophone = config[@"includeMicrophone"];
     NSNumber *includeSystemAudio = config[@"includeSystemAudio"];
     
     NSLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
-    NSLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@", 
-          captureCursor, includeMicrophone, includeSystemAudio, displayId, windowId);
+    NSLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@ crop=%@", 
+          captureCursor, includeMicrophone, includeSystemAudio, displayId, windowId, captureRect);
     
     // Get shareable content
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
@@ -121,6 +121,20 @@ static NSString *g_outputPath = nil;
             recordingHeight = targetDisplay.height;
         }
         
+        // CROP AREA SUPPORT - Adjust dimensions and source rect
+        if (captureRect && captureRect[@"width"] && captureRect[@"height"]) {
+            CGFloat cropWidth = [captureRect[@"width"] doubleValue];
+            CGFloat cropHeight = [captureRect[@"height"] doubleValue];
+            
+            if (cropWidth > 0 && cropHeight > 0) {
+                NSLog(@"🔲 Crop area specified: %.0fx%.0f at (%.0f,%.0f)", 
+                      cropWidth, cropHeight, 
+                      [captureRect[@"x"] doubleValue], [captureRect[@"y"] doubleValue]);
+                recordingWidth = (NSInteger)cropWidth;
+                recordingHeight = (NSInteger)cropHeight;
+            }
+        }
+        
         // Configure stream with extracted options
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
         streamConfig.width = recordingWidth;
@@ -128,6 +142,20 @@ static NSString *g_outputPath = nil;
         streamConfig.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
         streamConfig.scalesToFit = NO;
+        
+        // Apply crop area using sourceRect
+        if (captureRect && captureRect[@"x"] && captureRect[@"y"] && captureRect[@"width"] && captureRect[@"height"]) {
+            CGFloat cropX = [captureRect[@"x"] doubleValue];
+            CGFloat cropY = [captureRect[@"y"] doubleValue];
+            CGFloat cropWidth = [captureRect[@"width"] doubleValue];
+            CGFloat cropHeight = [captureRect[@"height"] doubleValue];
+            
+            if (cropWidth > 0 && cropHeight > 0) {
+                CGRect sourceRect = CGRectMake(cropX, cropY, cropWidth, cropHeight);
+                streamConfig.sourceRect = sourceRect;
+                NSLog(@"✂️ Crop sourceRect applied: (%.0f,%.0f) %.0fx%.0f", cropX, cropY, cropWidth, cropHeight);
+            }
+        }
         
         // CURSOR SUPPORT
         BOOL shouldShowCursor = captureCursor ? [captureCursor boolValue] : YES;
