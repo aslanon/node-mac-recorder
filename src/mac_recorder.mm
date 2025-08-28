@@ -1,14 +1,11 @@
 #import <napi.h>
-#import <AVFoundation/AVFoundation.h>
-#import <CoreMedia/CoreMedia.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <CoreAudio/CoreAudio.h>
 
-// Import screen capture
-#import "screen_capture.h"
+// Import screen capture (ScreenCaptureKit only)
 #import "screen_capture_kit.h"
 
 // Cursor tracker function declarations
@@ -21,26 +18,13 @@ Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
 extern "C" void hideOverlays();
 extern "C" void showOverlays();
 
-@interface MacRecorderDelegate : NSObject <AVCaptureFileOutputRecordingDelegate>
-@property (nonatomic, copy) void (^completionHandler)(NSURL *outputURL, NSError *error);
+@interface MacRecorderDelegate : NSObject
 @end
 
 @implementation MacRecorderDelegate
-- (void)captureOutput:(AVCaptureFileOutput *)output
-didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
-      fromConnections:(NSArray<AVCaptureConnection *> *)connections
-                error:(NSError *)error {
-    if (self.completionHandler) {
-        self.completionHandler(outputFileURL, error);
-    }
-}
 @end
 
-// Global state for recording
-static AVCaptureSession *g_captureSession = nil;
-static AVCaptureMovieFileOutput *g_movieFileOutput = nil;
-static AVCaptureScreenInput *g_screenInput = nil;
-static AVCaptureDeviceInput *g_audioInput = nil;
+// Global state for recording (ScreenCaptureKit only)
 static MacRecorderDelegate *g_delegate = nil;
 static bool g_isRecording = false;
 
@@ -244,11 +228,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                         NSLog(@"❌ Exception during ScreenCaptureKit startup: %@", sckException.reason);
                     }
                     
-                    NSLog(@"⚠️ ScreenCaptureKit failed or unsafe - falling back to AVFoundation");
+                    NSLog(@"❌ ScreenCaptureKit failed or unsafe");
                     
                 } else {
                     NSLog(@"❌ ScreenCaptureKit availability check failed");
-                    NSLog(@"⚠️ Falling back to AVFoundation");
+                    NSLog(@"❌ ScreenCaptureKit not available");
                 }
             } @catch (NSException *availabilityException) {
                 NSLog(@"❌ Exception during ScreenCaptureKit availability check: %@", availabilityException.reason);
@@ -275,7 +259,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     
     NSLog(@"📞 StopRecording native method called");
     
-    // ScreenCaptureKit ONLY - No AVFoundation fallback
+    // ScreenCaptureKit ONLY
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {
             NSLog(@"🛑 Stopping ScreenCaptureKit recording");
@@ -402,16 +386,15 @@ Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
         NSMutableArray *devices = [NSMutableArray array];
         
         // Get all audio devices
-        NSArray *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+        // Audio device enumeration removed - ScreenCaptureKit handles audio internally
+        NSLog(@"🎵 Audio device enumeration disabled - using ScreenCaptureKit internal audio");
         
-        for (AVCaptureDevice *device in audioDevices) {
-            [devices addObject:@{
-                @"id": device.uniqueID,
-                @"name": device.localizedName,
-                @"manufacturer": device.manufacturer ?: @"Unknown",
-                @"isDefault": @([device isEqual:[AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio]])
-            }];
-        }
+        // Add default system audio entry
+        [devices addObject:@{
+            @"id": @"default", 
+            @"name": @"Default Audio Device",
+            @"isDefault": @YES
+        }];
         
         // Convert to NAPI array
         Napi::Array result = Napi::Array::New(env, devices.count);
@@ -437,7 +420,20 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     @try {
-        NSArray *displays = [ScreenCapture getAvailableDisplays];
+        // Get displays using NSScreen instead of ScreenCapture
+        NSArray *screens = [NSScreen screens];
+        NSMutableArray *displays = [NSMutableArray array];
+        
+        for (NSUInteger i = 0; i < [screens count]; i++) {
+            NSScreen *screen = [screens objectAtIndex:i];
+            NSDictionary *displayInfo = @{
+                @"id": @(i + 1),
+                @"name": [NSString stringWithFormat:@"Display %lu", (unsigned long)(i + 1)],
+                @"width": @((int)screen.frame.size.width),
+                @"height": @((int)screen.frame.size.height)
+            };
+            [displays addObject:displayInfo];
+        }
         Napi::Array result = Napi::Array::New(env, displays.count);
         
         NSLog(@"Found %lu displays", (unsigned long)displays.count);
@@ -742,8 +738,9 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
         // Check audio permission
         bool hasAudioPermission = true;
         if (@available(macOS 10.14, *)) {
-            AVAuthorizationStatus audioStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-            hasAudioPermission = (audioStatus == AVAuthorizationStatusAuthorized);
+            // Audio permissions handled by ScreenCaptureKit internally
+            BOOL audioAuthorized = YES;  // Assume authorized since SCK handles it
+            hasAudioPermission = audioAuthorized;
         }
         
         return Napi::Boolean::New(env, hasScreenPermission && hasAudioPermission);

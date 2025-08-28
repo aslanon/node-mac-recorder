@@ -7,27 +7,25 @@ DEFS_Debug := \
 	'-DUSING_UV_SHARED=1' \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
-	'-DV8_DEPRECATION_WARNINGS' \
-	'-DV8_IMMINENT_DEPRECATION_WARNINGS' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
+	'-D_FILE_OFFSET_BITS=64' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
-	'-D_FILE_OFFSET_BITS=64' \
 	'-DOPENSSL_NO_PINSHARED' \
 	'-DOPENSSL_THREADS' \
 	'-DNAPI_DISABLE_CPP_EXCEPTIONS' \
 	'-DBUILDING_NODE_EXTENSION' \
 	'-DDEBUG' \
-	'-D_DEBUG' \
-	'-DV8_ENABLE_CHECKS'
+	'-D_DEBUG'
 
 # Flags passed to all source files.
 CFLAGS_Debug := \
 	-O0 \
 	-gdwarf-2 \
+	-fno-strict-aliasing \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-Wall \
 	-Wendif-labels \
 	-W \
@@ -35,15 +33,13 @@ CFLAGS_Debug := \
 
 # Flags passed to only C files.
 CFLAGS_C_Debug := \
-	-fno-strict-aliasing \
 	-ObjC++
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Debug := \
-	-std=gnu++17 \
+	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
-	-fno-strict-aliasing \
 	-ObjC++
 
 # Flags passed to only ObjC files.
@@ -53,13 +49,13 @@ CFLAGS_OBJC_Debug :=
 CFLAGS_OBJCC_Debug :=
 
 INCS_Debug := \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
@@ -67,12 +63,10 @@ DEFS_Release := \
 	'-DUSING_UV_SHARED=1' \
 	'-DUSING_V8_SHARED=1' \
 	'-DV8_DEPRECATION_WARNINGS=1' \
-	'-DV8_DEPRECATION_WARNINGS' \
-	'-DV8_IMMINENT_DEPRECATION_WARNINGS' \
 	'-D_GLIBCXX_USE_CXX11_ABI=1' \
+	'-D_FILE_OFFSET_BITS=64' \
 	'-D_DARWIN_USE_64_BIT_INODE=1' \
 	'-D_LARGEFILE_SOURCE' \
-	'-D_FILE_OFFSET_BITS=64' \
 	'-DOPENSSL_NO_PINSHARED' \
 	'-DOPENSSL_THREADS' \
 	'-DNAPI_DISABLE_CPP_EXCEPTIONS' \
@@ -82,9 +76,10 @@ DEFS_Release := \
 CFLAGS_Release := \
 	-O3 \
 	-gdwarf-2 \
+	-fno-strict-aliasing \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-Wall \
 	-Wendif-labels \
 	-W \
@@ -92,15 +87,13 @@ CFLAGS_Release := \
 
 # Flags passed to only C files.
 CFLAGS_C_Release := \
-	-fno-strict-aliasing \
 	-ObjC++
 
 # Flags passed to only C++ files.
 CFLAGS_CC_Release := \
-	-std=gnu++17 \
+	-std=gnu++20 \
 	-stdlib=libc++ \
 	-fno-rtti \
-	-fno-strict-aliasing \
 	-ObjC++
 
 # Flags passed to only ObjC files.
@@ -110,18 +103,17 @@ CFLAGS_OBJC_Release :=
 CFLAGS_OBJCC_Release :=
 
 INCS_Release := \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/include/node \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/src \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/config \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/openssl/openssl/include \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/uv/include \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/zlib \
-	-I/Users/onur/Library/Caches/node-gyp/20.10.0/deps/v8/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/include/node \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/src \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/config \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/openssl/openssl/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
+	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
 	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \
 	$(obj).target/$(TARGET)/src/mac_recorder.o \
-	$(obj).target/$(TARGET)/src/screen_capture.o \
 	$(obj).target/$(TARGET)/src/screen_capture_kit.o \
 	$(obj).target/$(TARGET)/src/audio_capture.o \
 	$(obj).target/$(TARGET)/src/cursor_tracker.o \
@@ -161,7 +153,7 @@ LDFLAGS_Debug := \
 	-Wl,-search_paths_first \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-L$(builddir) \
 	-stdlib=libc++
 
@@ -174,7 +166,7 @@ LDFLAGS_Release := \
 	-Wl,-search_paths_first \
 	-mmacosx-version-min=10.15 \
 	-arch \
-	x86_64 \
+	arm64 \
 	-L$(builddir) \
 	-stdlib=libc++
 
@@ -183,15 +175,13 @@ LIBTOOLFLAGS_Release := \
 	-Wl,-search_paths_first
 
 LIBS := \
-	-framework AVFoundation \
-	-framework CoreMedia \
-	-framework CoreVideo \
 	-framework Foundation \
 	-framework AppKit \
 	-framework ScreenCaptureKit \
 	-framework ApplicationServices \
 	-framework Carbon \
-	-framework Accessibility
+	-framework Accessibility \
+	-framework CoreAudio
 
 $(builddir)/mac_recorder.node: GYP_LDFLAGS := $(LDFLAGS_$(BUILDTYPE))
 $(builddir)/mac_recorder.node: LIBS := $(LIBS)

@@ -4,7 +4,6 @@
       "target_name": "mac_recorder",
       "sources": [
         "src/mac_recorder.mm",
-        "src/screen_capture.mm",
         "src/screen_capture_kit.mm",
         "src/audio_capture.mm",
         "src/cursor_tracker.mm",
@@ -28,15 +27,13 @@
       },
       "link_settings": {
         "libraries": [
-          "-framework AVFoundation",
-          "-framework CoreMedia",
-          "-framework CoreVideo",
           "-framework Foundation",
           "-framework AppKit",
           "-framework ScreenCaptureKit",
           "-framework ApplicationServices",
           "-framework Carbon",
-          "-framework Accessibility"
+          "-framework Accessibility",
+          "-framework CoreAudio"
         ]
       },
       "defines": [ "NAPI_DISABLE_CPP_EXCEPTIONS" ]
