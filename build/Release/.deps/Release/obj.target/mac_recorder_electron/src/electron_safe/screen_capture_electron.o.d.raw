@@ -1,0 +1,3 @@
+Release/obj.target/mac_recorder_electron/src/electron_safe/screen_capture_electron.o: \
+  ../src/electron_safe/screen_capture_electron.mm \
+  ../src/electron_safe/screen_capture_electron.h
