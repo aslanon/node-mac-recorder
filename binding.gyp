@@ -5,6 +5,7 @@
       "sources": [
         "src/mac_recorder.mm",
         "src/screen_capture_kit.mm",
+        "src/avfoundation_recorder.mm",
         "src/audio_capture.mm",
         "src/cursor_tracker.mm",
         "src/window_selector.mm"
@@ -30,6 +31,10 @@
           "-framework Foundation",
           "-framework AppKit",
           "-framework ScreenCaptureKit",
+          "-framework AVFoundation",
+          "-framework CoreMedia",
+          "-framework CoreVideo",
+          "-framework QuartzCore",
           "-framework ApplicationServices",
           "-framework Carbon",
           "-framework Accessibility",

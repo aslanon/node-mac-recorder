@@ -8,6 +8,20 @@
 // Import screen capture (ScreenCaptureKit only)
 #import "screen_capture_kit.h"
 
+// AVFoundation fallback declarations
+extern "C" {
+    bool startAVFoundationRecording(const std::string& outputPath, 
+                                   CGDirectDisplayID displayID,
+                                   uint32_t windowID,
+                                   CGRect captureRect,
+                                   bool captureCursor,
+                                   bool includeMicrophone, 
+                                   bool includeSystemAudio,
+                                   NSString* audioDeviceId);
+    bool stopAVFoundationRecording();
+    bool isAVFoundationRecording();
+}
+
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 
@@ -30,12 +44,18 @@ static bool g_isRecording = false;
 
 // Helper function to cleanup recording resources
 void cleanupRecording() {
-    // ScreenCaptureKit cleanup only
+    // ScreenCaptureKit cleanup
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {
             [ScreenCaptureKitRecorder stopRecording];
         }
     }
+    
+    // AVFoundation cleanup
+    if (isAVFoundationRecording()) {
+        stopAVFoundationRecording();
+    }
+    
     g_isRecording = false;
 }
 
@@ -164,9 +184,20 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             NSLog(@"⚠️ Warning: ScreenCaptureKit in Electron may require additional stability measures");
         }
         
-        // Non-Electron: Use ScreenCaptureKit
-        if (@available(macOS 12.3, *)) {
-            NSLog(@"✅ macOS 12.3+ detected - ScreenCaptureKit should be available");
+        // Check macOS version for ScreenCaptureKit compatibility
+        NSOperatingSystemVersion osVersion = [[NSProcessInfo processInfo] operatingSystemVersion];
+        BOOL isM15Plus = (osVersion.majorVersion > 15 || 
+                          (osVersion.majorVersion == 15 && osVersion.minorVersion >= 0));
+        BOOL isM14Plus = (osVersion.majorVersion > 14 || 
+                          (osVersion.majorVersion == 14 && osVersion.minorVersion >= 0));
+        
+        NSLog(@"🖥️ macOS Version: %ld.%ld.%ld", 
+              (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
+        
+        // Try ScreenCaptureKit on macOS 14+ (with better compatibility on 15+)
+        if (@available(macOS 12.3, *) && isM14Plus) {
+            NSLog(@"✅ macOS 14+ detected - ScreenCaptureKit available with %@ compatibility", 
+                  isM15Plus ? @"full" : @"limited");
             
             // Try ScreenCaptureKit with extensive safety measures
             @try {
@@ -243,8 +274,35 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             return Napi::Boolean::New(env, false);
         }
         
-        // If we get here, ScreenCaptureKit failed completely
-        NSLog(@"❌ ScreenCaptureKit failed to initialize - Recording not available");
+        // If we get here, ScreenCaptureKit failed - try AVFoundation fallback
+        NSLog(@"🔄 ScreenCaptureKit failed - attempting AVFoundation fallback");
+        
+        @try {
+            // Import AVFoundation recording functions (if available)
+            extern bool startAVFoundationRecording(const std::string& outputPath, 
+                                                   CGDirectDisplayID displayID,
+                                                   uint32_t windowID,
+                                                   CGRect captureRect,
+                                                   bool captureCursor,
+                                                   bool includeMicrophone, 
+                                                   bool includeSystemAudio,
+                                                   NSString* audioDeviceId);
+            
+            if (startAVFoundationRecording(outputPath, displayID, windowID, captureRect, 
+                                          captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId)) {
+                NSLog(@"🎥 RECORDING METHOD: AVFoundation (Fallback)");
+                NSLog(@"✅ AVFoundation recording started successfully");
+                g_isRecording = true;
+                return Napi::Boolean::New(env, true);
+            } else {
+                NSLog(@"❌ AVFoundation recording also failed to start");
+            }
+        } @catch (NSException *avException) {
+            NSLog(@"❌ Exception during AVFoundation startup: %@", avException.reason);
+        }
+        
+        // Both ScreenCaptureKit and AVFoundation failed
+        NSLog(@"❌ All recording methods failed - no recording available");
         return Napi::Boolean::New(env, false);
         
     } @catch (NSException *exception) {
@@ -259,22 +317,39 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     
     NSLog(@"📞 StopRecording native method called");
     
-    // ScreenCaptureKit ONLY
+    // Try ScreenCaptureKit first
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {
             NSLog(@"🛑 Stopping ScreenCaptureKit recording");
             [ScreenCaptureKitRecorder stopRecording];
             g_isRecording = false;
             return Napi::Boolean::New(env, true);
-        } else {
-            NSLog(@"⚠️ ScreenCaptureKit not recording");
-            g_isRecording = false;
-            return Napi::Boolean::New(env, true);
         }
-    } else {
-        NSLog(@"❌ ScreenCaptureKit not available - cannot stop recording");
-        return Napi::Boolean::New(env, false);
     }
+    
+    // Try AVFoundation fallback
+    extern bool isAVFoundationRecording();
+    extern bool stopAVFoundationRecording();
+    
+    @try {
+        if (isAVFoundationRecording()) {
+            NSLog(@"🛑 Stopping AVFoundation recording");
+            if (stopAVFoundationRecording()) {
+                g_isRecording = false;
+                return Napi::Boolean::New(env, true);
+            } else {
+                NSLog(@"❌ Failed to stop AVFoundation recording");
+                g_isRecording = false;
+                return Napi::Boolean::New(env, false);
+            }
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
+    }
+    
+    NSLog(@"⚠️ No active recording found to stop");
+    g_isRecording = false;
+    return Napi::Boolean::New(env, true);
 }
 
 
@@ -530,7 +605,21 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
 // NAPI Function: Get Recording Status
 Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    return Napi::Boolean::New(env, g_isRecording);
+    
+    // Check both recording methods
+    bool isRecording = g_isRecording;
+    
+    if (@available(macOS 12.3, *)) {
+        if ([ScreenCaptureKitRecorder isRecording]) {
+            isRecording = true;
+        }
+    }
+    
+    if (isAVFoundationRecording()) {
+        isRecording = true;
+    }
+    
+    return Napi::Boolean::New(env, isRecording);
 }
 
 // NAPI Function: Get Window Thumbnail
