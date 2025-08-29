@@ -51,8 +51,14 @@ void cleanupRecording() {
         }
     }
     
-    // AVFoundation cleanup
-    if (isAVFoundationRecording()) {
+    // AVFoundation cleanup (only in non-Electron environments)
+    BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                      [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                     (NSProcessInfo.processInfo.processName && 
+                      [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
+                     (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
+    
+    if (!isElectron && isAVFoundationRecording()) {
         stopAVFoundationRecording();
     }
     
@@ -274,7 +280,14 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             return Napi::Boolean::New(env, false);
         }
         
-        // If we get here, ScreenCaptureKit failed - try AVFoundation fallback
+        // If we get here, ScreenCaptureKit failed
+        if (isElectron) {
+            NSLog(@"❌ ScreenCaptureKit failed in Electron - AVFoundation disabled for stability");
+            NSLog(@"❌ Recording not available in Electron when ScreenCaptureKit fails");
+            return Napi::Boolean::New(env, false);
+        }
+        
+        // Try AVFoundation fallback (only in non-Electron environments)
         NSLog(@"🔄 ScreenCaptureKit failed - attempting AVFoundation fallback");
         
         @try {
@@ -327,24 +340,32 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
         }
     }
     
-    // Try AVFoundation fallback
-    extern bool isAVFoundationRecording();
-    extern bool stopAVFoundationRecording();
+    // Try AVFoundation fallback (only in non-Electron environments)
+    BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                      [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                     (NSProcessInfo.processInfo.processName && 
+                      [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
+                     (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
     
-    @try {
-        if (isAVFoundationRecording()) {
-            NSLog(@"🛑 Stopping AVFoundation recording");
-            if (stopAVFoundationRecording()) {
-                g_isRecording = false;
-                return Napi::Boolean::New(env, true);
-            } else {
-                NSLog(@"❌ Failed to stop AVFoundation recording");
-                g_isRecording = false;
-                return Napi::Boolean::New(env, false);
+    if (!isElectron) {
+        extern bool isAVFoundationRecording();
+        extern bool stopAVFoundationRecording();
+        
+        @try {
+            if (isAVFoundationRecording()) {
+                NSLog(@"🛑 Stopping AVFoundation recording");
+                if (stopAVFoundationRecording()) {
+                    g_isRecording = false;
+                    return Napi::Boolean::New(env, true);
+                } else {
+                    NSLog(@"❌ Failed to stop AVFoundation recording");
+                    g_isRecording = false;
+                    return Napi::Boolean::New(env, false);
+                }
             }
+        } @catch (NSException *exception) {
+            NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
         }
-    } @catch (NSException *exception) {
-        NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
     }
     
     NSLog(@"⚠️ No active recording found to stop");
@@ -606,7 +627,7 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
 Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    // Check both recording methods
+    // Check recording methods
     bool isRecording = g_isRecording;
     
     if (@available(macOS 12.3, *)) {
@@ -615,7 +636,14 @@ Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
         }
     }
     
-    if (isAVFoundationRecording()) {
+    // Check AVFoundation only in non-Electron environments
+    BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                      [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                     (NSProcessInfo.processInfo.processName && 
+                      [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
+                     (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
+    
+    if (!isElectron && isAVFoundationRecording()) {
         isRecording = true;
     }
     
