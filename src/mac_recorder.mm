@@ -192,18 +192,23 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         
         // Check macOS version for ScreenCaptureKit compatibility
         NSOperatingSystemVersion osVersion = [[NSProcessInfo processInfo] operatingSystemVersion];
-        BOOL isM15Plus = (osVersion.majorVersion > 15 || 
-                          (osVersion.majorVersion == 15 && osVersion.minorVersion >= 0));
-        BOOL isM14Plus = (osVersion.majorVersion > 14 || 
-                          (osVersion.majorVersion == 14 && osVersion.minorVersion >= 0));
+        BOOL isM15Plus = (osVersion.majorVersion >= 15);
+        BOOL isM14Plus = (osVersion.majorVersion >= 14);
+        BOOL isM13Plus = (osVersion.majorVersion >= 13);
         
         NSLog(@"🖥️ macOS Version: %ld.%ld.%ld", 
               (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
         
-        // Try ScreenCaptureKit on macOS 14+ (with better compatibility on 15+)
-        if (@available(macOS 12.3, *) && isM14Plus) {
-            NSLog(@"✅ macOS 14+ detected - ScreenCaptureKit available with %@ compatibility", 
-                  isM15Plus ? @"full" : @"limited");
+        // Force AVFoundation for debugging/testing
+        BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL);
+        if (forceAVFoundation) {
+            NSLog(@"🔧 FORCE_AVFOUNDATION environment variable detected - skipping ScreenCaptureKit");
+        }
+        
+        // Use ScreenCaptureKit only on macOS 15+ for maximum stability
+        // macOS 14 should use AVFoundation fallback
+        if (@available(macOS 12.3, *) && isM15Plus && !forceAVFoundation) {
+            NSLog(@"✅ macOS 15+ detected - ScreenCaptureKit available with full compatibility");
             
             // Try ScreenCaptureKit with extensive safety measures
             @try {
@@ -275,20 +280,32 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 NSLog(@"❌ Exception during ScreenCaptureKit availability check: %@", availabilityException.reason);
                 return Napi::Boolean::New(env, false);
             }
+        } else if (isM14Plus) {
+            // macOS 14 - directly use AVFoundation for better compatibility
+            NSLog(@"🎯 macOS 14 detected - using AVFoundation for better compatibility");
+        } else if (isM13Plus) {
+            // macOS 13 - use AVFoundation (limited features)
+            NSLog(@"🎯 macOS 13 detected - using AVFoundation (limited features)");
         } else {
-            NSLog(@"❌ macOS version too old for ScreenCaptureKit (< 12.3) - Recording not supported");
+            NSLog(@"❌ macOS version too old (< 13.0) - Recording not supported");
             return Napi::Boolean::New(env, false);
         }
         
-        // If we get here, ScreenCaptureKit failed
+        // AVFoundation fallback logic
         if (isElectron) {
             NSLog(@"❌ ScreenCaptureKit failed in Electron - AVFoundation disabled for stability");
             NSLog(@"❌ Recording not available in Electron when ScreenCaptureKit fails");
             return Napi::Boolean::New(env, false);
         }
         
-        // Try AVFoundation fallback (only in non-Electron environments)
-        NSLog(@"🔄 ScreenCaptureKit failed - attempting AVFoundation fallback");
+        // Try AVFoundation fallback (ScreenCaptureKit failed or macOS 13/14)
+        if (isM15Plus) {
+            NSLog(@"🔄 ScreenCaptureKit failed on macOS 15+ - attempting AVFoundation fallback");
+        } else if (isM14Plus) {
+            NSLog(@"🎥 Using AVFoundation for macOS 14 compatibility");
+        } else if (isM13Plus) {
+            NSLog(@"🎥 Using AVFoundation for macOS 13 compatibility (limited features)");
+        }
         
         @try {
             // Import AVFoundation recording functions (if available)
