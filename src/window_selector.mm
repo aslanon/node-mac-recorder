@@ -74,6 +74,7 @@ void updateScreenOverlays();
 @property (nonatomic) BOOL isActiveWindow;
 @property (nonatomic) BOOL isToggled;
 @property (nonatomic) NSRect highlightFrame;
+@property (nonatomic, strong) NSValue *globalOriginOffset; // Store global coordinate offset
 - (void)setHighlightFrame:(NSRect)frame;
 @end
 
@@ -863,10 +864,21 @@ void updateOverlay() {
                 }
             }
             
-            // No need to resize window since it's full-screen, just update the highlight area
+            // Convert global window coordinates to local view coordinates
+            // Account for multi-display offset from global origin
+            WindowSelectorOverlayView *overlayView = (WindowSelectorOverlayView *)g_overlayView;
+            NSPoint globalOffset = NSZeroPoint;
+            if (overlayView.globalOriginOffset) {
+                globalOffset = [overlayView.globalOriginOffset pointValue];
+            }
+            
+            // Convert global window position to local view position
+            CGFloat localX = x - globalOffset.x;
+            CGFloat localY = ([g_overlayView frame].size.height - (y - globalOffset.y)) - height;
+            
             // Update overlay view window info for highlighting
-            [(WindowSelectorOverlayView *)g_overlayView setWindowInfo:targetWindow];
-            [(WindowSelectorOverlayView *)g_overlayView setHighlightFrame:NSMakeRect(x, [g_overlayView frame].size.height - y - height, width, height)];
+            [overlayView setWindowInfo:targetWindow];
+            [overlayView setHighlightFrame:NSMakeRect(localX, localY, width, height)];
             
             // Only reset toggle state when switching to different window (not for position updates)
             if (!g_hasToggledWindow) {
@@ -967,19 +979,19 @@ void updateOverlay() {
             // Position buttons - Start Record in center of selected window
             if (g_selectButton) {
                 NSSize buttonSize = [g_selectButton frame].size;
-                // Use window center for positioning
-                CGFloat windowCenterX = x + (width / 2);
-                CGFloat windowCenterY = y + (height / 2);
+                // Use local window center for positioning
+                CGFloat localWindowCenterX = localX + (width / 2);
+                CGFloat localWindowCenterY = localY + (height / 2);
                 NSPoint buttonCenter = NSMakePoint(
-                    windowCenterX - (buttonSize.width / 2),
-                    windowCenterY - (buttonSize.height / 2)  // Perfect center of window
+                    localWindowCenterX - (buttonSize.width / 2),
+                    localWindowCenterY - (buttonSize.height / 2)  // Perfect center of window
                 );
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
                 // Position app icon above window center
                 NSPoint iconCenter = NSMakePoint(
-                    windowCenterX - (96 / 2),  // Center horizontally on window
-                    windowCenterY + 120  // 120px above window center
+                    localWindowCenterX - (96 / 2),  // Center horizontally on window
+                    localWindowCenterY + 120  // 120px above window center
                 );
                 [appIconView setFrameOrigin:iconCenter];
                 NSLog(@"🎯 Positioning app icon at: (%.0f, %.0f) for window size: (%.0f, %.0f)", 
@@ -1001,8 +1013,8 @@ void updateOverlay() {
                 
                 // Position info label between icon and button relative to window center
                 NSPoint labelCenter = NSMakePoint(
-                    windowCenterX - ([infoLabel frame].size.width / 2),  // Center horizontally on window
-                    windowCenterY + 50  // 50px above window center, below icon
+                    localWindowCenterX - ([infoLabel frame].size.width / 2),  // Center horizontally on window
+                    localWindowCenterY + 50  // 50px above window center, below icon
                 );
                 [infoLabel setFrameOrigin:labelCenter];
                 
@@ -1019,8 +1031,8 @@ void updateOverlay() {
                 if (cancelButton) {
                     NSSize cancelButtonSize = [cancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
-                        windowCenterX - (cancelButtonSize.width / 2),  // Center horizontally on window
-                        windowCenterY - 80  // 80px below window center
+                        localWindowCenterX - (cancelButtonSize.width / 2),  // Center horizontally on window
+                        localWindowCenterY - 80  // 80px below window center
                     );
                     [cancelButton setFrameOrigin:cancelButtonCenter];
                 }
@@ -1436,8 +1448,9 @@ bool startScreenSelection() {
             [overlayWindow setOpaque:NO];
             [overlayWindow setBackgroundColor:[NSColor clearColor]];
             
-            // Create overlay view
-            ScreenSelectorOverlayView *overlayView = [[ScreenSelectorOverlayView alloc] initWithFrame:screenFrame];
+            // Create overlay view - use local frame (0,0) not screen frame
+            NSRect localFrame = NSMakeRect(0, 0, screenFrame.size.width, screenFrame.size.height);
+            ScreenSelectorOverlayView *overlayView = [[ScreenSelectorOverlayView alloc] initWithFrame:localFrame];
             [overlayView setScreenInfo:screenInfo];
             [overlayWindow setContentView:overlayView];
             
@@ -1521,8 +1534,8 @@ bool startScreenSelection() {
             [screenCancelButton setFocusRingType:NSFocusRingTypeNone];
             [screenCancelButton setShowsBorderOnlyWhileMouseInside:NO];
             
-            // Create info label for screen
-            NSTextField *screenInfoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, screenFrame.size.width - 40, 60)];
+            // Create info label for screen - use local coordinates
+            NSTextField *screenInfoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, localFrame.size.width - 40, 60)];
             [screenInfoLabel setEditable:NO];
             [screenInfoLabel setSelectable:NO];
             [screenInfoLabel setBezeled:NO];
@@ -1548,17 +1561,17 @@ bool startScreenSelection() {
             NSString *resolution = [screenInfo objectForKey:@"resolution"] ?: @"Unknown Resolution";
             [screenInfoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", screenName, resolution]];
             
-            // Position buttons - Start Record in perfect center
+            // Position buttons - Start Record in perfect center using local coordinates
             NSPoint buttonCenter = NSMakePoint(
-                (screenFrame.size.width - [selectButton frame].size.width) / 2,
-                (screenFrame.size.height - [selectButton frame].size.height) / 2  // Perfect center
+                (localFrame.size.width - [selectButton frame].size.width) / 2,
+                (localFrame.size.height - [selectButton frame].size.height) / 2  // Perfect center
             );
             [selectButton setFrameOrigin:buttonCenter];
             
-            // Position screen icon above center
+            // Position screen icon above center using local coordinates
             NSPoint iconCenter = NSMakePoint(
-                (screenFrame.size.width - 96) / 2,  // Center horizontally (icon is 96px wide)
-                (screenFrame.size.height / 2) + 120  // 120px above center
+                (localFrame.size.width - 96) / 2,  // Center horizontally (icon is 96px wide)
+                (localFrame.size.height / 2) + 120  // 120px above center
             );
             [screenIconView setFrameOrigin:iconCenter];
             
@@ -1572,16 +1585,16 @@ bool startScreenSelection() {
             screenFloatAnimationX.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
             [screenIconView.layer addAnimation:screenFloatAnimationX forKey:@"floatAnimationX"];
             
-            // Position info label between icon and button
+            // Position info label between icon and button using local coordinates
             NSPoint labelCenter = NSMakePoint(
-                (screenFrame.size.width - [screenInfoLabel frame].size.width) / 2,  // Center horizontally
-                (screenFrame.size.height / 2) + 50  // 50px above center, below icon
+                (localFrame.size.width - [screenInfoLabel frame].size.width) / 2,  // Center horizontally
+                (localFrame.size.height / 2) + 50  // 50px above center, below icon
             );
             [screenInfoLabel setFrameOrigin:labelCenter];
             
             NSPoint cancelButtonCenter = NSMakePoint(
-                (screenFrame.size.width - [screenCancelButton frame].size.width) / 2,
-                (screenFrame.size.height / 2) - 80  // 80px below center
+                (localFrame.size.width - [screenCancelButton frame].size.width) / 2,
+                (localFrame.size.height / 2) - 80  // 80px below center
             );
             [screenCancelButton setFrameOrigin:cancelButtonCenter];
             
@@ -1801,9 +1814,21 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             return env.Null();
         }
         
-        // Create full-screen overlay window to prevent window dragging
-        NSScreen *mainScreen = [NSScreen mainScreen];
-        NSRect fullScreenFrame = [mainScreen frame];
+        // Create multi-display overlay window to prevent window dragging
+        NSArray *allScreens = [NSScreen screens];
+        NSRect combinedFrame = NSZeroRect;
+        
+        // Calculate combined frame that covers all displays
+        for (NSScreen *screen in allScreens) {
+            NSRect screenFrame = [screen frame];
+            if (NSEqualRects(combinedFrame, NSZeroRect)) {
+                combinedFrame = screenFrame;
+            } else {
+                combinedFrame = NSUnionRect(combinedFrame, screenFrame);
+            }
+        }
+        
+        NSRect fullScreenFrame = combinedFrame;
         g_overlayWindow = [[NoFocusWindow alloc] initWithContentRect:fullScreenFrame
                                                            styleMask:NSWindowStyleMaskBorderless
                                                              backing:NSBackingStoreBuffered
@@ -1832,8 +1857,13 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setOpaque:NO];
         [g_overlayWindow setBackgroundColor:[NSColor clearColor]];
         
-        // Create overlay view covering full screen
-        g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:fullScreenFrame];
+        // Create overlay view covering all displays
+        // Convert global coordinates to local view coordinates (offset by origin)
+        NSRect localViewFrame = NSMakeRect(0, 0, fullScreenFrame.size.width, fullScreenFrame.size.height);
+        g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:localViewFrame];
+        
+        // Store the global origin offset for coordinate conversion
+        [(WindowSelectorOverlayView *)g_overlayView setValue:[NSValue valueWithPoint:fullScreenFrame.origin] forKey:@"globalOriginOffset"];
         [g_overlayWindow setContentView:g_overlayView];
         
         // Note: NSWindow doesn't have setWantsLayer method, only NSView does
