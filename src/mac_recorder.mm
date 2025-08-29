@@ -451,13 +451,47 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
         NSArray *screens = [NSScreen screens];
         NSMutableArray *displays = [NSMutableArray array];
         
+        // Get real CGDirectDisplayIDs first
+        CGDirectDisplayID activeDisplays[32];
+        uint32_t displayCount;
+        CGGetActiveDisplayList(32, activeDisplays, &displayCount);
+        
         for (NSUInteger i = 0; i < [screens count]; i++) {
             NSScreen *screen = [screens objectAtIndex:i];
+            NSRect frame = [screen frame];
+            
+            // Find matching CGDirectDisplayID
+            CGDirectDisplayID displayID = 0;
+            bool isPrimary = false;
+            
+            for (uint32_t j = 0; j < displayCount; j++) {
+                CGDirectDisplayID candidateID = activeDisplays[j];
+                CGRect displayBounds = CGDisplayBounds(candidateID);
+                
+                if (fabs(frame.origin.x - displayBounds.origin.x) < 1.0 &&
+                    fabs(frame.origin.y - displayBounds.origin.y) < 1.0 &&
+                    fabs(frame.size.width - displayBounds.size.width) < 1.0 &&
+                    fabs(frame.size.height - displayBounds.size.height) < 1.0) {
+                    displayID = candidateID;
+                    isPrimary = (candidateID == CGMainDisplayID());
+                    break;
+                }
+            }
+            
+            // Fallback if no match found
+            if (displayID == 0 && i < displayCount) {
+                displayID = activeDisplays[i];
+                isPrimary = (displayID == CGMainDisplayID());
+            }
+            
             NSDictionary *displayInfo = @{
-                @"id": @(i + 1),
+                @"id": @(displayID),  // Use real display ID
                 @"name": [NSString stringWithFormat:@"Display %lu", (unsigned long)(i + 1)],
-                @"width": @((int)screen.frame.size.width),
-                @"height": @((int)screen.frame.size.height)
+                @"width": @((int)frame.size.width),
+                @"height": @((int)frame.size.height),
+                @"x": @((int)frame.origin.x),
+                @"y": @((int)frame.origin.y),
+                @"isPrimary": @(isPrimary)
             };
             [displays addObject:displayInfo];
         }
