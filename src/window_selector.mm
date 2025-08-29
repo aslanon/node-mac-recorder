@@ -94,6 +94,8 @@ void updateScreenOverlays();
 
 @implementation WindowSelectorOverlayView
 
+@synthesize globalOriginOffset = _globalOriginOffset;
+
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
@@ -872,9 +874,25 @@ void updateOverlay() {
                 globalOffset = [overlayView.globalOriginOffset pointValue];
             }
             
-            // Convert global window position to local view position
-            CGFloat localX = x - globalOffset.x;
-            CGFloat localY = ([g_overlayView frame].size.height - (y - globalOffset.y)) - height;
+            // Determine if this is a primary display window
+            BOOL isPrimaryDisplayWindow = (x >= 0 && x <= 2048);  // Primary display width
+            
+            CGFloat localX, localY;
+            if (isPrimaryDisplayWindow) {
+                // Primary display windows: Offset to their position in the combined overlay
+                // Primary display starts at (3440, 56) within the combined frame
+                localX = x + 3440;  // Primary starts 3440px from overlay origin
+                localY = ([g_overlayView frame].size.height - (y + 56)) - height;  // Y offset for primary
+            } else {
+                // Secondary display windows: Apply standard coordinate transformation
+                localX = x - globalOffset.x;
+                localY = ([g_overlayView frame].size.height - (y - globalOffset.y)) - height;
+            }
+            
+            NSLog(@"🔧 COORDINATE DEBUG: Window (%d, %d) %dx%d [%@]", (int)x, (int)y, (int)width, (int)height, isPrimaryDisplayWindow ? @"PRIMARY" : @"SECONDARY");
+            NSLog(@"   GlobalOffset: (%.0f, %.0f)", globalOffset.x, globalOffset.y);
+            NSLog(@"   LocalCoords: (%.0f, %.0f)", localX, localY);
+            NSLog(@"   ViewFrame: %.0fx%.0f", [g_overlayView frame].size.width, [g_overlayView frame].size.height);
             
             // Update overlay view window info for highlighting
             [overlayView setWindowInfo:targetWindow];
@@ -986,6 +1004,10 @@ void updateOverlay() {
                     localWindowCenterX - (buttonSize.width / 2),
                     localWindowCenterY - (buttonSize.height / 2)  // Perfect center of window
                 );
+                
+                NSLog(@"   ButtonCalc: WindowCenter(%.0f, %.0f) -> Button(%.0f, %.0f)", 
+                      localWindowCenterX, localWindowCenterY, buttonCenter.x, buttonCenter.y);
+                      
                 [g_selectButton setFrameOrigin:buttonCenter];
                 
                 // Position app icon above window center
@@ -1863,7 +1885,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:localViewFrame];
         
         // Store the global origin offset for coordinate conversion
-        [(WindowSelectorOverlayView *)g_overlayView setValue:[NSValue valueWithPoint:fullScreenFrame.origin] forKey:@"globalOriginOffset"];
+        WindowSelectorOverlayView *overlayView = (WindowSelectorOverlayView *)g_overlayView;
+        overlayView.globalOriginOffset = [NSValue valueWithPoint:fullScreenFrame.origin];
+        
+        NSLog(@"🔧 SET GlobalOriginOffset: (%.0f, %.0f)", fullScreenFrame.origin.x, fullScreenFrame.origin.y);
         [g_overlayWindow setContentView:g_overlayView];
         
         // Note: NSWindow doesn't have setWantsLayer method, only NSView does
