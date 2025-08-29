@@ -32,24 +32,40 @@ bool startAVFoundationRecording(const std::string& outputPath,
     }
     
     @try {
+        NSLog(@"🎬 AVFoundation: Starting recording initialization");
+        
         // Create output URL
         NSString *outputPathStr = [NSString stringWithUTF8String:outputPath.c_str()];
+        NSLog(@"🎬 AVFoundation: Output path string: %@", outputPathStr);
+        
         NSURL *outputURL = [NSURL fileURLWithPath:outputPathStr];
+        NSLog(@"🎬 AVFoundation: Output URL: %@", outputURL);
         
         // Remove existing file
-        [[NSFileManager defaultManager] removeItemAtURL:outputURL error:nil];
+        NSError *removeError = nil;
+        [[NSFileManager defaultManager] removeItemAtURL:outputURL error:&removeError];
+        if (removeError && removeError.code != NSFileNoSuchFileError) {
+            NSLog(@"⚠️ AVFoundation: Warning removing existing file: %@", removeError);
+        }
         
         // Create asset writer
+        NSLog(@"🎬 AVFoundation: Creating AVAssetWriter...");
         NSError *error = nil;
         g_avWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
         if (!g_avWriter || error) {
-            NSLog(@"❌ Failed to create AVAssetWriter: %@", error);
+            NSLog(@"❌ AVFoundation: Failed to create AVAssetWriter: %@", error);
+            NSLog(@"❌ AVFoundation: Output URL was: %@", outputURL);
             return false;
         }
+        NSLog(@"✅ AVFoundation: AVAssetWriter created successfully");
         
         // Get display dimensions
+        NSLog(@"🎬 AVFoundation: Getting display dimensions for display ID %u", displayID);
         CGRect displayBounds = CGDisplayBounds(displayID);
+        NSLog(@"🎬 AVFoundation: Display bounds: %.0f x %.0f", displayBounds.size.width, displayBounds.size.height);
+        
         CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : displayBounds.size;
+        NSLog(@"🎬 AVFoundation: Recording size: %.0f x %.0f", recordingSize.width, recordingSize.height);
         
         // Video settings
         NSDictionary *videoSettings = @{

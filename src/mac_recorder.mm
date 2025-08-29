@@ -308,6 +308,14 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         }
         
         @try {
+            NSLog(@"🔧 Attempting AVFoundation recording...");
+            NSLog(@"🔧 Output path: %s", outputPath.c_str());
+            NSLog(@"🔧 Display ID: %u", displayID);
+            NSLog(@"🔧 Cursor: %s, Mic: %s, System Audio: %s", 
+                  captureCursor ? "YES" : "NO",
+                  includeMicrophone ? "YES" : "NO", 
+                  includeSystemAudio ? "YES" : "NO");
+            
             // Import AVFoundation recording functions (if available)
             extern bool startAVFoundationRecording(const std::string& outputPath, 
                                                    CGDirectDisplayID displayID,
@@ -318,17 +326,23 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                    bool includeSystemAudio,
                                                    NSString* audioDeviceId);
             
-            if (startAVFoundationRecording(outputPath, displayID, windowID, captureRect, 
-                                          captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId)) {
+            NSLog(@"🔧 Calling startAVFoundationRecording...");
+            bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect, 
+                                                      captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId);
+            NSLog(@"🔧 AVFoundation result: %s", avResult ? "SUCCESS" : "FAILED");
+            
+            if (avResult) {
                 NSLog(@"🎥 RECORDING METHOD: AVFoundation (Fallback)");
                 NSLog(@"✅ AVFoundation recording started successfully");
                 g_isRecording = true;
                 return Napi::Boolean::New(env, true);
             } else {
-                NSLog(@"❌ AVFoundation recording also failed to start");
+                NSLog(@"❌ AVFoundation recording failed to start");
+                NSLog(@"❌ Check permissions and output path validity");
             }
         } @catch (NSException *avException) {
             NSLog(@"❌ Exception during AVFoundation startup: %@", avException.reason);
+            NSLog(@"❌ Stack trace: %@", [avException callStackSymbols]);
         }
         
         // Both ScreenCaptureKit and AVFoundation failed
