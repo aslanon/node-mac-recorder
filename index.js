@@ -406,7 +406,7 @@ class MacRecorder extends EventEmitter {
 				} else {
 					reject(
 						new Error(
-							"ScreenCaptureKit failed to start. Check permissions and try again."
+							"Recording failed to start. Check permissions, output path, and system compatibility."
 						)
 					);
 				}

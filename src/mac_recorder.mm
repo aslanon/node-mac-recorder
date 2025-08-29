@@ -282,10 +282,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             }
         } else if (isM14Plus) {
             // macOS 14 - directly use AVFoundation for better compatibility
-            NSLog(@"🎯 macOS 14 detected - using AVFoundation for better compatibility");
+            NSLog(@"🎯 macOS 14 detected - directly using AVFoundation for better compatibility");
+            // Skip ScreenCaptureKit completely and go directly to AVFoundation
         } else if (isM13Plus) {
             // macOS 13 - use AVFoundation (limited features)
-            NSLog(@"🎯 macOS 13 detected - using AVFoundation (limited features)");
+            NSLog(@"🎯 macOS 13 detected - directly using AVFoundation (limited features)");
+            // Skip ScreenCaptureKit completely and go directly to AVFoundation
         } else {
             NSLog(@"❌ macOS version too old (< 13.0) - Recording not supported");
             return Napi::Boolean::New(env, false);
@@ -302,9 +304,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         if (isM15Plus) {
             NSLog(@"🔄 ScreenCaptureKit failed on macOS 15+ - attempting AVFoundation fallback");
         } else if (isM14Plus) {
-            NSLog(@"🎥 Using AVFoundation for macOS 14 compatibility");
+            NSLog(@"🎥 Using AVFoundation for macOS 14 compatibility (primary method)");
         } else if (isM13Plus) {
-            NSLog(@"🎥 Using AVFoundation for macOS 13 compatibility (limited features)");
+            NSLog(@"🎥 Using AVFoundation for macOS 13 compatibility (primary method, limited features)");
+        } else {
+            NSLog(@"❌ Unsupported macOS version for AVFoundation");
+            return Napi::Boolean::New(env, false);
         }
         
         @try {
