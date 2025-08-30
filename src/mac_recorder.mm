@@ -206,7 +206,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         }
         
         // Use ScreenCaptureKit only on macOS 15+ for maximum stability
-        // macOS 14 should use AVFoundation fallback
+        // macOS 14/13 should skip ScreenCaptureKit completely and use AVFoundation
         if (@available(macOS 12.3, *) && isM15Plus && !forceAVFoundation) {
             NSLog(@"✅ macOS 15+ detected - ScreenCaptureKit available with full compatibility");
             
@@ -280,20 +280,23 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 NSLog(@"❌ Exception during ScreenCaptureKit availability check: %@", availabilityException.reason);
                 return Napi::Boolean::New(env, false);
             }
-        } else if (isM14Plus) {
-            // macOS 14 - directly use AVFoundation for better compatibility
+        } else if (isM14Plus && !isElectron) {
+            // macOS 14 - directly use AVFoundation, skip all ScreenCaptureKit logic
             NSLog(@"🎯 macOS 14 detected - directly using AVFoundation for better compatibility");
-            // Skip ScreenCaptureKit completely and go directly to AVFoundation
-        } else if (isM13Plus) {
-            // macOS 13 - use AVFoundation (limited features)
+            NSLog(@"⏭️ Skipping ScreenCaptureKit completely, jumping to AVFoundation");
+            goto useAVFoundation;
+        } else if (isM13Plus && !isElectron) {
+            // macOS 13 - directly use AVFoundation, skip all ScreenCaptureKit logic  
             NSLog(@"🎯 macOS 13 detected - directly using AVFoundation (limited features)");
-            // Skip ScreenCaptureKit completely and go directly to AVFoundation
+            NSLog(@"⏭️ Skipping ScreenCaptureKit completely, jumping to AVFoundation");
+            goto useAVFoundation;
         } else {
-            NSLog(@"❌ macOS version too old (< 13.0) - Recording not supported");
+            NSLog(@"❌ macOS version too old (< 13.0) or Electron environment - Recording not supported");
             return Napi::Boolean::New(env, false);
         }
         
         // AVFoundation fallback logic
+        useAVFoundation:
         if (isElectron) {
             NSLog(@"❌ ScreenCaptureKit failed in Electron - AVFoundation disabled for stability");
             NSLog(@"❌ Recording not available in Electron when ScreenCaptureKit fails");
