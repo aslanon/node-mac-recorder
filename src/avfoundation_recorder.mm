@@ -123,7 +123,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         g_avCaptureRect = captureRect;
         g_avFrameNumber = 0;
         
-        // Start capture timer (15 FPS for compatibility)
+        // Start capture timer (10 FPS for Electron compatibility)
         dispatch_queue_t captureQueue = dispatch_queue_create("AVFoundationCaptureQueue", DISPATCH_QUEUE_SERIAL);
         g_avTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, captureQueue);
         
@@ -132,78 +132,107 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             return false;
         }
         
-        uint64_t interval = NSEC_PER_SEC / 15; // 15 FPS
+        uint64_t interval = NSEC_PER_SEC / 10; // 10 FPS for Electron stability
         dispatch_source_set_timer(g_avTimer, dispatch_time(DISPATCH_TIME_NOW, 0), interval, interval / 10);
         
         dispatch_source_set_event_handler(g_avTimer, ^{
             if (!g_avIsRecording) return;
             
             @autoreleasepool {
-                // Capture screen
-                CGImageRef screenImage = nil;
-                if (CGRectIsEmpty(g_avCaptureRect)) {
-                    screenImage = CGDisplayCreateImage(g_avDisplayID);
-                } else {
-                    CGImageRef fullScreen = CGDisplayCreateImage(g_avDisplayID);
-                    if (fullScreen) {
-                        screenImage = CGImageCreateWithImageInRect(fullScreen, g_avCaptureRect);
-                        CGImageRelease(fullScreen);
+                @try {
+                    // Capture screen with Electron-safe error handling
+                    CGImageRef screenImage = nil;
+                    if (CGRectIsEmpty(g_avCaptureRect)) {
+                        screenImage = CGDisplayCreateImage(g_avDisplayID);
+                    } else {
+                        CGImageRef fullScreen = CGDisplayCreateImage(g_avDisplayID);
+                        if (fullScreen) {
+                            screenImage = CGImageCreateWithImageInRect(fullScreen, g_avCaptureRect);
+                            CGImageRelease(fullScreen);
+                        }
                     }
+                    
+                    if (!screenImage) {
+                        NSLog(@"⚠️ Failed to capture screen image, skipping frame");
+                        return;
+                    }
+                
+                    // Convert to pixel buffer with Electron-safe error handling
+                    CVPixelBufferRef pixelBuffer = nil;
+                    CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, g_avPixelBufferAdaptor.pixelBufferPool, &pixelBuffer);
+                    
+                    if (cvRet == kCVReturnSuccess && pixelBuffer) {
+                        CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+                        
+                        void *pixelData = CVPixelBufferGetBaseAddress(pixelBuffer);
+                        if (!pixelData) {
+                            NSLog(@"⚠️ Failed to get pixel buffer base address");
+                            CVPixelBufferRelease(pixelBuffer);
+                            CGImageRelease(screenImage);
+                            return;
+                        }
+                        
+                        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+                        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+                        if (!colorSpace) {
+                            NSLog(@"⚠️ Failed to create color space");
+                            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+                            CVPixelBufferRelease(pixelBuffer);
+                            CGImageRelease(screenImage);
+                            return;
+                        }
+                        
+                        // Match bitmap info to pixel format for compatibility
+                        CGBitmapInfo bitmapInfo;
+                        OSType currentPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+                        if (currentPixelFormat == kCVPixelFormatType_32ARGB) {
+                            bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Big;
+                        } else { // kCVPixelFormatType_32BGRA
+                            bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+                        }
+                        
+                        CGContextRef context = CGBitmapContextCreate(pixelData, 
+                                                                   CVPixelBufferGetWidth(pixelBuffer),
+                                                                   CVPixelBufferGetHeight(pixelBuffer), 
+                                                                   8, bytesPerRow, colorSpace, bitmapInfo);
+                        
+                        if (context) {
+                            CGContextDrawImage(context, CGRectMake(0, 0, CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)), screenImage);
+                            CGContextRelease(context);
+                            
+                            // Write frame only if input is ready
+                            if (g_avVideoInput && g_avVideoInput.readyForMoreMediaData) {
+                                CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(g_avFrameNumber / 10.0, 600));
+                                BOOL appendSuccess = [g_avPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
+                                if (appendSuccess) {
+                                    g_avFrameNumber++;
+                                } else {
+                                    NSLog(@"⚠️ Failed to append pixel buffer");
+                                }
+                            }
+                        } else {
+                            NSLog(@"⚠️ Failed to create bitmap context");
+                        }
+                        
+                        CGColorSpaceRelease(colorSpace);
+                        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+                        CVPixelBufferRelease(pixelBuffer);
+                    } else {
+                        NSLog(@"⚠️ Failed to create pixel buffer: %d", cvRet);
+                    }
+                    
+                    CGImageRelease(screenImage);
+                } @catch (NSException *exception) {
+                    NSLog(@"❌ Exception in AVFoundation capture loop: %@", exception.reason);
+                    g_avIsRecording = false; // Stop recording on exception to prevent crash
                 }
-                
-                if (!screenImage) return;
-                
-                // Convert to pixel buffer
-                CVPixelBufferRef pixelBuffer = nil;
-                CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, g_avPixelBufferAdaptor.pixelBufferPool, &pixelBuffer);
-                
-                if (cvRet == kCVReturnSuccess && pixelBuffer) {
-                    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-                    
-                    void *pixelData = CVPixelBufferGetBaseAddress(pixelBuffer);
-                    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-                    
-                    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-                    
-                    // Match bitmap info to pixel format for compatibility
-                    CGBitmapInfo bitmapInfo;
-                    OSType currentPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-                    if (currentPixelFormat == kCVPixelFormatType_32ARGB) {
-                        bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Big;
-                    } else { // kCVPixelFormatType_32BGRA
-                        bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
-                    }
-                    
-                    CGContextRef context = CGBitmapContextCreate(pixelData, 
-                                                               CVPixelBufferGetWidth(pixelBuffer),
-                                                               CVPixelBufferGetHeight(pixelBuffer), 
-                                                               8, bytesPerRow, colorSpace, bitmapInfo);
-                    
-                    if (context) {
-                        CGContextDrawImage(context, CGRectMake(0, 0, CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)), screenImage);
-                        CGContextRelease(context);
-                    }
-                    CGColorSpaceRelease(colorSpace);
-                    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-                    
-                    // Write frame
-                    if (g_avVideoInput.readyForMoreMediaData) {
-                        CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(g_avFrameNumber / 15.0, 600));
-                        [g_avPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
-                        g_avFrameNumber++;
-                    }
-                    
-                    CVPixelBufferRelease(pixelBuffer);
-                }
-                
-                CGImageRelease(screenImage);
             }
         });
         
         dispatch_resume(g_avTimer);
         g_avIsRecording = true;
         
-        NSLog(@"🎥 AVFoundation recording started: %dx%d @ 15fps", 
+        NSLog(@"🎥 AVFoundation recording started: %dx%d @ 10fps", 
               (int)recordingSize.width, (int)recordingSize.height);
         
         return true;
@@ -222,10 +251,11 @@ extern "C" bool stopAVFoundationRecording() {
     g_avIsRecording = false;
     
     @try {
-        // Stop timer
+        // Stop timer with Electron-safe cleanup
         if (g_avTimer) {
             dispatch_source_cancel(g_avTimer);
             g_avTimer = nil;
+            NSLog(@"✅ AVFoundation timer stopped safely");
         }
         
         // Finish writing
