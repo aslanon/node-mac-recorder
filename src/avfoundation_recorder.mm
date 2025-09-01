@@ -135,8 +135,19 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         uint64_t interval = NSEC_PER_SEC / 10; // 10 FPS for Electron stability
         dispatch_source_set_timer(g_avTimer, dispatch_time(DISPATCH_TIME_NOW, 0), interval, interval / 10);
         
+        // Retain objects before passing to block to prevent deallocation
+        AVAssetWriterInput *localVideoInput = g_avVideoInput;
+        AVAssetWriterInputPixelBufferAdaptor *localPixelBufferAdaptor = g_avPixelBufferAdaptor;
+        
         dispatch_source_set_event_handler(g_avTimer, ^{
             if (!g_avIsRecording) return;
+            
+            // Additional null checks for Electron safety
+            if (!localVideoInput || !localPixelBufferAdaptor) {
+                NSLog(@"⚠️ Video input or pixel buffer adaptor is nil, stopping recording");
+                g_avIsRecording = false;
+                return;
+            }
             
             @autoreleasepool {
                 @try {
@@ -159,7 +170,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                 
                     // Convert to pixel buffer with Electron-safe error handling
                     CVPixelBufferRef pixelBuffer = nil;
-                    CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, g_avPixelBufferAdaptor.pixelBufferPool, &pixelBuffer);
+                    CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, localPixelBufferAdaptor.pixelBufferPool, &pixelBuffer);
                     
                     if (cvRet == kCVReturnSuccess && pixelBuffer) {
                         CVPixelBufferLockBaseAddress(pixelBuffer, 0);
@@ -201,9 +212,9 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                             CGContextRelease(context);
                             
                             // Write frame only if input is ready
-                            if (g_avVideoInput && g_avVideoInput.readyForMoreMediaData) {
+                            if (localVideoInput && localVideoInput.readyForMoreMediaData) {
                                 CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(g_avFrameNumber / 10.0, 600));
-                                BOOL appendSuccess = [g_avPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
+                                BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
                                 if (appendSuccess) {
                                     g_avFrameNumber++;
                                 } else {
@@ -253,22 +264,36 @@ extern "C" bool stopAVFoundationRecording() {
     @try {
         // Stop timer with Electron-safe cleanup
         if (g_avTimer) {
+            // Mark as not recording FIRST to stop timer callbacks
+            g_avIsRecording = false;
+            
+            // Cancel timer and wait a brief moment for completion
             dispatch_source_cancel(g_avTimer);
+            
+            // Use async to avoid deadlock in Electron
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                // Timer should be fully cancelled by now
+            });
+            
             g_avTimer = nil;
             NSLog(@"✅ AVFoundation timer stopped safely");
         }
         
-        // Finish writing
-        if (g_avVideoInput) {
-            [g_avVideoInput markAsFinished];
+        // Finish writing with null checks
+        AVAssetWriterInput *writerInput = g_avVideoInput;
+        if (writerInput) {
+            [writerInput markAsFinished];
         }
         
-        if (g_avWriter && g_avWriter.status == AVAssetWriterStatusWriting) {
+        AVAssetWriter *writer = g_avWriter;
+        if (writer && writer.status == AVAssetWriterStatusWriting) {
             dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-            [g_avWriter finishWritingWithCompletionHandler:^{
+            [writer finishWritingWithCompletionHandler:^{
                 dispatch_semaphore_signal(semaphore);
             }];
-            dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+            // Add timeout to prevent infinite wait in Electron
+            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+            dispatch_semaphore_wait(semaphore, timeout);
         }
         
         // Cleanup
