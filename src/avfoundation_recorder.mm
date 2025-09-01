@@ -53,14 +53,33 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             return false;
         }
         
-        // Get display dimensions - use width/height directly to avoid coordinate issues
+        // Get display dimensions with proper scaling for macOS 14/13 compatibility
         CGRect displayBounds = CGDisplayBounds(displayID);
-        CGSize displaySize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
-        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : displaySize;
         
-        NSLog(@"🖥️ Display bounds: %.0f,%.0f %.0fx%.0f", displayBounds.origin.x, displayBounds.origin.y, displayBounds.size.width, displayBounds.size.height);
-        NSLog(@"🖥️ Display pixels: %.0fx%.0f", displaySize.width, displaySize.height);
-        NSLog(@"🎯 Recording size: %.0fx%.0f", recordingSize.width, recordingSize.height);
+        // Get both logical (bounds) and physical (pixels) dimensions
+        CGSize logicalSize = displayBounds.size;
+        CGSize physicalSize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
+        
+        // Calculate scale factor
+        CGFloat scaleX = physicalSize.width / logicalSize.width;
+        CGFloat scaleY = physicalSize.height / logicalSize.height;
+        CGFloat scaleFactor = MAX(scaleX, scaleY); // Use max to handle non-uniform scaling
+        
+        // For AVFoundation, use logical size (what CGDisplayCreateImage actually captures)
+        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : logicalSize;
+        
+        NSLog(@"🖥️ Display bounds (logical): %.0fx%.0f", logicalSize.width, logicalSize.height);
+        NSLog(@"🖥️ Display pixels (physical): %.0fx%.0f", physicalSize.width, physicalSize.height);
+        
+        if (scaleFactor > 1.5) {
+            NSLog(@"🔍 Scale factor: %.1fx → Retina display detected (macOS 14/13 scaling fix applied)", scaleFactor);
+        } else if (scaleFactor > 1.1) {
+            NSLog(@"🔍 Scale factor: %.1fx → Non-standard scaling detected", scaleFactor);
+        } else {
+            NSLog(@"🔍 Scale factor: %.1fx → Standard display", scaleFactor);
+        }
+        
+        NSLog(@"🎯 Recording size: %.0fx%.0f (using logical dimensions for AVFoundation)", recordingSize.width, recordingSize.height);
         
         // Video settings with macOS compatibility
         NSString *codecKey;
@@ -123,9 +142,20 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         g_avStartTime = CMTimeMakeWithSeconds(CACurrentMediaTime(), 600);
         [g_avWriter startSessionAtSourceTime:g_avStartTime];
         
-        // Store recording parameters
+        // Store recording parameters with scaling correction
         g_avDisplayID = displayID;
-        g_avCaptureRect = captureRect;
+        
+        // Apply scaling to capture rect if provided (for macOS 14/13 compatibility)
+        if (!CGRectIsEmpty(captureRect)) {
+            // Note: captureRect comes in logical coordinates, keep as-is for CGDisplayCreateImage
+            g_avCaptureRect = captureRect;
+            NSLog(@"🔲 Capture area (logical): %.0f,%.0f %.0fx%.0f", 
+                  captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height);
+        } else {
+            g_avCaptureRect = CGRectZero; // Full screen
+            NSLog(@"🖥️ Full screen capture (logical bounds)");
+        }
+        
         g_avFrameNumber = 0;
         
         // Start capture timer (10 FPS for Electron compatibility)
