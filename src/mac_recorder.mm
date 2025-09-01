@@ -51,14 +51,8 @@ void cleanupRecording() {
         }
     }
     
-    // AVFoundation cleanup (only in non-Electron environments)
-    BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
-                      [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
-                     (NSProcessInfo.processInfo.processName && 
-                      [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
-                     (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
-    
-    if (!isElectron && isAVFoundationRecording()) {
+    // AVFoundation cleanup (supports both Node.js and Electron)
+    if (isAVFoundationRecording()) {
         stopAVFoundationRecording();
     }
     
@@ -211,10 +205,15 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             NSLog(@"🔧 FORCE_AVFOUNDATION environment variable detected - skipping ScreenCaptureKit");
         }
         
-        // ONLY use ScreenCaptureKit on macOS 15+
-        // macOS 14/13 ALWAYS use AVFoundation - NO ScreenCaptureKit attempts
-        if (isM15Plus && !forceAVFoundation && !isElectron) {
-            NSLog(@"✅ macOS 15+ detected - ScreenCaptureKit available with full compatibility");
+        // Electron-first priority: This application is built for Electron.js
+        // macOS 15+ → ScreenCaptureKit (including Electron)
+        // macOS 14/13 → AVFoundation (including Electron)
+        if (isM15Plus && !forceAVFoundation) {
+            if (isElectron) {
+                NSLog(@"⚡ ELECTRON PRIORITY: macOS 15+ Electron → ScreenCaptureKit with full support");
+            } else {
+                NSLog(@"✅ macOS 15+ Node.js → ScreenCaptureKit available with full compatibility");
+            }
             
             // Try ScreenCaptureKit with extensive safety measures
             @try {
@@ -288,25 +287,30 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             // If we reach here, ScreenCaptureKit failed, so fall through to AVFoundation
             NSLog(@"⏭️ ScreenCaptureKit failed - falling back to AVFoundation");
         } else {
-            // macOS 14/13 or forced AVFoundation - ALWAYS use AVFoundation
+            // macOS 14/13 or forced AVFoundation → ALWAYS use AVFoundation (Electron supported!)
             if (isElectron) {
-                NSLog(@"❌ Electron environment - Recording not supported");
-                return Napi::Boolean::New(env, false);
+                if (isM14Plus) {
+                    NSLog(@"⚡ ELECTRON PRIORITY: macOS 14/13 Electron → AVFoundation with full support");
+                } else if (isM13Plus) {
+                    NSLog(@"⚡ ELECTRON PRIORITY: macOS 13 Electron → AVFoundation with limited features");
+                }
+            } else {
+                if (isM15Plus) {
+                    NSLog(@"🎯 macOS 15+ Node.js with FORCE_AVFOUNDATION → using AVFoundation");
+                } else if (isM14Plus) {
+                    NSLog(@"🎯 macOS 14 Node.js → using AVFoundation (primary method)");
+                } else if (isM13Plus) {
+                    NSLog(@"🎯 macOS 13 Node.js → using AVFoundation (limited features)");  
+                }
             }
             
-            if (isM15Plus) {
-                NSLog(@"🎯 macOS 15+ with FORCE_AVFOUNDATION - using AVFoundation");
-            } else if (isM14Plus) {
-                NSLog(@"🎯 macOS 14 detected - using AVFoundation (primary method)");
-            } else if (isM13Plus) {
-                NSLog(@"🎯 macOS 13 detected - using AVFoundation (limited features)");  
-            } else {
+            if (!isM13Plus) {
                 NSLog(@"❌ macOS version too old (< 13.0) - Not supported");
                 return Napi::Boolean::New(env, false);
             }
             
-            // DIRECT AVFoundation - NO fallback logic needed
-            NSLog(@"⏭️ Using AVFoundation directly - no ScreenCaptureKit attempts");
+            // DIRECT AVFoundation for all environments (Node.js + Electron)
+            NSLog(@"⏭️ Using AVFoundation directly - supports both Node.js and Electron");
         }
         
         // AVFoundation recording (either fallback from ScreenCaptureKit or direct)
@@ -366,32 +370,26 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
         }
     }
     
-    // Try AVFoundation fallback (only in non-Electron environments)
-    BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
-                      [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
-                     (NSProcessInfo.processInfo.processName && 
-                      [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
-                     (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
+    // Try AVFoundation fallback (supports both Node.js and Electron)
+    extern bool isAVFoundationRecording();
+    extern bool stopAVFoundationRecording();
     
-    if (!isElectron) {
-        extern bool isAVFoundationRecording();
-        extern bool stopAVFoundationRecording();
-        
-        @try {
-            if (isAVFoundationRecording()) {
-                NSLog(@"🛑 Stopping AVFoundation recording");
-                if (stopAVFoundationRecording()) {
-                    g_isRecording = false;
-                    return Napi::Boolean::New(env, true);
-                } else {
-                    NSLog(@"❌ Failed to stop AVFoundation recording");
-                    g_isRecording = false;
-                    return Napi::Boolean::New(env, false);
-                }
+    @try {
+        if (isAVFoundationRecording()) {
+            NSLog(@"🛑 Stopping AVFoundation recording");
+            if (stopAVFoundationRecording()) {
+                g_isRecording = false;
+                return Napi::Boolean::New(env, true);
+            } else {
+                NSLog(@"❌ Failed to stop AVFoundation recording");
+                g_isRecording = false;
+                return Napi::Boolean::New(env, false);
             }
-        } @catch (NSException *exception) {
-            NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
         }
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
+        g_isRecording = false;
+        return Napi::Boolean::New(env, false);
     }
     
     NSLog(@"⚠️ No active recording found to stop");
@@ -662,14 +660,8 @@ Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
         }
     }
     
-    // Check AVFoundation only in non-Electron environments
-    BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
-                      [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
-                     (NSProcessInfo.processInfo.processName && 
-                      [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
-                     (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
-    
-    if (!isElectron && isAVFoundationRecording()) {
+    // Check AVFoundation (supports both Node.js and Electron)
+    if (isAVFoundationRecording()) {
         isRecording = true;
     }
     
@@ -935,8 +927,8 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
         NSLog(@"🔒 Permission check for macOS %ld.%ld.%ld", 
               (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
         
-        // Determine which framework will be used
-        BOOL willUseScreenCaptureKit = (isM15Plus && !forceAVFoundation && !isElectron);
+        // Determine which framework will be used (Electron fully supported!)
+        BOOL willUseScreenCaptureKit = (isM15Plus && !forceAVFoundation);  // Electron can use ScreenCaptureKit on macOS 15+
         BOOL willUseAVFoundation = (!willUseScreenCaptureKit && (isM13Plus || isM14Plus));
         
         if (willUseScreenCaptureKit) {
