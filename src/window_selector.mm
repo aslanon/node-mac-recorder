@@ -875,24 +875,31 @@ void updateOverlay() {
             }
             
             // Determine if this is a primary display window
-            BOOL isPrimaryDisplayWindow = (x >= 0 && x <= 2048);  // Primary display width
+            NSArray *allScreens = [NSScreen screens];
+            NSScreen *primaryScreen = [allScreens objectAtIndex:0]; // Primary screen
+            NSRect primaryFrame = [primaryScreen frame];
+            BOOL isPrimaryDisplayWindow = (x >= primaryFrame.origin.x && 
+                                         x <= primaryFrame.origin.x + primaryFrame.size.width &&
+                                         y >= primaryFrame.origin.y &&
+                                         y <= primaryFrame.origin.y + primaryFrame.size.height);
             
             CGFloat localX, localY;
             if (isPrimaryDisplayWindow) {
-                // Primary display windows: Offset to their position in the combined overlay
-                // Primary display starts at (3440, 56) within the combined frame
-                localX = x + 3440;  // Primary starts 3440px from overlay origin
-                localY = ([g_overlayView frame].size.height - (y + 56)) - height;  // Y offset for primary
+                // Primary display windows: Calculate dynamic offset from combined frame
+                NSRect combinedFrame = [g_overlayWindow frame];
+                
+                // Calculate primary screen offset within combined frame
+                CGFloat primaryOffsetX = primaryFrame.origin.x - combinedFrame.origin.x;
+                CGFloat primaryOffsetY = primaryFrame.origin.y - combinedFrame.origin.y;
+                
+                localX = x + primaryOffsetX;
+                localY = ([g_overlayView frame].size.height - (y + primaryOffsetY)) - height;
+                
             } else {
                 // Secondary display windows: Apply standard coordinate transformation
                 localX = x - globalOffset.x;
                 localY = ([g_overlayView frame].size.height - (y - globalOffset.y)) - height;
             }
-            
-            NSLog(@"🔧 COORDINATE DEBUG: Window (%d, %d) %dx%d [%@]", (int)x, (int)y, (int)width, (int)height, isPrimaryDisplayWindow ? @"PRIMARY" : @"SECONDARY");
-            NSLog(@"   GlobalOffset: (%.0f, %.0f)", globalOffset.x, globalOffset.y);
-            NSLog(@"   LocalCoords: (%.0f, %.0f)", localX, localY);
-            NSLog(@"   ViewFrame: %.0fx%.0f", [g_overlayView frame].size.width, [g_overlayView frame].size.height);
             
             // Update overlay view window info for highlighting
             [overlayView setWindowInfo:targetWindow];

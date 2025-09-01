@@ -53,9 +53,14 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             return false;
         }
         
-        // Get display dimensions
+        // Get display dimensions - use width/height directly to avoid coordinate issues
         CGRect displayBounds = CGDisplayBounds(displayID);
-        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : displayBounds.size;
+        CGSize displaySize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
+        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : displaySize;
+        
+        NSLog(@"🖥️ Display bounds: %.0f,%.0f %.0fx%.0f", displayBounds.origin.x, displayBounds.origin.y, displayBounds.size.width, displayBounds.size.height);
+        NSLog(@"🖥️ Display pixels: %.0fx%.0f", displaySize.width, displaySize.height);
+        NSLog(@"🎯 Recording size: %.0fx%.0f", recordingSize.width, recordingSize.height);
         
         // Video settings with macOS compatibility
         NSString *codecKey;
@@ -173,6 +178,16 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                     CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, localPixelBufferAdaptor.pixelBufferPool, &pixelBuffer);
                     
                     if (cvRet == kCVReturnSuccess && pixelBuffer) {
+                        // Check pixel buffer dimensions match screen image
+                        size_t bufferWidth = CVPixelBufferGetWidth(pixelBuffer);
+                        size_t bufferHeight = CVPixelBufferGetHeight(pixelBuffer);
+                        size_t imageWidth = CGImageGetWidth(screenImage);
+                        size_t imageHeight = CGImageGetHeight(screenImage);
+                        
+                        if (bufferWidth != imageWidth || bufferHeight != imageHeight) {
+                            NSLog(@"⚠️ Size mismatch! Buffer %zux%zu vs Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                        }
+                        
                         CVPixelBufferLockBaseAddress(pixelBuffer, 0);
                         
                         void *pixelData = CVPixelBufferGetBaseAddress(pixelBuffer);
