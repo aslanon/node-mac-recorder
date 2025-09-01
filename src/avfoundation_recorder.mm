@@ -57,9 +57,17 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         CGRect displayBounds = CGDisplayBounds(displayID);
         CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : displayBounds.size;
         
-        // Video settings
+        // Video settings with macOS compatibility
+        NSString *codecKey;
+        if (@available(macOS 10.13, *)) {
+            codecKey = AVVideoCodecTypeH264;
+        } else {
+            // Fallback for older macOS versions
+            codecKey = AVVideoCodecH264;
+        }
+        
         NSDictionary *videoSettings = @{
-            AVVideoCodecKey: AVVideoCodecTypeH264,
+            AVVideoCodecKey: codecKey,
             AVVideoWidthKey: @((int)recordingSize.width),
             AVVideoHeightKey: @((int)recordingSize.height),
             AVVideoCompressionPropertiesKey: @{
@@ -68,18 +76,29 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             }
         };
         
+        NSLog(@"🔧 Using codec: %@", codecKey);
+        
         // Create video input
         g_avVideoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
         g_avVideoInput.expectsMediaDataInRealTime = YES;
         
-        // Create pixel buffer adaptor
+        // Create pixel buffer adaptor with compatibility
+        OSType pixelFormat;
+        if (@available(macOS 13.0, *)) {
+            pixelFormat = kCVPixelFormatType_32ARGB;  // Modern format
+        } else {
+            pixelFormat = kCVPixelFormatType_32BGRA;  // Legacy compatibility
+        }
+        
         NSDictionary *pixelBufferAttributes = @{
-            (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32ARGB),
+            (NSString*)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
             (NSString*)kCVPixelBufferWidthKey: @((int)recordingSize.width),
             (NSString*)kCVPixelBufferHeightKey: @((int)recordingSize.height),
             (NSString*)kCVPixelBufferCGImageCompatibilityKey: @YES,
             (NSString*)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
         };
+        
+        NSLog(@"🔧 Using pixel format: %u", pixelFormat);
         
         g_avPixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_avVideoInput sourcePixelBufferAttributes:pixelBufferAttributes];
         
@@ -145,11 +164,20 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                     size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
                     
                     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+                    
+                    // Match bitmap info to pixel format for compatibility
+                    CGBitmapInfo bitmapInfo;
+                    OSType currentPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+                    if (currentPixelFormat == kCVPixelFormatType_32ARGB) {
+                        bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Big;
+                    } else { // kCVPixelFormatType_32BGRA
+                        bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+                    }
+                    
                     CGContextRef context = CGBitmapContextCreate(pixelData, 
                                                                CVPixelBufferGetWidth(pixelBuffer),
                                                                CVPixelBufferGetHeight(pixelBuffer), 
-                                                               8, bytesPerRow, colorSpace,
-                                                               kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+                                                               8, bytesPerRow, colorSpace, bitmapInfo);
                     
                     if (context) {
                         CGContextDrawImage(context, CGRectMake(0, 0, CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)), screenImage);
