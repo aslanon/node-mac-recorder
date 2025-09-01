@@ -74,7 +74,13 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         return env.Null();
     }
     
+    // IMPORTANT: Clean up any stale recording state before starting
+    // This fixes the issue where macOS 14/13 users get "recording already in progress"
+    NSLog(@"🧹 Cleaning up any previous recording state...");
+    cleanupRecording();
+    
     if (g_isRecording) {
+        NSLog(@"⚠️ Still recording after cleanup - forcing stop");
         return Napi::Boolean::New(env, false);
     }
     
