@@ -17,14 +17,14 @@ static int64_t g_avFrameNumber = 0;
 static CMTime g_avStartTime;
 
 // AVFoundation screen recording implementation
-bool startAVFoundationRecording(const std::string& outputPath, 
-                               CGDirectDisplayID displayID,
-                               uint32_t windowID,
-                               CGRect captureRect,
-                               bool captureCursor,
-                               bool includeMicrophone, 
-                               bool includeSystemAudio,
-                               NSString* audioDeviceId) {
+extern "C" bool startAVFoundationRecording(const std::string& outputPath, 
+                                           CGDirectDisplayID displayID,
+                                           uint32_t windowID,
+                                           CGRect captureRect,
+                                           bool captureCursor,
+                                           bool includeMicrophone, 
+                                           bool includeSystemAudio,
+                                           NSString* audioDeviceId) {
     
     if (g_avIsRecording) {
         NSLog(@"❌ AVFoundation recording already in progress");
@@ -36,10 +36,7 @@ bool startAVFoundationRecording(const std::string& outputPath,
         
         // Create output URL
         NSString *outputPathStr = [NSString stringWithUTF8String:outputPath.c_str()];
-        NSLog(@"🎬 AVFoundation: Output path string: %@", outputPathStr);
-        
         NSURL *outputURL = [NSURL fileURLWithPath:outputPathStr];
-        NSLog(@"🎬 AVFoundation: Output URL: %@", outputURL);
         
         // Remove existing file
         NSError *removeError = nil;
@@ -49,23 +46,16 @@ bool startAVFoundationRecording(const std::string& outputPath,
         }
         
         // Create asset writer
-        NSLog(@"🎬 AVFoundation: Creating AVAssetWriter...");
         NSError *error = nil;
         g_avWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:&error];
         if (!g_avWriter || error) {
             NSLog(@"❌ AVFoundation: Failed to create AVAssetWriter: %@", error);
-            NSLog(@"❌ AVFoundation: Output URL was: %@", outputURL);
             return false;
         }
-        NSLog(@"✅ AVFoundation: AVAssetWriter created successfully");
         
         // Get display dimensions
-        NSLog(@"🎬 AVFoundation: Getting display dimensions for display ID %u", displayID);
         CGRect displayBounds = CGDisplayBounds(displayID);
-        NSLog(@"🎬 AVFoundation: Display bounds: %.0f x %.0f", displayBounds.size.width, displayBounds.size.height);
-        
         CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : displayBounds.size;
-        NSLog(@"🎬 AVFoundation: Recording size: %.0f x %.0f", recordingSize.width, recordingSize.height);
         
         // Video settings
         NSDictionary *videoSettings = @{
@@ -117,6 +107,11 @@ bool startAVFoundationRecording(const std::string& outputPath,
         // Start capture timer (15 FPS for compatibility)
         dispatch_queue_t captureQueue = dispatch_queue_create("AVFoundationCaptureQueue", DISPATCH_QUEUE_SERIAL);
         g_avTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, captureQueue);
+        
+        if (!g_avTimer) {
+            NSLog(@"❌ Failed to create dispatch timer");
+            return false;
+        }
         
         uint64_t interval = NSEC_PER_SEC / 15; // 15 FPS
         dispatch_source_set_timer(g_avTimer, dispatch_time(DISPATCH_TIME_NOW, 0), interval, interval / 10);
@@ -191,7 +186,7 @@ bool startAVFoundationRecording(const std::string& outputPath,
     }
 }
 
-bool stopAVFoundationRecording() {
+extern "C" bool stopAVFoundationRecording() {
     if (!g_avIsRecording) {
         return true;
     }
@@ -233,6 +228,6 @@ bool stopAVFoundationRecording() {
     }
 }
 
-bool isAVFoundationRecording() {
+extern "C" bool isAVFoundationRecording() {
     return g_avIsRecording;
 }

@@ -270,24 +270,27 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                         NSLog(@"❌ Exception during ScreenCaptureKit startup: %@", sckException.reason);
                     }
                     
-                    NSLog(@"❌ ScreenCaptureKit failed or unsafe");
+                    NSLog(@"❌ ScreenCaptureKit failed or unsafe - will fallback to AVFoundation");
                     
                 } else {
-                    NSLog(@"❌ ScreenCaptureKit availability check failed");
-                    NSLog(@"❌ ScreenCaptureKit not available");
+                    NSLog(@"❌ ScreenCaptureKit availability check failed - will fallback to AVFoundation");
                 }
             } @catch (NSException *availabilityException) {
-                NSLog(@"❌ Exception during ScreenCaptureKit availability check: %@", availabilityException.reason);
-                return Napi::Boolean::New(env, false);
+                NSLog(@"❌ Exception during ScreenCaptureKit availability check - will fallback to AVFoundation: %@", availabilityException.reason);
             }
+            
+            // If we reach here, ScreenCaptureKit failed, so fall through to AVFoundation
+            NSLog(@"⏭️ ScreenCaptureKit failed - falling back to AVFoundation");
         } else {
-            // macOS 14/13 or not macOS 15+ - ALWAYS use AVFoundation
+            // macOS 14/13 or forced AVFoundation - ALWAYS use AVFoundation
             if (isElectron) {
                 NSLog(@"❌ Electron environment - Recording not supported");
                 return Napi::Boolean::New(env, false);
             }
             
-            if (isM14Plus) {
+            if (isM15Plus) {
+                NSLog(@"🎯 macOS 15+ with FORCE_AVFOUNDATION - using AVFoundation");
+            } else if (isM14Plus) {
                 NSLog(@"🎯 macOS 14 detected - using AVFoundation (primary method)");
             } else if (isM13Plus) {
                 NSLog(@"🎯 macOS 13 detected - using AVFoundation (limited features)");  
@@ -296,23 +299,14 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 return Napi::Boolean::New(env, false);
             }
             
-            // DIRECT AVFoundation - NO fallback logic
+            // DIRECT AVFoundation - NO fallback logic needed
             NSLog(@"⏭️ Using AVFoundation directly - no ScreenCaptureKit attempts");
         }
         
         // AVFoundation recording (either fallback from ScreenCaptureKit or direct)
-        useAVFoundation:
         NSLog(@"🎥 Starting AVFoundation recording...");
         
         @try {
-            NSLog(@"🔧 Attempting AVFoundation recording...");
-            NSLog(@"🔧 Output path: %s", outputPath.c_str());
-            NSLog(@"🔧 Display ID: %u", displayID);
-            NSLog(@"🔧 Cursor: %s, Mic: %s, System Audio: %s", 
-                  captureCursor ? "YES" : "NO",
-                  includeMicrophone ? "YES" : "NO", 
-                  includeSystemAudio ? "YES" : "NO");
-            
             // Import AVFoundation recording functions (if available)
             extern bool startAVFoundationRecording(const std::string& outputPath, 
                                                    CGDirectDisplayID displayID,
@@ -323,13 +317,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                    bool includeSystemAudio,
                                                    NSString* audioDeviceId);
             
-            NSLog(@"🔧 Calling startAVFoundationRecording...");
             bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect, 
                                                       captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId);
-            NSLog(@"🔧 AVFoundation result: %s", avResult ? "SUCCESS" : "FAILED");
             
             if (avResult) {
-                NSLog(@"🎥 RECORDING METHOD: AVFoundation (Fallback)");
+                NSLog(@"🎥 RECORDING METHOD: AVFoundation");
                 NSLog(@"✅ AVFoundation recording started successfully");
                 g_isRecording = true;
                 return Napi::Boolean::New(env, true);
@@ -918,40 +910,93 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     @try {
-        // Check screen recording permission
-        bool hasScreenPermission = true;
+        // Determine which framework will be used (same logic as startRecording)
+        NSOperatingSystemVersion osVersion = [[NSProcessInfo processInfo] operatingSystemVersion];
+        BOOL isM15Plus = (osVersion.majorVersion >= 15);
+        BOOL isM14Plus = (osVersion.majorVersion >= 14);
+        BOOL isM13Plus = (osVersion.majorVersion >= 13);
         
-        if (@available(macOS 10.15, *)) {
-            // Try to create a display stream to test permissions
-            CGDisplayStreamRef stream = CGDisplayStreamCreate(
-                CGMainDisplayID(), 
-                1, 1, 
-                kCVPixelFormatType_32BGRA, 
-                nil, 
-                ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
-                    // Empty handler
-                }
-            );
+        // Check for force AVFoundation flag
+        BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL);
+        
+        // Electron detection
+        BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                          [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                         (NSProcessInfo.processInfo.processName && 
+                          [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
+                         (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil);
+        
+        NSLog(@"🔒 Permission check for macOS %ld.%ld.%ld", 
+              (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
+        
+        // Determine which framework will be used
+        BOOL willUseScreenCaptureKit = (isM15Plus && !forceAVFoundation && !isElectron);
+        BOOL willUseAVFoundation = (!willUseScreenCaptureKit && (isM13Plus || isM14Plus));
+        
+        if (willUseScreenCaptureKit) {
+            NSLog(@"🎯 Will use ScreenCaptureKit - checking ScreenCaptureKit permissions");
+        } else if (willUseAVFoundation) {
+            NSLog(@"🎯 Will use AVFoundation - checking AVFoundation permissions");
+        } else {
+            NSLog(@"❌ No compatible recording framework available");
+            return Napi::Boolean::New(env, false);
+        }
+        
+        // Check screen recording permission
+        bool hasScreenPermission = false;
+        
+        if (@available(macOS 14.0, *)) {
+            // macOS 14+ - Use CGRequestScreenCaptureAccess for both frameworks
+            hasScreenPermission = CGRequestScreenCaptureAccess();
+            NSLog(@"🔒 Screen recording permission: %s", hasScreenPermission ? "GRANTED" : "DENIED");
             
-            if (stream) {
-                CFRelease(stream);
+            if (!hasScreenPermission) {
+                NSLog(@"❌ Screen recording permission DENIED");
+                NSLog(@"📝 Please go to System Settings > Privacy & Security > Screen Recording");
+                NSLog(@"📝 and enable permission for your application");
+            }
+        } else if (@available(macOS 10.15, *)) {
+            // macOS 10.15-13 - Try to create a minimal display image to test permissions
+            CGImageRef testImage = CGDisplayCreateImage(CGMainDisplayID());
+            if (testImage) {
                 hasScreenPermission = true;
+                CGImageRelease(testImage);
+                NSLog(@"🔒 Screen recording permission: GRANTED");
             } else {
                 hasScreenPermission = false;
+                NSLog(@"❌ Screen recording permission: DENIED");
+                NSLog(@"📝 Please grant screen recording permission in System Preferences");
             }
+        } else {
+            // macOS < 10.15 - No permission system for screen recording
+            hasScreenPermission = true;
+            NSLog(@"🔒 Screen recording: No permission system (macOS < 10.15)");
         }
         
-        // Check audio permission
+        // Check audio permission based on framework
         bool hasAudioPermission = true;
-        if (@available(macOS 10.14, *)) {
-            // Audio permissions handled by ScreenCaptureKit internally
-            BOOL audioAuthorized = YES;  // Assume authorized since SCK handles it
-            hasAudioPermission = audioAuthorized;
+        
+        if (willUseScreenCaptureKit) {
+            // ScreenCaptureKit handles audio permissions internally
+            hasAudioPermission = true;
+            NSLog(@"🔒 Audio permission: Handled internally by ScreenCaptureKit");
+            
+        } else if (willUseAVFoundation) {
+            // For AVFoundation, we don't enforce audio permissions
+            // Recording can continue without audio if needed
+            hasAudioPermission = true;
+            NSLog(@"🔒 Audio permission: Will be requested during recording by AVFoundation");
         }
+        
+        NSLog(@"🔒 Final permission status:");
+        NSLog(@"   Framework: %s", willUseScreenCaptureKit ? "ScreenCaptureKit" : "AVFoundation");
+        NSLog(@"   Screen Recording: %s", hasScreenPermission ? "GRANTED" : "DENIED");
+        NSLog(@"   Audio: %s", hasAudioPermission ? "READY" : "NOT READY");
         
         return Napi::Boolean::New(env, hasScreenPermission && hasAudioPermission);
         
     } @catch (NSException *exception) {
+        NSLog(@"❌ Exception in permission check: %@", exception.reason);
         return Napi::Boolean::New(env, false);
     }
 }
