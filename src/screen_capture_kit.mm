@@ -77,6 +77,10 @@ static NSString *g_outputPath = nil;
     NSLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@ crop=%@", 
           captureCursor, includeMicrophone, includeSystemAudio, displayId, windowId, captureRect);
     
+    // CRITICAL DEBUG: Log EXACT audio parameter values
+    NSLog(@"🔍 AUDIO DEBUG: includeMicrophone type=%@ value=%d", [includeMicrophone class], [includeMicrophone boolValue]);
+    NSLog(@"🔍 AUDIO DEBUG: includeSystemAudio type=%@ value=%d", [includeSystemAudio class], [includeSystemAudio boolValue]);
+    
     // Get shareable content
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
         if (contentError) {
@@ -86,6 +90,15 @@ static NSString *g_outputPath = nil;
         
         NSLog(@"✅ Got %lu displays, %lu windows for pure recording", 
               content.displays.count, content.windows.count);
+        
+        // CRITICAL DEBUG: List all available displays in ScreenCaptureKit
+        NSLog(@"🔍 ScreenCaptureKit available displays:");
+        for (SCDisplay *display in content.displays) {
+            NSLog(@"   Display ID=%u, Size=%dx%d, Frame=(%.0f,%.0f,%.0fx%.0f)", 
+                  display.displayID, (int)display.width, (int)display.height,
+                  display.frame.origin.x, display.frame.origin.y,
+                  display.frame.size.width, display.frame.size.height);
+        }
         
         SCContentFilter *filter = nil;
         NSInteger recordingWidth = 0;
@@ -121,11 +134,19 @@ static NSString *g_outputPath = nil;
             
             if (displayId && [displayId integerValue] != 0) {
                 // Find specific display
+                NSLog(@"🎯 Looking for display ID=%@ in ScreenCaptureKit list", displayId);
                 for (SCDisplay *display in content.displays) {
+                    NSLog(@"   Checking display ID=%u vs requested=%u", display.displayID, [displayId unsignedIntValue]);
                     if (display.displayID == [displayId unsignedIntValue]) {
                         targetDisplay = display;
+                        NSLog(@"✅ FOUND matching display ID=%u", display.displayID);
                         break;
                     }
+                }
+                
+                if (!targetDisplay) {
+                    NSLog(@"❌ Display ID=%@ NOT FOUND in ScreenCaptureKit - using first display as fallback", displayId);
+                    targetDisplay = content.displays.firstObject;
                 }
             } else {
                 // Use first display
@@ -188,8 +209,10 @@ static NSString *g_outputPath = nil;
               recordingWidth, recordingHeight, shouldShowCursor);
         
         // AUDIO SUPPORT - Enable both microphone and system audio
+        NSLog(@"🔍 AUDIO PROCESSING: includeMicrophone=%@ includeSystemAudio=%@", includeMicrophone, includeSystemAudio);
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
         BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
+        NSLog(@"🔍 AUDIO COMPUTED: shouldCaptureMic=%d shouldCaptureSystemAudio=%d", shouldCaptureMic, shouldCaptureSystemAudio);
         
         // Enable audio if either microphone or system audio is requested
         if (@available(macOS 13.0, *)) {
