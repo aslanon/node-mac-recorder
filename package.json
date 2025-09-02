@@ -1,6 +1,6 @@
 {
 	"name": "node-mac-recorder",
-	"version": "2.16.22",
+	"version": "2.16.23",
 	"description": "Native macOS screen recording package for Node.js applications",
 	"main": "index.js",
 	"keywords": [
