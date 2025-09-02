@@ -329,7 +329,6 @@ static NSString *g_outputPath = nil;
     }
     
     NSLog(@"🛑 Stopping pure ScreenCaptureKit recording");
-    g_isCleaningUp = YES;
     
     // Store stream reference to prevent it from being deallocated
     SCStream *streamToStop = g_stream;
@@ -340,11 +339,12 @@ static NSString *g_outputPath = nil;
         }
         NSLog(@"✅ Pure stream stopped");
         
+        // Immediately reset recording state to allow new recordings
+        g_isRecording = NO;
+        
         // Finalize on main queue to prevent threading issues
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (g_isCleaningUp) {  // Only finalize if we initiated cleanup
-                [ScreenCaptureKitRecorder finalizeRecording];
-            }
+            [ScreenCaptureKitRecorder cleanupVideoWriter];
         });
     }];
 }
@@ -360,13 +360,10 @@ static NSString *g_outputPath = nil;
 
 + (void)finalizeRecording {
     @synchronized([ScreenCaptureKitRecorder class]) {
-        if (g_isCleaningUp && g_isRecording == NO) {
-            NSLog(@"⚠️ Already finalizing, skipping duplicate call");
-            return;
-        }
-        
         NSLog(@"🎬 Finalizing pure ScreenCaptureKit recording");
         
+        // Set cleanup flag now that we're actually cleaning up
+        g_isCleaningUp = YES;
         g_isRecording = NO;
         
         if (g_recordingOutput) {
