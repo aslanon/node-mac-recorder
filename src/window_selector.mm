@@ -892,11 +892,21 @@ void updateOverlay() {
                 CGFloat primaryOffsetX = primaryFrame.origin.x - combinedFrame.origin.x;
                 CGFloat primaryOffsetY = primaryFrame.origin.y - combinedFrame.origin.y;
                 
+                NSLog(@"🔧 PRIMARY DEBUG:");
+                NSLog(@"   Primary frame: (%.0f,%.0f) %.0fx%.0f", primaryFrame.origin.x, primaryFrame.origin.y, primaryFrame.size.width, primaryFrame.size.height);
+                NSLog(@"   Combined frame: (%.0f,%.0f) %.0fx%.0f", combinedFrame.origin.x, combinedFrame.origin.y, combinedFrame.size.width, combinedFrame.size.height);
+                NSLog(@"   Primary offset: (%.0f,%.0f)", primaryOffsetX, primaryOffsetY);
+                NSLog(@"   Window coords: (%.0f,%.0f) → Local: (%.0f,%.0f)", (CGFloat)x, (CGFloat)y, x + primaryOffsetX, ([g_overlayView frame].size.height - (y + primaryOffsetY)) - height);
+                
                 localX = x + primaryOffsetX;
                 localY = ([g_overlayView frame].size.height - (y + primaryOffsetY)) - height;
                 
             } else {
                 // Secondary display windows: Apply standard coordinate transformation
+                NSLog(@"🔧 SECONDARY DEBUG:");
+                NSLog(@"   GlobalOffset: (%.0f,%.0f)", globalOffset.x, globalOffset.y);
+                NSLog(@"   Window coords: (%.0f,%.0f) → Local: (%.0f,%.0f)", (CGFloat)x, (CGFloat)y, x - globalOffset.x, ([g_overlayView frame].size.height - (y - globalOffset.y)) - height);
+                
                 localX = x - globalOffset.x;
                 localY = ([g_overlayView frame].size.height - (y - globalOffset.y)) - height;
             }

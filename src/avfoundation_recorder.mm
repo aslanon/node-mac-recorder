@@ -65,8 +65,17 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         CGFloat scaleY = physicalSize.height / logicalSize.height;
         CGFloat scaleFactor = MAX(scaleX, scaleY); // Use max to handle non-uniform scaling
         
-        // For AVFoundation, use logical size (what CGDisplayCreateImage actually captures)
-        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : logicalSize;
+        // CRITICAL FIX: Use actual captured image dimensions, not logical size
+        // CGDisplayCreateImage may return higher resolution on Retina displays
+        CGImageRef testImage = CGDisplayCreateImage(displayID);
+        CGSize actualImageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
+        CGImageRelease(testImage);
+        
+        // For AVFoundation, use actual image size that CGDisplayCreateImage returns
+        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : actualImageSize;
+        
+        NSLog(@"🎯 CRITICAL: Logical %.0fx%.0f → Actual image %.0fx%.0f", 
+              logicalSize.width, logicalSize.height, actualImageSize.width, actualImageSize.height);
         
         NSLog(@"🖥️ Display bounds (logical): %.0fx%.0f", logicalSize.width, logicalSize.height);
         NSLog(@"🖥️ Display pixels (physical): %.0fx%.0f", physicalSize.width, physicalSize.height);
@@ -147,13 +156,30 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         
         // Apply scaling to capture rect if provided (for macOS 14/13 compatibility)
         if (!CGRectIsEmpty(captureRect)) {
-            // Note: captureRect comes in logical coordinates, keep as-is for CGDisplayCreateImage
-            g_avCaptureRect = captureRect;
-            NSLog(@"🔲 Capture area (logical): %.0f,%.0f %.0fx%.0f", 
-                  captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height);
+            // Scale capture rect to match actual image dimensions if needed
+            CGFloat imageScaleX = actualImageSize.width / logicalSize.width;
+            CGFloat imageScaleY = actualImageSize.height / logicalSize.height;
+            
+            if (imageScaleX > 1.1 || imageScaleY > 1.1) {
+                // Scale up capture rect for high-DPI displays
+                CGRect scaledRect = CGRectMake(
+                    captureRect.origin.x * imageScaleX,
+                    captureRect.origin.y * imageScaleY,
+                    captureRect.size.width * imageScaleX,
+                    captureRect.size.height * imageScaleY
+                );
+                g_avCaptureRect = scaledRect;
+                NSLog(@"🔲 Capture area scaled: %.0f,%.0f %.0fx%.0f (scale %.1fx%.1fx)", 
+                      scaledRect.origin.x, scaledRect.origin.y, scaledRect.size.width, scaledRect.size.height,
+                      imageScaleX, imageScaleY);
+            } else {
+                g_avCaptureRect = captureRect;
+                NSLog(@"🔲 Capture area (no scaling): %.0f,%.0f %.0fx%.0f", 
+                      captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height);
+            }
         } else {
             g_avCaptureRect = CGRectZero; // Full screen
-            NSLog(@"🖥️ Full screen capture (logical bounds)");
+            NSLog(@"🖥️ Full screen capture (actual image dimensions)");
         }
         
         g_avFrameNumber = 0;
@@ -214,8 +240,11 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                         size_t imageWidth = CGImageGetWidth(screenImage);
                         size_t imageHeight = CGImageGetHeight(screenImage);
                         
+                        NSLog(@"🔍 Debug: Buffer %zux%zu, Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                        
                         if (bufferWidth != imageWidth || bufferHeight != imageHeight) {
-                            NSLog(@"⚠️ Size mismatch! Buffer %zux%zu vs Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                            NSLog(@"⚠️ CRITICAL SIZE MISMATCH! Buffer %zux%zu vs Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                            NSLog(@"   This indicates Retina scaling issue on macOS 14/13");
                         }
                         
                         CVPixelBufferLockBaseAddress(pixelBuffer, 0);
