@@ -932,9 +932,10 @@ void updateOverlay() {
                 [(WindowSelectorOverlayView *)g_overlayView setIsToggled:YES];
             }
             
-            // Add/update info label above button
+            // CRITICAL FIX: Use targetOverlay (correct screen) instead of g_overlayWindow
+            // Add/update info label above button on the TARGET screen
             NSTextField *infoLabel = nil;
-            for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+            for (NSView *subview in [targetOverlay.contentView subviews]) {
                 if ([subview isKindOfClass:[NSTextField class]]) {
                     infoLabel = (NSTextField*)subview;
                     break;
@@ -958,12 +959,12 @@ void updateOverlay() {
                 infoLabel.layer.cornerRadius = 0.0;
                 infoLabel.layer.masksToBounds = YES;
                 
-                [g_overlayWindow.contentView addSubview:infoLabel];
+                [targetOverlay.contentView addSubview:infoLabel];
             }
             
-            // Add/update app icon
+            // CRITICAL FIX: Add/update app icon on the TARGET screen
             NSImageView *appIconView = nil;
-            for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+            for (NSView *subview in [targetOverlay.contentView subviews]) {
                 if ([subview isKindOfClass:[NSImageView class]]) {
                     appIconView = (NSImageView*)subview;
                     break;
@@ -985,7 +986,7 @@ void updateOverlay() {
                 appIconView.layer.shadowRadius = 0.0;
                 appIconView.layer.shadowOffset = NSMakeSize(0, 0);
                 
-                [g_overlayWindow.contentView addSubview:appIconView];
+                [targetOverlay.contentView addSubview:appIconView];
                 NSLog(@"🖼️ Created app icon view at frame: (%.0f, %.0f, %.0f, %.0f)", 
                       appIconView.frame.origin.x, appIconView.frame.origin.y, 
                       appIconView.frame.size.width, appIconView.frame.size.height);
@@ -1020,9 +1021,56 @@ void updateOverlay() {
             NSString *labelAppName = [windowUnderCursor objectForKey:@"appName"] ?: @"Unknown App";
             [infoLabel setStringValue:[NSString stringWithFormat:@"%@\n%@", labelAppName, labelWindowTitle]];
             
+            // CRITICAL FIX: Find the select button on the TARGET screen
+            NSButton *targetSelectButton = nil;
+            for (NSView *subview in [targetOverlay.contentView subviews]) {
+                if ([subview isKindOfClass:[NSButton class]] && 
+                    [[(NSButton*)subview title] isEqualToString:@"Start Record"]) {
+                    targetSelectButton = (NSButton*)subview;
+                    break;
+                }
+            }
+            
+            // Create select button on target screen if not exists
+            if (!targetSelectButton) {
+                targetSelectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
+                [targetSelectButton setTitle:@"Start Record"];
+                [targetSelectButton setButtonType:NSButtonTypeMomentaryPushIn];
+                [targetSelectButton setBordered:NO];
+                [targetSelectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
+                
+                // Modern button styling with new RGB color
+                [targetSelectButton setWantsLayer:YES];
+                [targetSelectButton.layer setBackgroundColor:[[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor]];
+                [targetSelectButton.layer setCornerRadius:8.0];
+                [targetSelectButton.layer setBorderWidth:0.0];
+                [targetSelectButton.layer setMasksToBounds:YES];
+                
+                // Clean white text - normal weight
+                NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
+                    initWithString:[targetSelectButton title]];
+                [titleString addAttribute:NSForegroundColorAttributeName 
+                                    value:[NSColor whiteColor] 
+                                    range:NSMakeRange(0, [titleString length])];
+                [targetSelectButton setAttributedTitle:titleString];
+                
+                // Set target and action
+                if (!g_delegate) {
+                    g_delegate = [[WindowSelectorDelegate alloc] init];
+                }
+                [targetSelectButton setTarget:g_delegate];
+                [targetSelectButton setAction:@selector(selectButtonClicked:)];
+                
+                // Remove focus ring and other default button behaviors
+                [targetSelectButton setFocusRingType:NSFocusRingTypeNone];
+                [targetSelectButton setShowsBorderOnlyWhileMouseInside:NO];
+                
+                [targetOverlay.contentView addSubview:targetSelectButton];
+            }
+            
             // Position buttons - Start Record in center of selected window
-            if (g_selectButton) {
-                NSSize buttonSize = [g_selectButton frame].size;
+            if (targetSelectButton) {
+                NSSize buttonSize = [targetSelectButton frame].size;
                 // Use local window center for positioning
                 CGFloat localWindowCenterX = localX + (width / 2);
                 CGFloat localWindowCenterY = localY + (height / 2);
@@ -1034,7 +1082,7 @@ void updateOverlay() {
                 NSLog(@"   ButtonCalc: WindowCenter(%.0f, %.0f) -> Button(%.0f, %.0f)", 
                       localWindowCenterX, localWindowCenterY, buttonCenter.x, buttonCenter.y);
                       
-                [g_selectButton setFrameOrigin:buttonCenter];
+                [targetSelectButton setFrameOrigin:buttonCenter];
                 
                 // Position app icon above window center
                 NSPoint iconCenter = NSMakePoint(
@@ -1066,32 +1114,69 @@ void updateOverlay() {
                 );
                 [infoLabel setFrameOrigin:labelCenter];
                 
-                // Position cancel button below the main button
-                NSButton *cancelButton = nil;
-                for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+                // CRITICAL FIX: Find and position cancel button on the TARGET screen
+                NSButton *targetCancelButton = nil;
+                for (NSView *subview in [targetOverlay.contentView subviews]) {
                     if ([subview isKindOfClass:[NSButton class]] && 
                         [[(NSButton*)subview title] isEqualToString:@"Cancel"]) {
-                        cancelButton = (NSButton*)subview;
+                        targetCancelButton = (NSButton*)subview;
                         break;
                     }
                 }
                 
-                if (cancelButton) {
-                    NSSize cancelButtonSize = [cancelButton frame].size;
+                // Create cancel button on target screen if not exists
+                if (!targetCancelButton) {
+                    targetCancelButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 120, 40)];
+                    [targetCancelButton setTitle:@"Cancel"];
+                    [targetCancelButton setButtonType:NSButtonTypeMomentaryPushIn];
+                    [targetCancelButton setBordered:NO];
+                    [targetCancelButton setFont:[NSFont systemFontOfSize:14 weight:NSFontWeightRegular]];
+                    
+                    // Modern cancel button styling - darker gray, clean
+                    [targetCancelButton setWantsLayer:YES];
+                    [targetCancelButton.layer setBackgroundColor:[[NSColor colorWithRed:0.3 green:0.3 blue:0.3 alpha:0.8] CGColor]];
+                    [targetCancelButton.layer setCornerRadius:6.0];
+                    [targetCancelButton.layer setBorderWidth:0.0];
+                    [targetCancelButton.layer setMasksToBounds:YES];
+                    
+                    // Clean white text
+                    NSMutableAttributedString *cancelTitleString = [[NSMutableAttributedString alloc] 
+                        initWithString:[targetCancelButton title]];
+                    [cancelTitleString addAttribute:NSForegroundColorAttributeName 
+                                        value:[NSColor whiteColor] 
+                                        range:NSMakeRange(0, [cancelTitleString length])];
+                    [targetCancelButton setAttributedTitle:cancelTitleString];
+                    
+                    // Set target and action
+                    if (!g_delegate) {
+                        g_delegate = [[WindowSelectorDelegate alloc] init];
+                    }
+                    [targetCancelButton setTarget:g_delegate];
+                    [targetCancelButton setAction:@selector(cancelButtonClicked:)];
+                    
+                    // Remove focus ring and other default button behaviors
+                    [targetCancelButton setFocusRingType:NSFocusRingTypeNone];
+                    [targetCancelButton setShowsBorderOnlyWhileMouseInside:NO];
+                    
+                    [targetOverlay.contentView addSubview:targetCancelButton];
+                }
+                
+                if (targetCancelButton) {
+                    NSSize cancelButtonSize = [targetCancelButton frame].size;
                     NSPoint cancelButtonCenter = NSMakePoint(
                         localWindowCenterX - (cancelButtonSize.width / 2),  // Center horizontally on window
                         localWindowCenterY - 80  // 80px below window center
                     );
-                    [cancelButton setFrameOrigin:cancelButtonCenter];
+                    [targetCancelButton setFrameOrigin:cancelButtonCenter];
                 }
             }
             
-            [g_overlayWindow orderFront:nil];
+            [targetOverlay orderFront:nil];
             // DON'T make key - prevents focus ring
             // [g_overlayWindow makeKeyAndOrderFront:nil];
             
             // Ensure subviews (except overlay view itself) have no borders after positioning
-            for (NSView *subview in [g_overlayWindow.contentView subviews]) {
+            for (NSView *subview in [targetOverlay.contentView subviews]) {
                 // Skip the main overlay view - it handles its own borders
                 if ([subview isKindOfClass:[WindowSelectorOverlayView class]]) continue;
                 
