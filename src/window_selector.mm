@@ -2360,10 +2360,33 @@ Napi::Value GetSelectedWindowInfo(const Napi::CallbackInfo& info) {
             windowScreen = mainScreen;
         }
         
-        // Add screen information
+        // CRITICAL FIX: Add screen information using real CGDirectDisplayID 
         NSRect screenFrame = [windowScreen frame];
-        result.Set("screenId", Napi::Number::New(env, [[windowScreen deviceDescription] objectForKey:@"NSScreenNumber"] ? 
-            [[[windowScreen deviceDescription] objectForKey:@"NSScreenNumber"] intValue] : 0));
+        
+        // Find real CGDirectDisplayID for this screen (matching GetDisplays logic)
+        CGDirectDisplayID realDisplayID = 0;
+        CGDirectDisplayID activeDisplays[32];
+        uint32_t displayCount;
+        CGGetActiveDisplayList(32, activeDisplays, &displayCount);
+        
+        for (uint32_t j = 0; j < displayCount; j++) {
+            CGDirectDisplayID candidateID = activeDisplays[j];
+            CGRect displayBounds = CGDisplayBounds(candidateID);
+            
+            if (fabs(screenFrame.origin.x - displayBounds.origin.x) < 1.0 &&
+                fabs(screenFrame.origin.y - displayBounds.origin.y) < 1.0 &&
+                fabs(screenFrame.size.width - displayBounds.size.width) < 1.0 &&
+                fabs(screenFrame.size.height - displayBounds.size.height) < 1.0) {
+                realDisplayID = candidateID;
+                break;
+            }
+        }
+        
+        NSLog(@"🔍 Window screen mapping: Frame=(%.0f,%.0f,%.0fx%.0f) → CGDirectDisplayID=%u", 
+              screenFrame.origin.x, screenFrame.origin.y, 
+              screenFrame.size.width, screenFrame.size.height, realDisplayID);
+        
+        result.Set("screenId", Napi::Number::New(env, realDisplayID));
         result.Set("screenX", Napi::Number::New(env, (int)screenFrame.origin.x));
         result.Set("screenY", Napi::Number::New(env, (int)screenFrame.origin.y));
         result.Set("screenWidth", Napi::Number::New(env, (int)screenFrame.size.width));
