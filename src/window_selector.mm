@@ -1023,11 +1023,14 @@ void updateOverlay() {
             
             // CRITICAL FIX: Find the select button on the TARGET screen
             NSButton *targetSelectButton = nil;
+            
             for (NSView *subview in [targetOverlay.contentView subviews]) {
-                if ([subview isKindOfClass:[NSButton class]] && 
-                    [[(NSButton*)subview title] isEqualToString:@"Start Record"]) {
-                    targetSelectButton = (NSButton*)subview;
-                    break;
+                if ([subview isKindOfClass:[NSButton class]]) {
+                    NSButton *btn = (NSButton*)subview;
+                    if ([[btn title] isEqualToString:@"Start Record"]) {
+                        targetSelectButton = btn;
+                        break;
+                    }
                 }
             }
             
@@ -1996,7 +1999,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             [screenOverlay setOpaque:NO];
             [screenOverlay setIgnoresMouseEvents:NO];
             [screenOverlay setAcceptsMouseMovedEvents:YES];
-            [screenOverlay setLevel:NSScreenSaverWindowLevel];
+            [screenOverlay setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)]; // CRITICAL FIX: Match highest level
             [screenOverlay setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary];
             
             NSLog(@"   Screen %ld: (%.0f,%.0f) %.0fx%.0f → Overlay created", i, screenFrame.origin.x, screenFrame.origin.y, screenFrame.size.width, screenFrame.size.height);
