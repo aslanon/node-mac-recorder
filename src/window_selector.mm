@@ -2360,33 +2360,15 @@ Napi::Value GetSelectedWindowInfo(const Napi::CallbackInfo& info) {
             windowScreen = mainScreen;
         }
         
-        // CRITICAL FIX: Add screen information using real CGDirectDisplayID 
+        // Simple screen information - no complex mapping
         NSRect screenFrame = [windowScreen frame];
+        NSNumber *screenNumber = [windowScreen deviceDescription][@"NSScreenNumber"];
         
-        // Find real CGDirectDisplayID for this screen (matching GetDisplays logic)
-        CGDirectDisplayID realDisplayID = 0;
-        CGDirectDisplayID activeDisplays[32];
-        uint32_t displayCount;
-        CGGetActiveDisplayList(32, activeDisplays, &displayCount);
-        
-        for (uint32_t j = 0; j < displayCount; j++) {
-            CGDirectDisplayID candidateID = activeDisplays[j];
-            CGRect displayBounds = CGDisplayBounds(candidateID);
-            
-            if (fabs(screenFrame.origin.x - displayBounds.origin.x) < 1.0 &&
-                fabs(screenFrame.origin.y - displayBounds.origin.y) < 1.0 &&
-                fabs(screenFrame.size.width - displayBounds.size.width) < 1.0 &&
-                fabs(screenFrame.size.height - displayBounds.size.height) < 1.0) {
-                realDisplayID = candidateID;
-                break;
-            }
-        }
-        
-        NSLog(@"🔍 Window screen mapping: Frame=(%.0f,%.0f,%.0fx%.0f) → CGDirectDisplayID=%u", 
+        NSLog(@"🔍 Window screen: Frame=(%.0f,%.0f,%.0fx%.0f) ScreenNumber=%@", 
               screenFrame.origin.x, screenFrame.origin.y, 
-              screenFrame.size.width, screenFrame.size.height, realDisplayID);
+              screenFrame.size.width, screenFrame.size.height, screenNumber);
         
-        result.Set("screenId", Napi::Number::New(env, realDisplayID));
+        result.Set("screenId", Napi::Number::New(env, [screenNumber unsignedIntValue]));
         result.Set("screenX", Napi::Number::New(env, (int)screenFrame.origin.x));
         result.Set("screenY", Napi::Number::New(env, (int)screenFrame.origin.y));
         result.Set("screenWidth", Napi::Number::New(env, (int)screenFrame.size.width));
