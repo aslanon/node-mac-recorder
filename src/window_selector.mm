@@ -475,8 +475,45 @@ void updateScreenOverlays();
     NSLog(@"🔥 Current window under cursor: %@", g_currentWindowUnderCursor);
     
     if (g_currentWindowUnderCursor) {
-        g_selectedWindowInfo = [g_currentWindowUnderCursor retain];
-        NSLog(@"🔥 Selected window info set: %@", g_selectedWindowInfo);
+        // Get window's screen information for display ID
+        NSMutableDictionary *windowInfoWithDisplay = [g_currentWindowUnderCursor mutableCopy];
+        
+        // Get window bounds to determine which screen it's on
+        NSNumber *windowX = [g_currentWindowUnderCursor objectForKey:@"x"];
+        NSNumber *windowY = [g_currentWindowUnderCursor objectForKey:@"y"];
+        
+        if (windowX && windowY) {
+            CGFloat x = [windowX doubleValue];
+            CGFloat y = [windowY doubleValue];
+            
+            // Find the display that contains this window
+            CGDirectDisplayID activeDisplays[32];
+            uint32_t displayCount;
+            CGGetActiveDisplayList(32, activeDisplays, &displayCount);
+            
+            CGDirectDisplayID targetDisplayID = 0;
+            for (uint32_t i = 0; i < displayCount; i++) {
+                CGDirectDisplayID displayID = activeDisplays[i];
+                CGRect displayBounds = CGDisplayBounds(displayID);
+                
+                // Check if window center is within this display
+                if (x >= displayBounds.origin.x && x < displayBounds.origin.x + displayBounds.size.width &&
+                    y >= displayBounds.origin.y && y < displayBounds.origin.y + displayBounds.size.height) {
+                    targetDisplayID = displayID;
+                    break;
+                }
+            }
+            
+            if (targetDisplayID != 0) {
+                [windowInfoWithDisplay setObject:@(targetDisplayID) forKey:@"screenId"];
+                NSLog(@"🎯 Window on display ID: %u", targetDisplayID);
+            } else {
+                NSLog(@"⚠️ Could not determine display ID for window");
+            }
+        }
+        
+        g_selectedWindowInfo = [windowInfoWithDisplay retain];
+        NSLog(@"🔥 Selected window info with display ID: %@", g_selectedWindowInfo);
         cleanupWindowSelector();
     } else {
         NSLog(@"⚠️ No window under cursor when button clicked!");
