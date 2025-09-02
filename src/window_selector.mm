@@ -16,6 +16,11 @@ static NSTimer *g_trackingTimer = nil;
 static NSDictionary *g_selectedWindowInfo = nil;
 static NSMutableArray *g_allWindows = nil;
 
+// Per-screen overlay system
+static NSMutableArray *g_perScreenOverlays = nil;
+static NSMutableArray *g_perScreenOverlayViews = nil;
+static NSInteger g_activeScreenIndex = -1;
+
 // Functions to hide/show main overlay window during recording
 void hideAllOverlayWindows() {
     if (g_overlayWindow && [g_overlayWindow isVisible]) {
@@ -866,54 +871,58 @@ void updateOverlay() {
                 }
             }
             
-            // Convert global window coordinates to local view coordinates
-            // Account for multi-display offset from global origin
-            WindowSelectorOverlayView *overlayView = (WindowSelectorOverlayView *)g_overlayView;
-            NSPoint globalOffset = NSZeroPoint;
-            if (overlayView.globalOriginOffset) {
-                globalOffset = [overlayView.globalOriginOffset pointValue];
-            }
-            
-            // Determine if this is a primary display window
+            // NEW PER-SCREEN SYSTEM: Find which screen this window belongs to
             NSArray *allScreens = [NSScreen screens];
-            NSScreen *primaryScreen = [allScreens objectAtIndex:0]; // Primary screen
-            NSRect primaryFrame = [primaryScreen frame];
-            BOOL isPrimaryDisplayWindow = (x >= primaryFrame.origin.x && 
-                                         x <= primaryFrame.origin.x + primaryFrame.size.width &&
-                                         y >= primaryFrame.origin.y &&
-                                         y <= primaryFrame.origin.y + primaryFrame.size.height);
+            NSInteger targetScreenIndex = -1;
+            NSScreen *targetScreen = nil;
             
-            CGFloat localX, localY;
-            if (isPrimaryDisplayWindow) {
-                // Primary display windows: Calculate dynamic offset from combined frame
-                NSRect combinedFrame = [g_overlayWindow frame];
+            // Find screen containing this window
+            for (NSInteger i = 0; i < [allScreens count]; i++) {
+                NSScreen *screen = [allScreens objectAtIndex:i];
+                NSRect screenFrame = [screen frame];
                 
-                // Calculate primary screen offset within combined frame
-                CGFloat primaryOffsetX = primaryFrame.origin.x - combinedFrame.origin.x;
-                CGFloat primaryOffsetY = primaryFrame.origin.y - combinedFrame.origin.y;
+                // Check if window center is within this screen bounds
+                CGFloat windowCenterX = x + width/2;
+                CGFloat windowCenterY = y + height/2;
                 
-                NSLog(@"🔧 PRIMARY DEBUG:");
-                NSLog(@"   Primary frame: (%.0f,%.0f) %.0fx%.0f", primaryFrame.origin.x, primaryFrame.origin.y, primaryFrame.size.width, primaryFrame.size.height);
-                NSLog(@"   Combined frame: (%.0f,%.0f) %.0fx%.0f", combinedFrame.origin.x, combinedFrame.origin.y, combinedFrame.size.width, combinedFrame.size.height);
-                NSLog(@"   Primary offset: (%.0f,%.0f)", primaryOffsetX, primaryOffsetY);
-                NSLog(@"   Window coords: (%.0f,%.0f) → Local: (%.0f,%.0f)", (CGFloat)x, (CGFloat)y, x + primaryOffsetX, ([g_overlayView frame].size.height - (y + primaryOffsetY)) - height);
-                
-                localX = x + primaryOffsetX;
-                localY = ([g_overlayView frame].size.height - (y + primaryOffsetY)) - height;
-                
-            } else {
-                // Secondary display windows: Apply standard coordinate transformation
-                NSLog(@"🔧 SECONDARY DEBUG:");
-                NSLog(@"   GlobalOffset: (%.0f,%.0f)", globalOffset.x, globalOffset.y);
-                NSLog(@"   Window coords: (%.0f,%.0f) → Local: (%.0f,%.0f)", (CGFloat)x, (CGFloat)y, x - globalOffset.x, ([g_overlayView frame].size.height - (y - globalOffset.y)) - height);
-                
-                localX = x - globalOffset.x;
-                localY = ([g_overlayView frame].size.height - (y - globalOffset.y)) - height;
+                if (windowCenterX >= screenFrame.origin.x && 
+                    windowCenterX <= screenFrame.origin.x + screenFrame.size.width &&
+                    windowCenterY >= screenFrame.origin.y && 
+                    windowCenterY <= screenFrame.origin.y + screenFrame.size.height) {
+                    targetScreenIndex = i;
+                    targetScreen = screen;
+                    break;
+                }
             }
             
-            // Update overlay view window info for highlighting
-            [overlayView setWindowInfo:targetWindow];
-            [overlayView setHighlightFrame:NSMakeRect(localX, localY, width, height)];
+            if (targetScreenIndex == -1) {
+                NSLog(@"⚠️ Window not found on any screen: (%.0f,%.0f)", (CGFloat)x, (CGFloat)y);
+                return;
+            }
+            
+            // Get the overlay for target screen
+            NSWindow *targetOverlay = [g_perScreenOverlays objectAtIndex:targetScreenIndex];
+            WindowSelectorOverlayView *targetOverlayView = [g_perScreenOverlayViews objectAtIndex:targetScreenIndex];
+            NSRect targetScreenFrame = [targetScreen frame];
+            
+            // Calculate LOCAL coordinates within target screen (much simpler!)
+            CGFloat localX = x - targetScreenFrame.origin.x;
+            CGFloat localY = (targetScreenFrame.size.height - (y - targetScreenFrame.origin.y)) - height;
+            
+            NSLog(@"🎯 Window on Screen %ld: Global(%.0f,%.0f) → Local(%.0f,%.0f)", 
+                  targetScreenIndex, (CGFloat)x, (CGFloat)y, localX, localY);
+            
+            // Update active screen if changed
+            if (g_activeScreenIndex != targetScreenIndex) {
+                NSLog(@"🔄 Switching to Screen %ld overlay", targetScreenIndex);
+                g_activeScreenIndex = targetScreenIndex;
+                g_overlayWindow = targetOverlay;
+                g_overlayView = targetOverlayView;
+            }
+            
+            // Update TARGET overlay view window info for highlighting
+            [targetOverlayView setWindowInfo:targetWindow];
+            [targetOverlayView setHighlightFrame:NSMakeRect(localX, localY, width, height)];
             
             // Only reset toggle state when switching to different window (not for position updates)
             if (!g_hasToggledWindow) {
@@ -1133,7 +1142,27 @@ void cleanupWindowSelector() {
         g_windowKeyEventMonitor = nil;
     }
     
-    // Close overlay window
+    // NEW PER-SCREEN CLEANUP: Close all per-screen overlays
+    if (g_perScreenOverlays) {
+        NSLog(@"🧹 Cleaning up %lu per-screen overlays", [g_perScreenOverlays count]);
+        for (NSWindow *overlay in g_perScreenOverlays) {
+            if (overlay) {
+                [overlay close];
+            }
+        }
+        [g_perScreenOverlays release];
+        g_perScreenOverlays = nil;
+    }
+    
+    if (g_perScreenOverlayViews) {
+        [g_perScreenOverlayViews release];
+        g_perScreenOverlayViews = nil;
+    }
+    
+    // Reset per-screen state
+    g_activeScreenIndex = -1;
+    
+    // Close legacy overlay window (fallback cleanup)
     if (g_overlayWindow) {
         [g_overlayWindow close];
         g_overlayWindow = nil;
@@ -1846,32 +1875,55 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         }
         
         // Get all windows
-        g_allWindows = [getAllSelectableWindows() retain];
+        g_allWindows = [[NSMutableArray alloc] initWithArray:getAllSelectableWindows()];
         
         if (!g_allWindows || [g_allWindows count] == 0) {
             Napi::Error::New(env, "No selectable windows found").ThrowAsJavaScriptException();
             return env.Null();
         }
         
-        // Create multi-display overlay window to prevent window dragging
+        // Create PER-SCREEN overlay windows (much simpler than combined overlay)
         NSArray *allScreens = [NSScreen screens];
-        NSRect combinedFrame = NSZeroRect;
+        g_perScreenOverlays = [[NSMutableArray alloc] init];
+        g_perScreenOverlayViews = [[NSMutableArray alloc] init];
         
-        // Calculate combined frame that covers all displays
-        for (NSScreen *screen in allScreens) {
+        NSLog(@"🖥️ Creating per-screen overlays for %lu displays", [allScreens count]);
+        
+        // Create overlay for each screen
+        for (NSInteger i = 0; i < [allScreens count]; i++) {
+            NSScreen *screen = [allScreens objectAtIndex:i];
             NSRect screenFrame = [screen frame];
-            if (NSEqualRects(combinedFrame, NSZeroRect)) {
-                combinedFrame = screenFrame;
-            } else {
-                combinedFrame = NSUnionRect(combinedFrame, screenFrame);
-            }
+            
+            // Create per-screen overlay window
+            NSWindow *screenOverlay = [[NoFocusWindow alloc] initWithContentRect:screenFrame
+                                                                        styleMask:NSWindowStyleMaskBorderless
+                                                                          backing:NSBackingStoreBuffered
+                                                                            defer:NO
+                                                                           screen:screen];
+            
+            // Create per-screen overlay view
+            WindowSelectorOverlayView *overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:NSMakeRect(0, 0, screenFrame.size.width, screenFrame.size.height)];
+            [screenOverlay setContentView:overlayView];
+            
+            // Configure overlay window
+            [screenOverlay setStyleMask:NSWindowStyleMaskBorderless];
+            [screenOverlay setBackgroundColor:[NSColor clearColor]];
+            [screenOverlay setOpaque:NO];
+            [screenOverlay setIgnoresMouseEvents:NO];
+            [screenOverlay setAcceptsMouseMovedEvents:YES];
+            [screenOverlay setLevel:NSScreenSaverWindowLevel];
+            [screenOverlay setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary];
+            
+            NSLog(@"   Screen %ld: (%.0f,%.0f) %.0fx%.0f → Overlay created", i, screenFrame.origin.x, screenFrame.origin.y, screenFrame.size.width, screenFrame.size.height);
+            
+            [g_perScreenOverlays addObject:screenOverlay];
+            [g_perScreenOverlayViews addObject:overlayView];
         }
         
-        NSRect fullScreenFrame = combinedFrame;
-        g_overlayWindow = [[NoFocusWindow alloc] initWithContentRect:fullScreenFrame
-                                                           styleMask:NSWindowStyleMaskBorderless
-                                                             backing:NSBackingStoreBuffered
-                                                               defer:NO];
+        // For compatibility, keep first screen as main overlay
+        g_overlayWindow = [g_perScreenOverlays objectAtIndex:0];
+        g_overlayView = [g_perScreenOverlayViews objectAtIndex:0];
+        g_activeScreenIndex = 0;
         
         // Force completely borderless appearance
         [g_overlayWindow setStyleMask:NSWindowStyleMaskBorderless];
@@ -1896,17 +1948,7 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_overlayWindow setOpaque:NO];
         [g_overlayWindow setBackgroundColor:[NSColor clearColor]];
         
-        // Create overlay view covering all displays
-        // Convert global coordinates to local view coordinates (offset by origin)
-        NSRect localViewFrame = NSMakeRect(0, 0, fullScreenFrame.size.width, fullScreenFrame.size.height);
-        g_overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:localViewFrame];
-        
-        // Store the global origin offset for coordinate conversion
-        WindowSelectorOverlayView *overlayView = (WindowSelectorOverlayView *)g_overlayView;
-        overlayView.globalOriginOffset = [NSValue valueWithPoint:fullScreenFrame.origin];
-        
-        NSLog(@"🔧 SET GlobalOriginOffset: (%.0f, %.0f)", fullScreenFrame.origin.x, fullScreenFrame.origin.y);
-        [g_overlayWindow setContentView:g_overlayView];
+        NSLog(@"✅ Per-screen overlay system initialized with %lu screens", [allScreens count]);
         
         // Note: NSWindow doesn't have setWantsLayer method, only NSView does
         
