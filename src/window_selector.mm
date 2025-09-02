@@ -471,9 +471,15 @@ void updateScreenOverlays();
 
 @implementation WindowSelectorDelegate
 - (void)selectButtonClicked:(id)sender {
+    NSLog(@"🔥 BUTTON CLICKED! Sender: %@", sender);
+    NSLog(@"🔥 Current window under cursor: %@", g_currentWindowUnderCursor);
+    
     if (g_currentWindowUnderCursor) {
         g_selectedWindowInfo = [g_currentWindowUnderCursor retain];
+        NSLog(@"🔥 Selected window info set: %@", g_selectedWindowInfo);
         cleanupWindowSelector();
+    } else {
+        NSLog(@"⚠️ No window under cursor when button clicked!");
     }
 }
 
@@ -1024,11 +1030,22 @@ void updateOverlay() {
             // CRITICAL FIX: Find the select button on the TARGET screen
             NSButton *targetSelectButton = nil;
             
+            NSLog(@"🔍 DEEP DEBUG: Screen %ld - Looking for UI elements", targetScreenIndex);
+            NSLog(@"🔍 Target overlay: %@", targetOverlay);
+            NSLog(@"🔍 Target overlay contentView: %@", targetOverlay.contentView);
+            NSLog(@"🔍 Target overlay subviews count: %lu", [targetOverlay.contentView subviews].count);
+            
             for (NSView *subview in [targetOverlay.contentView subviews]) {
+                NSLog(@"🔍 Found subview: %@ - frame: (%.0f,%.0f,%.0f,%.0f)", [subview class], 
+                      subview.frame.origin.x, subview.frame.origin.y, 
+                      subview.frame.size.width, subview.frame.size.height);
                 if ([subview isKindOfClass:[NSButton class]]) {
                     NSButton *btn = (NSButton*)subview;
+                    NSLog(@"🔍 Button title: '%@' - visible: %@ - alpha: %.2f", [btn title], 
+                          [btn isHidden] ? @"NO" : @"YES", [btn alphaValue]);
                     if ([[btn title] isEqualToString:@"Start Record"]) {
                         targetSelectButton = btn;
+                        NSLog(@"✅ Found existing Start Record button on Screen %ld", targetScreenIndex);
                         break;
                     }
                 }
@@ -1036,18 +1053,26 @@ void updateOverlay() {
             
             // Create select button on target screen if not exists
             if (!targetSelectButton) {
+                NSLog(@"🆕 Creating new Start Record button on Screen %ld", targetScreenIndex);
                 targetSelectButton = [[HoverButton alloc] initWithFrame:NSMakeRect(0, 0, 200, 60)];
                 [targetSelectButton setTitle:@"Start Record"];
                 [targetSelectButton setButtonType:NSButtonTypeMomentaryPushIn];
                 [targetSelectButton setBordered:NO];
                 [targetSelectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
                 
-                // Modern button styling with new RGB color
+                // CRITICAL VISUAL FIX: Super aggressive styling for external displays
                 [targetSelectButton setWantsLayer:YES];
-                [targetSelectButton.layer setBackgroundColor:[[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor]];
+                [targetSelectButton.layer setBackgroundColor:[[NSColor redColor] CGColor]]; // BRIGHT RED for testing
                 [targetSelectButton.layer setCornerRadius:8.0];
-                [targetSelectButton.layer setBorderWidth:0.0];
+                [targetSelectButton.layer setBorderWidth:3.0]; // THICK border
+                [targetSelectButton.layer setBorderColor:[[NSColor yellowColor] CGColor]]; // YELLOW border
                 [targetSelectButton.layer setMasksToBounds:YES];
+                
+                // Force very visible styling
+                [targetSelectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
+                [targetSelectButton.layer setShadowOffset:CGSizeMake(5, 5)];
+                [targetSelectButton.layer setShadowRadius:10.0];
+                [targetSelectButton.layer setShadowOpacity:1.0];
                 
                 // Clean white text - normal weight
                 NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
@@ -1069,10 +1094,14 @@ void updateOverlay() {
                 [targetSelectButton setShowsBorderOnlyWhileMouseInside:NO];
                 
                 [targetOverlay.contentView addSubview:targetSelectButton];
+                NSLog(@"🆕 Added new button to Screen %ld overlay - total subviews now: %lu", targetScreenIndex, [targetOverlay.contentView subviews].count);
             }
             
             // Position buttons - Start Record in center of selected window
             if (targetSelectButton) {
+                NSLog(@"🎯 Positioning button on Screen %ld - current frame: (%.0f,%.0f,%.0f,%.0f)", targetScreenIndex,
+                      targetSelectButton.frame.origin.x, targetSelectButton.frame.origin.y,
+                      targetSelectButton.frame.size.width, targetSelectButton.frame.size.height);
                 NSSize buttonSize = [targetSelectButton frame].size;
                 // Use local window center for positioning
                 CGFloat localWindowCenterX = localX + (width / 2);
@@ -1086,6 +1115,10 @@ void updateOverlay() {
                       localWindowCenterX, localWindowCenterY, buttonCenter.x, buttonCenter.y);
                       
                 [targetSelectButton setFrameOrigin:buttonCenter];
+                NSLog(@"🎯 After positioning - button frame: (%.0f,%.0f,%.0f,%.0f) - visible: %@ - alpha: %.2f", 
+                      targetSelectButton.frame.origin.x, targetSelectButton.frame.origin.y,
+                      targetSelectButton.frame.size.width, targetSelectButton.frame.size.height,
+                      [targetSelectButton isHidden] ? @"NO" : @"YES", [targetSelectButton alphaValue]);
                 
                 // Position app icon above window center
                 NSPoint iconCenter = NSMakePoint(
@@ -1174,9 +1207,34 @@ void updateOverlay() {
                 }
             }
             
+            // CRITICAL DEBUG: Force visibility on external displays  
+            NSLog(@"🔍 OVERLAY DEBUG: Screen %ld overlay info:", targetScreenIndex);
+            NSLog(@"   - Window: %@", targetOverlay);
+            NSLog(@"   - Frame: (%.0f,%.0f,%.0f,%.0f)", targetOverlay.frame.origin.x, targetOverlay.frame.origin.y, targetOverlay.frame.size.width, targetOverlay.frame.size.height);
+            NSLog(@"   - Level: %ld", [targetOverlay level]);
+            NSLog(@"   - Alpha: %.2f", [targetOverlay alphaValue]);
+            NSLog(@"   - Visible: %@", [targetOverlay isVisible] ? @"YES" : @"NO");
+            NSLog(@"   - Screen: %@", [targetOverlay screen]);
+            NSLog(@"   - OrderedIndex: %ld", [targetOverlay orderedIndex]);
+            
             [targetOverlay orderFront:nil];
-            // DON'T make key - prevents focus ring
-            // [g_overlayWindow makeKeyAndOrderFront:nil];
+            [targetOverlay makeKeyAndOrderFront:nil]; // FORCE make key for external displays
+            
+            // Additional aggressive visibility for external displays
+            if (targetScreenIndex != 0) {
+                NSLog(@"🔧 EXTERNAL DISPLAY: Applying aggressive visibility fixes for Screen %ld", targetScreenIndex);
+                [targetOverlay setLevel:CGWindowLevelForKey(kCGMaximumWindowLevelKey)];
+                [targetOverlay setAlphaValue:1.0];
+                [targetOverlay orderFront:nil];
+                [targetOverlay makeKeyAndOrderFront:nil];
+                
+                // Force order above all other windows
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [targetOverlay orderFront:nil];
+                    NSLog(@"🔧 Post-delay visibility check: Level=%ld, Alpha=%.2f, Visible=%@", 
+                          [targetOverlay level], [targetOverlay alphaValue], [targetOverlay isVisible] ? @"YES" : @"NO");
+                });
+            }
             
             // Ensure subviews (except overlay view itself) have no borders after positioning
             for (NSView *subview in [targetOverlay.contentView subviews]) {
@@ -2003,6 +2061,33 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             [screenOverlay setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary];
             
             NSLog(@"   Screen %ld: (%.0f,%.0f) %.0fx%.0f → Overlay created", i, screenFrame.origin.x, screenFrame.origin.y, screenFrame.size.width, screenFrame.size.height);
+            
+            // CRITICAL FIX: Immediately make overlay visible for each screen
+            [screenOverlay orderFront:nil];
+            
+            // EXTERNAL DISPLAY FIX: Force visibility for non-primary screens
+            if (i != 0) {
+                NSLog(@"🔧 IMMEDIATE FIX: Forcing Screen %ld overlay visibility", i);
+                
+                // ULTRA AGGRESSIVE APPROACH - Force absolute maximum level
+                [screenOverlay setLevel:kCGMaximumWindowLevel]; // Use raw constant instead of key
+                [screenOverlay setAlphaValue:1.0];
+                [screenOverlay makeKeyAndOrderFront:nil];
+                [screenOverlay orderFrontRegardless]; // FORCE to front
+                
+                // Additional positioning fix for external displays
+                [screenOverlay setFrame:screenFrame display:YES animate:NO];
+                
+                // Force collection behavior to always be on top
+                [screenOverlay setCollectionBehavior:NSWindowCollectionBehaviorStationary | 
+                                                    NSWindowCollectionBehaviorCanJoinAllSpaces | 
+                                                    NSWindowCollectionBehaviorFullScreenAuxiliary];
+                
+                NSLog(@"🔧 Screen %ld post-fix: Frame=(%.0f,%.0f,%.0f,%.0f) Screen=%@ Visible=%@", 
+                      i, screenOverlay.frame.origin.x, screenOverlay.frame.origin.y, 
+                      screenOverlay.frame.size.width, screenOverlay.frame.size.height,
+                      [screenOverlay screen], [screenOverlay isVisible] ? @"YES" : @"NO");
+            }
             
             [g_perScreenOverlays addObject:screenOverlay];
             [g_perScreenOverlayViews addObject:overlayView];
