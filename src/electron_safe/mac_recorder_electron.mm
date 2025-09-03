@@ -114,8 +114,8 @@ Napi::Value StartRecordingElectronSafe(const Napi::CallbackInfo& info) {
                     double width = areaObj.Get("width").As<Napi::Number>().DoubleValue();
                     double height = areaObj.Get("height").As<Napi::Number>().DoubleValue();
                     
-                    // Validate bounds
-                    if (width > 0 && height > 0 && x >= 0 && y >= 0) {
+                    // Validate bounds - allow negative coordinates for external displays
+                    if (width > 0 && height > 0) {
                         mutableOptions[@"captureArea"] = @{
                             @"x": @(x),
                             @"y": @(y),

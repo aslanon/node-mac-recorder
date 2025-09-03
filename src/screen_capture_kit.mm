@@ -103,6 +103,7 @@ static NSString *g_outputPath = nil;
         SCContentFilter *filter = nil;
         NSInteger recordingWidth = 0;
         NSInteger recordingHeight = 0;
+        SCDisplay *targetDisplay = nil;  // Move to shared scope
         
         // WINDOW RECORDING
         if (windowId && [windowId integerValue] != 0) {
@@ -130,7 +131,6 @@ static NSString *g_outputPath = nil;
         }
         // DISPLAY RECORDING
         else {
-            SCDisplay *targetDisplay = nil;
             
             if (displayId && [displayId integerValue] != 0) {
                 // Find specific display
@@ -187,17 +187,40 @@ static NSString *g_outputPath = nil;
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
         streamConfig.scalesToFit = NO;
         
-        // Apply crop area using sourceRect
+        // Apply crop area using sourceRect - CONVERT GLOBAL TO DISPLAY-RELATIVE COORDINATES
         if (captureRect && captureRect[@"x"] && captureRect[@"y"] && captureRect[@"width"] && captureRect[@"height"]) {
-            CGFloat cropX = [captureRect[@"x"] doubleValue];
-            CGFloat cropY = [captureRect[@"y"] doubleValue];
+            CGFloat globalX = [captureRect[@"x"] doubleValue];
+            CGFloat globalY = [captureRect[@"y"] doubleValue];
             CGFloat cropWidth = [captureRect[@"width"] doubleValue];
             CGFloat cropHeight = [captureRect[@"height"] doubleValue];
             
-            if (cropWidth > 0 && cropHeight > 0) {
-                CGRect sourceRect = CGRectMake(cropX, cropY, cropWidth, cropHeight);
-                streamConfig.sourceRect = sourceRect;
-                NSLog(@"✂️ Crop sourceRect applied: (%.0f,%.0f) %.0fx%.0f", cropX, cropY, cropWidth, cropHeight);
+            if (cropWidth > 0 && cropHeight > 0 && targetDisplay) {
+                // Convert global coordinates to display-relative coordinates
+                CGRect displayBounds = targetDisplay.frame;
+                CGFloat displayRelativeX = globalX - displayBounds.origin.x;
+                CGFloat displayRelativeY = globalY - displayBounds.origin.y;
+                
+                NSLog(@"🌐 Global coords: (%.0f,%.0f) on Display ID=%u", globalX, globalY, targetDisplay.displayID);
+                NSLog(@"🖥️ Display bounds: (%.0f,%.0f,%.0fx%.0f)", 
+                      displayBounds.origin.x, displayBounds.origin.y, 
+                      displayBounds.size.width, displayBounds.size.height);
+                NSLog(@"📍 Display-relative: (%.0f,%.0f) -> SourceRect", displayRelativeX, displayRelativeY);
+                
+                // Validate coordinates are within display bounds
+                if (displayRelativeX >= 0 && displayRelativeY >= 0 && 
+                    displayRelativeX + cropWidth <= displayBounds.size.width &&
+                    displayRelativeY + cropHeight <= displayBounds.size.height) {
+                    
+                    CGRect sourceRect = CGRectMake(displayRelativeX, displayRelativeY, cropWidth, cropHeight);
+                    streamConfig.sourceRect = sourceRect;
+                    NSLog(@"✂️ Crop sourceRect applied: (%.0f,%.0f) %.0fx%.0f (display-relative)", 
+                          displayRelativeX, displayRelativeY, cropWidth, cropHeight);
+                } else {
+                    NSLog(@"❌ Crop coordinates out of display bounds - skipping crop");
+                    NSLog(@"   Relative: (%.0f,%.0f) size:(%.0fx%.0f) vs display:(%.0fx%.0f)",
+                          displayRelativeX, displayRelativeY, cropWidth, cropHeight,
+                          displayBounds.size.width, displayBounds.size.height);
+                }
             }
         }
         
