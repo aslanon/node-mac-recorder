@@ -212,14 +212,12 @@ class MacRecorder extends EventEmitter {
 							targetWindow.y < display.y + displayHeight
 						) {
 							targetDisplayId = display.id; // Use actual display ID, not array index
-							// Koordinatları display'e göre normalize et
+							// CRITICAL FIX: Convert global coordinates to display-relative coordinates
+							// AVFoundation expects simple display-relative top-left coordinates (no flipping)
 							adjustedX = targetWindow.x - display.x;
+							adjustedY = targetWindow.y - display.y;
 							
-							// Y coordinate conversion: CGWindow (top-left) to AVFoundation (bottom-left)
-							// Overlay'deki dönüşümle aynı mantık: screenHeight - windowY - windowHeight
-							const displayHeight = parseInt(display.resolution.split("x")[1]);
-							const convertedY = displayHeight - targetWindow.y - targetWindow.height;
-							adjustedY = Math.max(0, convertedY - display.y);
+							console.log(`🔧 macOS 14/13 coordinate fix: Global (${targetWindow.x},${targetWindow.y}) -> Display-relative (${adjustedX},${adjustedY})`);
 							break;
 						}
 					}

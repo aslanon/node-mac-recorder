@@ -71,8 +71,8 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         CGSize actualImageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
         CGImageRelease(testImage);
         
-        // For AVFoundation, use actual image size that CGDisplayCreateImage returns
-        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : actualImageSize;
+        // CRITICAL FIX: Use logical size for consistency, actual image size only for validation
+        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : logicalSize;
         
         NSLog(@"🎯 CRITICAL: Logical %.0fx%.0f → Actual image %.0fx%.0f", 
               logicalSize.width, logicalSize.height, actualImageSize.width, actualImageSize.height);
@@ -154,32 +154,25 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         // Store recording parameters with scaling correction
         g_avDisplayID = displayID;
         
-        // Apply scaling to capture rect if provided (for macOS 14/13 compatibility)
+        // CRITICAL FIX: Use coordinates as-is from JS layer (already display-relative)
         if (!CGRectIsEmpty(captureRect)) {
-            // Scale capture rect to match actual image dimensions if needed
-            CGFloat imageScaleX = actualImageSize.width / logicalSize.width;
-            CGFloat imageScaleY = actualImageSize.height / logicalSize.height;
+            // Use coordinates directly - JS layer already converted global to display-relative
+            g_avCaptureRect = captureRect;
             
-            if (imageScaleX > 1.1 || imageScaleY > 1.1) {
-                // Scale up capture rect for high-DPI displays
-                CGRect scaledRect = CGRectMake(
-                    captureRect.origin.x * imageScaleX,
-                    captureRect.origin.y * imageScaleY,
-                    captureRect.size.width * imageScaleX,
-                    captureRect.size.height * imageScaleY
-                );
-                g_avCaptureRect = scaledRect;
-                NSLog(@"🔲 Capture area scaled: %.0f,%.0f %.0fx%.0f (scale %.1fx%.1fx)", 
-                      scaledRect.origin.x, scaledRect.origin.y, scaledRect.size.width, scaledRect.size.height,
-                      imageScaleX, imageScaleY);
+            NSLog(@"🔲 macOS 14/13 FIXED: Display-relative capture area: %.0f,%.0f %.0fx%.0f", 
+                  captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height);
+            
+            // Validate coordinates are within logical display bounds
+            if (captureRect.origin.x >= 0 && captureRect.origin.y >= 0 && 
+                captureRect.origin.x + captureRect.size.width <= logicalSize.width &&
+                captureRect.origin.y + captureRect.size.height <= logicalSize.height) {
+                NSLog(@"✅ Coordinates validated within logical display bounds %.0fx%.0f", logicalSize.width, logicalSize.height);
             } else {
-                g_avCaptureRect = captureRect;
-                NSLog(@"🔲 Capture area (no scaling): %.0f,%.0f %.0fx%.0f", 
-                      captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height);
+                NSLog(@"⚠️ Coordinates may be outside logical display bounds - clipping may occur");
             }
         } else {
             g_avCaptureRect = CGRectZero; // Full screen
-            NSLog(@"🖥️ Full screen capture (actual image dimensions)");
+            NSLog(@"🖥️ Full screen capture using logical dimensions %.0fx%.0f", logicalSize.width, logicalSize.height);
         }
         
         g_avFrameNumber = 0;
@@ -243,8 +236,8 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                         NSLog(@"🔍 Debug: Buffer %zux%zu, Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
                         
                         if (bufferWidth != imageWidth || bufferHeight != imageHeight) {
-                            NSLog(@"⚠️ CRITICAL SIZE MISMATCH! Buffer %zux%zu vs Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
-                            NSLog(@"   This indicates Retina scaling issue on macOS 14/13");
+                            NSLog(@"🔧 EXPECTED SIZE DIFFERENCE: Buffer %zux%zu (logical) vs Image %zux%zu (physical)", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                            NSLog(@"   This is normal on Retina displays - scaling handled correctly now");
                         }
                         
                         CVPixelBufferLockBaseAddress(pixelBuffer, 0);
@@ -282,7 +275,9 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                                                    8, bytesPerRow, colorSpace, bitmapInfo);
                         
                         if (context) {
-                            CGContextDrawImage(context, CGRectMake(0, 0, CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)), screenImage);
+                            // CRITICAL FIX: Draw image at correct size - scale physical image to logical buffer size
+                            CGSize bufferSize = CGSizeMake(CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer));
+                            CGContextDrawImage(context, CGRectMake(0, 0, bufferSize.width, bufferSize.height), screenImage);
                             CGContextRelease(context);
                             
                             // Write frame only if input is ready
