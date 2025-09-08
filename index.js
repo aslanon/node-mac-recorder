@@ -258,6 +258,9 @@ class MacRecorder extends EventEmitter {
 							y: targetDisplay.y,
 							width: parseInt(targetDisplay.resolution.split("x")[0]),
 							height: parseInt(targetDisplay.resolution.split("x")[1]),
+							// Add scaling information for cursor coordinate transformation
+							logicalWidth: parseInt(targetDisplay.resolution.split("x")[0]),
+							logicalHeight: parseInt(targetDisplay.resolution.split("x")[1]),
 						};
 					}
 
@@ -292,6 +295,9 @@ class MacRecorder extends EventEmitter {
 						y: targetDisplay.y,
 						width: parseInt(targetDisplay.resolution.split("x")[0]),
 						height: parseInt(targetDisplay.resolution.split("x")[1]),
+						// Add scaling information for cursor coordinate transformation
+						logicalWidth: parseInt(targetDisplay.resolution.split("x")[0]),
+						logicalHeight: parseInt(targetDisplay.resolution.split("x")[1]),
 					};
 				}
 			} catch (error) {
@@ -696,10 +702,32 @@ class MacRecorder extends EventEmitter {
 						let coordinateSystem = "global";
 
 						if (this.cursorDisplayInfo) {
-							// Offset'leri çıkar (display veya window)
-							// Y koordinat dönüşümü başlangıçta yapıldı
-							x = position.x - this.cursorDisplayInfo.x;
-							y = position.y - this.cursorDisplayInfo.y;
+							// CRITICAL FIX: Handle DPR scaling for cursor coordinates
+							// Get scaling information from native cursor position
+							const scaleFactor = position.scaleFactor || 1;
+							const displayInfo = position.displayInfo;
+							
+							// Convert logical cursor position to physical (if recording uses physical coordinates)
+							let physicalX = position.x;
+							let physicalY = position.y;
+							
+							if (scaleFactor > 1.1 && displayInfo) {
+								// Convert to display-relative logical, then to physical
+								const displayRelativeX = position.x - displayInfo.displayX;
+								const displayRelativeY = position.y - displayInfo.displayY;
+								
+								// Scale to physical coordinates
+								const physicalRelativeX = displayRelativeX * scaleFactor;
+								const physicalRelativeY = displayRelativeY * scaleFactor;
+								
+								// Convert back to global physical
+								physicalX = displayInfo.displayX + physicalRelativeX;
+								physicalY = displayInfo.displayY + physicalRelativeY;
+							}
+							
+							// Offset'leri çıkar (display veya window) - use physical coordinates
+							x = physicalX - this.cursorDisplayInfo.x;
+							y = physicalY - this.cursorDisplayInfo.y;
 
 							if (this.cursorDisplayInfo.windowRelative) {
 								// Window-relative koordinatlar

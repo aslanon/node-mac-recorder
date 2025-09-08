@@ -209,17 +209,8 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
             NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
             
-            if (scaleFactor > 1.1) {
-                // Convert to logical coordinates
-                CGFloat displayRelativeX = rawLocation.x - displayBounds.origin.x;
-                CGFloat displayRelativeY = rawLocation.y - displayBounds.origin.y;
-                
-                CGFloat logicalRelativeX = displayRelativeX / scaleFactor;
-                CGFloat logicalRelativeY = displayRelativeY / scaleFactor;
-                
-                location.x = displayBounds.origin.x + logicalRelativeX;
-                location.y = displayBounds.origin.y + logicalRelativeY;
-            }
+            // Keep logical coordinates - no scaling needed here
+            location = rawLocation;
         }
         NSDate *currentDate = [NSDate date];
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
@@ -291,17 +282,8 @@ void cursorTimerCallback() {
             CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
             NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
             
-            if (scaleFactor > 1.1) {
-                // Convert to logical coordinates
-                CGFloat displayRelativeX = rawLocation.x - displayBounds.origin.x;
-                CGFloat displayRelativeY = rawLocation.y - displayBounds.origin.y;
-                
-                CGFloat logicalRelativeX = displayRelativeX / scaleFactor;
-                CGFloat logicalRelativeY = displayRelativeY / scaleFactor;
-                
-                location.x = displayBounds.origin.x + logicalRelativeX;
-                location.y = displayBounds.origin.y + logicalRelativeY;
-            }
+            // Keep logical coordinates - no scaling needed here
+            location = rawLocation;
         }
         
         NSDate *currentDate = [NSDate date];
@@ -491,15 +473,33 @@ NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
             CGDirectDisplayID displayID = displayIDs[i];
             CGRect displayBounds = CGDisplayBounds(displayID);
             
+            NSLog(@"🔍 Display %u: bounds(%.0f,%.0f %.0fx%.0f), cursor(%.0f,%.0f)", 
+                  displayID, displayBounds.origin.x, displayBounds.origin.y, 
+                  displayBounds.size.width, displayBounds.size.height,
+                  globalPoint.x, globalPoint.y);
+            
+            // CRITICAL FIX: Manual bounds check for better coordinate system compatibility
+            BOOL isInBounds = (globalPoint.x >= displayBounds.origin.x && 
+                              globalPoint.x < displayBounds.origin.x + displayBounds.size.width &&
+                              globalPoint.y >= displayBounds.origin.y && 
+                              globalPoint.y < displayBounds.origin.y + displayBounds.size.height);
+            
+            NSLog(@"🔍 Manual bounds check: %s", isInBounds ? "INSIDE" : "OUTSIDE");
+            
             // Check if point is within this display
-            if (CGRectContainsPoint(displayBounds, globalPoint)) {
+            if (isInBounds) {
                 // Get display scaling info
                 CGSize logicalSize = displayBounds.size;
                 CGSize physicalSize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
                 
+                NSLog(@"🔍 Scaling info: logical(%.0fx%.0f) physical(%.0fx%.0f)", 
+                      logicalSize.width, logicalSize.height, physicalSize.width, physicalSize.height);
+                
                 CGFloat scaleX = physicalSize.width / logicalSize.width;
                 CGFloat scaleY = physicalSize.height / logicalSize.height;
                 CGFloat scaleFactor = MAX(scaleX, scaleY);
+                
+                NSLog(@"🔍 Scale factors: X=%.2f, Y=%.2f, Final=%.2f", scaleX, scaleY, scaleFactor);
                 
                 return @{
                     @"displayID": @(displayID),
@@ -549,21 +549,9 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
             CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
             NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
             
-            // CRITICAL FIX: Convert physical coordinates to logical coordinates
-            // CGEventGetLocation returns physical coordinates on Retina displays
-            if (scaleFactor > 1.1) {
-                // Convert to display-relative, then scale down to logical, then back to global logical
-                CGFloat displayRelativeX = rawLocation.x - displayBounds.origin.x;
-                CGFloat displayRelativeY = rawLocation.y - displayBounds.origin.y;
-                
-                // Scale down to logical coordinates
-                CGFloat logicalRelativeX = displayRelativeX / scaleFactor;
-                CGFloat logicalRelativeY = displayRelativeY / scaleFactor;
-                
-                // Convert back to global logical coordinates
-                logicalLocation.x = displayBounds.origin.x + logicalRelativeX;
-                logicalLocation.y = displayBounds.origin.y + logicalRelativeY;
-            }
+            // CGEventGetLocation returns LOGICAL coordinates (correct for JS layer)
+            // Keep logical coordinates - transformation happens in JS layer
+            logicalLocation = rawLocation;
         }
         
         NSString *cursorType = getCursorType();
@@ -602,12 +590,27 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         result.Set("cursorType", Napi::String::New(env, [cursorType UTF8String]));
         result.Set("eventType", Napi::String::New(env, [eventType UTF8String]));
         
-        // Add scaling debug info
+        // Add scaling info for coordinate transformation
         if (scalingInfo) {
             CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
+            NSSize logicalSize = [[scalingInfo objectForKey:@"logicalSize"] sizeValue];
+            NSSize physicalSize = [[scalingInfo objectForKey:@"physicalSize"] sizeValue];
+            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
+            
             result.Set("scaleFactor", Napi::Number::New(env, scaleFactor));
             result.Set("rawX", Napi::Number::New(env, (int)rawLocation.x));
             result.Set("rawY", Napi::Number::New(env, (int)rawLocation.y));
+            
+            // Add display dimension info for JS coordinate transformation
+            Napi::Object displayInfo = Napi::Object::New(env);
+            displayInfo.Set("logicalWidth", Napi::Number::New(env, logicalSize.width));
+            displayInfo.Set("logicalHeight", Napi::Number::New(env, logicalSize.height));
+            displayInfo.Set("physicalWidth", Napi::Number::New(env, physicalSize.width));
+            displayInfo.Set("physicalHeight", Napi::Number::New(env, physicalSize.height));
+            displayInfo.Set("displayX", Napi::Number::New(env, displayBounds.origin.x));
+            displayInfo.Set("displayY", Napi::Number::New(env, displayBounds.origin.y));
+            
+            result.Set("displayInfo", displayInfo);
         }
         
         return result;
