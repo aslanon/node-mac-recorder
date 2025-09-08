@@ -20,6 +20,7 @@ static bool g_isFirstWrite = true;
 // Forward declaration
 void cursorTimerCallback();
 void writeToFile(NSDictionary *cursorData);
+NSDictionary* getDisplayScalingInfo(CGPoint globalPoint);
 
 // Timer helper class
 @interface CursorTimerTarget : NSObject
@@ -198,7 +199,28 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             return event;
         }
         
-        CGPoint location = CGEventGetLocation(event);
+        CGPoint rawLocation = CGEventGetLocation(event);
+        
+        // Apply DPR scaling correction for Retina displays
+        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
+        CGPoint location = rawLocation;
+        
+        if (scalingInfo) {
+            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
+            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
+            
+            if (scaleFactor > 1.1) {
+                // Convert to logical coordinates
+                CGFloat displayRelativeX = rawLocation.x - displayBounds.origin.x;
+                CGFloat displayRelativeY = rawLocation.y - displayBounds.origin.y;
+                
+                CGFloat logicalRelativeX = displayRelativeX / scaleFactor;
+                CGFloat logicalRelativeY = displayRelativeY / scaleFactor;
+                
+                location.x = displayBounds.origin.x + logicalRelativeX;
+                location.y = displayBounds.origin.y + logicalRelativeY;
+            }
+        }
         NSDate *currentDate = [NSDate date];
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
@@ -254,11 +276,32 @@ void cursorTimerCallback() {
             return;
         }
         
-        // CGEventGetLocation direkt global koordinat verir - çoklu ekran desteği için daha doğru
+        // Get cursor position with DPR scaling correction
         CGEventRef event = CGEventCreate(NULL);
-        CGPoint location = CGEventGetLocation(event);
+        CGPoint rawLocation = CGEventGetLocation(event);
         if (event) {
             CFRelease(event);
+        }
+        
+        // Apply DPR scaling correction for Retina displays
+        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
+        CGPoint location = rawLocation;
+        
+        if (scalingInfo) {
+            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
+            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
+            
+            if (scaleFactor > 1.1) {
+                // Convert to logical coordinates
+                CGFloat displayRelativeX = rawLocation.x - displayBounds.origin.x;
+                CGFloat displayRelativeY = rawLocation.y - displayBounds.origin.y;
+                
+                CGFloat logicalRelativeX = displayRelativeX / scaleFactor;
+                CGFloat logicalRelativeY = displayRelativeY / scaleFactor;
+                
+                location.x = displayBounds.origin.x + logicalRelativeX;
+                location.y = displayBounds.origin.y + logicalRelativeY;
+            }
         }
         
         NSDate *currentDate = [NSDate date];
@@ -435,17 +478,92 @@ Napi::Value StopCursorTracking(const Napi::CallbackInfo& info) {
     }
 }
 
+// Helper function to get display scaling info for cursor coordinates
+NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
+    @try {
+        // Get all displays
+        uint32_t displayCount;
+        CGDirectDisplayID displayIDs[32];
+        CGGetActiveDisplayList(32, displayIDs, &displayCount);
+        
+        // Find which display contains this point
+        for (uint32_t i = 0; i < displayCount; i++) {
+            CGDirectDisplayID displayID = displayIDs[i];
+            CGRect displayBounds = CGDisplayBounds(displayID);
+            
+            // Check if point is within this display
+            if (CGRectContainsPoint(displayBounds, globalPoint)) {
+                // Get display scaling info
+                CGSize logicalSize = displayBounds.size;
+                CGSize physicalSize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
+                
+                CGFloat scaleX = physicalSize.width / logicalSize.width;
+                CGFloat scaleY = physicalSize.height / logicalSize.height;
+                CGFloat scaleFactor = MAX(scaleX, scaleY);
+                
+                return @{
+                    @"displayID": @(displayID),
+                    @"logicalSize": [NSValue valueWithSize:NSMakeSize(logicalSize.width, logicalSize.height)],
+                    @"physicalSize": [NSValue valueWithSize:NSMakeSize(physicalSize.width, physicalSize.height)],
+                    @"scaleFactor": @(scaleFactor),
+                    @"displayBounds": [NSValue valueWithRect:NSMakeRect(displayBounds.origin.x, displayBounds.origin.y, displayBounds.size.width, displayBounds.size.height)]
+                };
+            }
+        }
+        
+        // Fallback to main display
+        CGDirectDisplayID mainDisplay = CGMainDisplayID();
+        CGRect displayBounds = CGDisplayBounds(mainDisplay);
+        CGSize logicalSize = displayBounds.size;
+        CGSize physicalSize = CGSizeMake(CGDisplayPixelsWide(mainDisplay), CGDisplayPixelsHigh(mainDisplay));
+        
+        return @{
+            @"displayID": @(mainDisplay),
+            @"logicalSize": [NSValue valueWithSize:NSMakeSize(logicalSize.width, logicalSize.height)],
+            @"physicalSize": [NSValue valueWithSize:NSMakeSize(physicalSize.width, physicalSize.height)],
+            @"scaleFactor": @(MAX(physicalSize.width / logicalSize.width, physicalSize.height / logicalSize.height)),
+            @"displayBounds": [NSValue valueWithRect:NSMakeRect(displayBounds.origin.x, displayBounds.origin.y, displayBounds.size.width, displayBounds.size.height)]
+        };
+    } @catch (NSException *exception) {
+        return nil;
+    }
+}
+
 // NAPI Function: Get Current Cursor Position
 Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     @try {
-        // NSEvent mouseLocation zaten global koordinatlarda (all displays combined)
-        // CGEventGetLocation kullanarak direkt global koordinat al - daha doğru
+        // Get raw cursor position (may be scaled on Retina displays)
         CGEventRef event = CGEventCreate(NULL);
-        CGPoint location = CGEventGetLocation(event);
+        CGPoint rawLocation = CGEventGetLocation(event);
         if (event) {
             CFRelease(event);
+        }
+        
+        // Get display scaling information
+        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
+        CGPoint logicalLocation = rawLocation;
+        
+        if (scalingInfo) {
+            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
+            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
+            
+            // CRITICAL FIX: Convert physical coordinates to logical coordinates
+            // CGEventGetLocation returns physical coordinates on Retina displays
+            if (scaleFactor > 1.1) {
+                // Convert to display-relative, then scale down to logical, then back to global logical
+                CGFloat displayRelativeX = rawLocation.x - displayBounds.origin.x;
+                CGFloat displayRelativeY = rawLocation.y - displayBounds.origin.y;
+                
+                // Scale down to logical coordinates
+                CGFloat logicalRelativeX = displayRelativeX / scaleFactor;
+                CGFloat logicalRelativeY = displayRelativeY / scaleFactor;
+                
+                // Convert back to global logical coordinates
+                logicalLocation.x = displayBounds.origin.x + logicalRelativeX;
+                logicalLocation.y = displayBounds.origin.y + logicalRelativeY;
+            }
         }
         
         NSString *cursorType = getCursorType();
@@ -479,10 +597,18 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         g_rightMouseDown = currentRightMouseDown;
         
         Napi::Object result = Napi::Object::New(env);
-        result.Set("x", Napi::Number::New(env, (int)location.x));
-        result.Set("y", Napi::Number::New(env, (int)location.y));
+        result.Set("x", Napi::Number::New(env, (int)logicalLocation.x));
+        result.Set("y", Napi::Number::New(env, (int)logicalLocation.y));
         result.Set("cursorType", Napi::String::New(env, [cursorType UTF8String]));
         result.Set("eventType", Napi::String::New(env, [eventType UTF8String]));
+        
+        // Add scaling debug info
+        if (scalingInfo) {
+            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
+            result.Set("scaleFactor", Napi::Number::New(env, scaleFactor));
+            result.Set("rawX", Napi::Number::New(env, (int)rawLocation.x));
+            result.Set("rawY", Napi::Number::New(env, (int)rawLocation.y));
+        }
         
         return result;
         
