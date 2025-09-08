@@ -65,14 +65,25 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         CGFloat scaleY = physicalSize.height / logicalSize.height;
         CGFloat scaleFactor = MAX(scaleX, scaleY); // Use max to handle non-uniform scaling
         
-        // CRITICAL FIX: Use actual captured image dimensions, not logical size
-        // CGDisplayCreateImage may return higher resolution on Retina displays
+        // CRITICAL FIX: Use actual captured image dimensions for pixel buffer
+        // CGDisplayCreateImage returns physical pixels on Retina displays
         CGImageRef testImage = CGDisplayCreateImage(displayID);
         CGSize actualImageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
         CGImageRelease(testImage);
         
-        // CRITICAL FIX: Use logical size for consistency, actual image size only for validation
-        CGSize recordingSize = captureRect.size.width > 0 ? captureRect.size : logicalSize;
+        // CRITICAL FIX: Use actual image dimensions to match what CGDisplayCreateImage returns
+        // This prevents the "1/4 recording area" bug on Retina displays
+        CGSize recordingSize;
+        if (!CGRectIsEmpty(captureRect)) {
+            // Scale capture rect to match actual image dimensions
+            recordingSize = CGSizeMake(
+                captureRect.size.width * (actualImageSize.width / logicalSize.width),
+                captureRect.size.height * (actualImageSize.height / logicalSize.height)
+            );
+        } else {
+            // Full screen: use actual image size
+            recordingSize = actualImageSize;
+        }
         
         NSLog(@"🎯 CRITICAL: Logical %.0fx%.0f → Actual image %.0fx%.0f", 
               logicalSize.width, logicalSize.height, actualImageSize.width, actualImageSize.height);
@@ -88,7 +99,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             NSLog(@"🔍 Scale factor: %.1fx → Standard display", scaleFactor);
         }
         
-        NSLog(@"🎯 Recording size: %.0fx%.0f (using logical dimensions for AVFoundation)", recordingSize.width, recordingSize.height);
+        NSLog(@"🎯 Recording size: %.0fx%.0f (using actual physical dimensions for Retina fix)", recordingSize.width, recordingSize.height);
         
         // Video settings with macOS compatibility
         NSString *codecKey;
@@ -154,25 +165,34 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         // Store recording parameters with scaling correction
         g_avDisplayID = displayID;
         
-        // CRITICAL FIX: Use coordinates as-is from JS layer (already display-relative)
+        // CRITICAL FIX: Scale capture coordinates to match physical pixels
         if (!CGRectIsEmpty(captureRect)) {
-            // Use coordinates directly - JS layer already converted global to display-relative
-            g_avCaptureRect = captureRect;
+            // Scale coordinates from logical to physical (for CGDisplayCreateImage)
+            CGFloat scaleFactorX = actualImageSize.width / logicalSize.width;
+            CGFloat scaleFactorY = actualImageSize.height / logicalSize.height;
             
-            NSLog(@"🔲 macOS 14/13 FIXED: Display-relative capture area: %.0f,%.0f %.0fx%.0f", 
-                  captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height);
+            g_avCaptureRect = CGRectMake(
+                captureRect.origin.x * scaleFactorX,
+                captureRect.origin.y * scaleFactorY,
+                captureRect.size.width * scaleFactorX,
+                captureRect.size.height * scaleFactorY
+            );
             
-            // Validate coordinates are within logical display bounds
-            if (captureRect.origin.x >= 0 && captureRect.origin.y >= 0 && 
-                captureRect.origin.x + captureRect.size.width <= logicalSize.width &&
-                captureRect.origin.y + captureRect.size.height <= logicalSize.height) {
-                NSLog(@"✅ Coordinates validated within logical display bounds %.0fx%.0f", logicalSize.width, logicalSize.height);
+            NSLog(@"🔲 RETINA FIX: Logical (%.0f,%.0f %.0fx%.0f) → Physical (%.0f,%.0f %.0fx%.0f)", 
+                  captureRect.origin.x, captureRect.origin.y, captureRect.size.width, captureRect.size.height,
+                  g_avCaptureRect.origin.x, g_avCaptureRect.origin.y, g_avCaptureRect.size.width, g_avCaptureRect.size.height);
+            
+            // Validate coordinates are within physical display bounds
+            if (g_avCaptureRect.origin.x >= 0 && g_avCaptureRect.origin.y >= 0 && 
+                g_avCaptureRect.origin.x + g_avCaptureRect.size.width <= actualImageSize.width &&
+                g_avCaptureRect.origin.y + g_avCaptureRect.size.height <= actualImageSize.height) {
+                NSLog(@"✅ Coordinates validated within physical display bounds %.0fx%.0f", actualImageSize.width, actualImageSize.height);
             } else {
-                NSLog(@"⚠️ Coordinates may be outside logical display bounds - clipping may occur");
+                NSLog(@"⚠️ Coordinates may be outside physical display bounds - clipping may occur");
             }
         } else {
             g_avCaptureRect = CGRectZero; // Full screen
-            NSLog(@"🖥️ Full screen capture using logical dimensions %.0fx%.0f", logicalSize.width, logicalSize.height);
+            NSLog(@"🖥️ Full screen capture using physical dimensions %.0fx%.0f", actualImageSize.width, actualImageSize.height);
         }
         
         g_avFrameNumber = 0;
