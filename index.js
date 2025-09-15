@@ -315,6 +315,11 @@ class MacRecorder extends EventEmitter {
 
 		return new Promise((resolve, reject) => {
 			try {
+				// Create cursor file path with timestamp in the same directory as video
+				const timestamp = Date.now();
+				const outputDir = path.dirname(outputPath);
+				const cursorFilePath = path.join(outputDir, `temp_cursor_${timestamp}.json`);
+
 				// Native kayıt başlat
 				const recordingOptions = {
 					includeMicrophone: this.options.includeMicrophone === true, // Only if explicitly enabled
@@ -350,6 +355,20 @@ class MacRecorder extends EventEmitter {
 				if (success) {
 					this.isRecording = true;
 					this.recordingStartTime = Date.now();
+
+					// Start cursor tracking automatically with recording
+					this.startCursorCapture(cursorFilePath, {
+						windowRelative: !!this.options.windowId,
+						windowInfo: this.options.windowId ? {
+							x: this.options.captureArea?.x || 0,
+							y: this.options.captureArea?.y || 0,
+							width: this.options.captureArea?.width || 1920,
+							height: this.options.captureArea?.height || 1080,
+							displayId: this.options.displayId
+						} : null
+					}).catch(cursorError => {
+						console.warn('Cursor tracking failed to start:', cursorError.message);
+					});
 
 					// Timer başlat (progress tracking için)
 					this.recordingTimer = setInterval(() => {
@@ -439,6 +458,13 @@ class MacRecorder extends EventEmitter {
 				} catch (nativeError) {
 					console.log('Native stop failed:', nativeError.message);
 					success = true; // Assume success to avoid throwing
+				}
+
+				// Stop cursor tracking automatically
+				if (this.cursorCaptureInterval) {
+					this.stopCursorCapture().catch(cursorError => {
+						console.warn('Cursor tracking failed to stop:', cursorError.message);
+					});
 				}
 
 				// Timer durdur
