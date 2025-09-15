@@ -357,18 +357,62 @@ class MacRecorder extends EventEmitter {
 					this.recordingStartTime = Date.now();
 
 					// Start cursor tracking automatically with recording
-					this.startCursorCapture(cursorFilePath, {
-						windowRelative: !!this.options.windowId,
-						windowInfo: this.options.windowId ? {
-							x: this.options.captureArea?.x || 0,
-							y: this.options.captureArea?.y || 0,
-							width: this.options.captureArea?.width || 1920,
-							height: this.options.captureArea?.height || 1080,
-							displayId: this.options.displayId
-						} : null
-					}).catch(cursorError => {
-						console.warn('Cursor tracking failed to start:', cursorError.message);
-					});
+					let cursorOptions = {};
+
+					// For window recording, use the original window coordinates (not display-relative captureArea)
+					if (this.options.windowId) {
+						// Use cached window info from the earlier window detection
+						this.getWindows().then(windows => {
+							const targetWindow = windows.find(w => w.id === this.options.windowId);
+							if (targetWindow) {
+								// Restart cursor capture with correct window coordinates
+								if (this.cursorCaptureInterval) {
+									this.stopCursorCapture().then(() => {
+										this.startCursorCapture(cursorFilePath, {
+											windowRelative: true,
+											windowInfo: {
+												x: targetWindow.x,  // Global window X coordinate
+												y: targetWindow.y,  // Global window Y coordinate
+												width: targetWindow.width,
+												height: targetWindow.height,
+												displayId: this.options.displayId,
+												originalWindow: targetWindow
+											}
+										}).catch(cursorError => {
+											console.warn('Cursor tracking failed to restart:', cursorError.message);
+										});
+									}).catch(stopError => {
+										console.warn('Failed to stop cursor capture:', stopError.message);
+									});
+								} else {
+									this.startCursorCapture(cursorFilePath, {
+										windowRelative: true,
+										windowInfo: {
+											x: targetWindow.x,  // Global window X coordinate
+											y: targetWindow.y,  // Global window Y coordinate
+											width: targetWindow.width,
+											height: targetWindow.height,
+											displayId: this.options.displayId,
+											originalWindow: targetWindow
+										}
+									}).catch(cursorError => {
+										console.warn('Cursor tracking failed to start:', cursorError.message);
+									});
+								}
+							}
+						}).catch(error => {
+							console.warn('Could not get window info for cursor tracking:', error.message);
+							// Fallback to basic cursor tracking
+							this.startCursorCapture(cursorFilePath, cursorOptions).catch(cursorError => {
+								console.warn('Cursor tracking failed to start:', cursorError.message);
+							});
+						});
+					} else {
+						// For display recording, use basic cursor tracking
+						this.startCursorCapture(cursorFilePath, cursorOptions).catch(cursorError => {
+							console.warn('Cursor tracking failed to start:', cursorError.message);
+						});
+					}
 
 					// Timer başlat (progress tracking için)
 					this.recordingTimer = setInterval(() => {
