@@ -70,16 +70,69 @@ NSString* getCursorType() {
                 (hotSpot.x >= 12 && hotSpot.x <= 14 && hotSpot.y >= 7 && hotSpot.y <= 9)) {
                 return @"pointer";
             } else if ([currentCursor isEqual:[NSCursor IBeamCursor]] ||
-                      (hotSpot.x >= 3 && hotSpot.x <= 5 && hotSpot.y >= 8 && hotSpot.y <= 10 && 
+                      (hotSpot.x >= 3 && hotSpot.x <= 5 && hotSpot.y >= 8 && hotSpot.y <= 10 &&
                        imageSize.width <= 10 && imageSize.height >= 16)) {
                 return @"text";
             } else if ([currentCursor isEqual:[NSCursor resizeLeftRightCursor]]) {
-                return @"ew-resize";
+                return @"col-resize";
             } else if ([currentCursor isEqual:[NSCursor resizeUpDownCursor]]) {
-                return @"ns-resize";
-            } else if ([currentCursor isEqual:[NSCursor openHandCursor]] || 
-                      [currentCursor isEqual:[NSCursor closedHandCursor]]) {
+                return @"row-resize";
+            } else if ([currentCursor isEqual:[NSCursor openHandCursor]]) {
+                return @"grab";
+            } else if ([currentCursor isEqual:[NSCursor closedHandCursor]]) {
                 return @"grabbing";
+            } else if ([currentCursor isEqual:[NSCursor crosshairCursor]]) {
+                return @"crosshair";
+            } else if ([currentCursor isEqual:[NSCursor disappearingItemCursor]]) {
+                return @"alias";
+            } else if ([currentCursor isEqual:[NSCursor dragCopyCursor]]) {
+                return @"copy";
+            } else if ([currentCursor isEqual:[NSCursor operationNotAllowedCursor]]) {
+                return @"not-allowed";
+            } else if ([currentCursor isEqual:[NSCursor contextualMenuCursor]]) {
+                return @"help";
+            }
+
+            // Additional cursor type detection by image characteristics
+            if (imageSize.width > 0 && imageSize.height > 0) {
+                // Progress cursor (spinning wheel or hourglass)
+                if (imageSize.width >= 16 && imageSize.height >= 16 &&
+                    imageSize.width <= 32 && imageSize.height <= 32 &&
+                    hotSpot.x >= imageSize.width/2 - 4 && hotSpot.x <= imageSize.width/2 + 4 &&
+                    hotSpot.y >= imageSize.height/2 - 4 && hotSpot.y <= imageSize.height/2 + 4) {
+                    return @"progress";
+                }
+
+                // Zoom cursors (magnifying glass)
+                if ((imageSize.width >= 20 && imageSize.width <= 28) &&
+                    (imageSize.height >= 20 && imageSize.height <= 28)) {
+                    // Try to differentiate zoom-in vs zoom-out by hotspot position
+                    if (hotSpot.x < imageSize.width/2) {
+                        return @"zoom-out";
+                    } else {
+                        return @"zoom-in";
+                    }
+                }
+
+                // All-scroll cursor (four arrows)
+                if (imageSize.width >= 16 && imageSize.height >= 16 &&
+                    hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2 &&
+                    hotSpot.y >= imageSize.height/2 - 2 && hotSpot.y <= imageSize.height/2 + 2) {
+                    return @"all-scroll";
+                }
+
+                // Diagonal resize cursors
+                if (imageSize.width >= 14 && imageSize.width <= 20 &&
+                    imageSize.height >= 14 && imageSize.height <= 20) {
+                    // NW-SE resize (top-left to bottom-right)
+                    if (hotSpot.x >= 7 && hotSpot.x <= 13 && hotSpot.y >= 7 && hotSpot.y <= 13) {
+                        return @"nwse-resize";
+                    }
+                    // NE-SW resize (top-right to bottom-left)
+                    if (hotSpot.x >= 7 && hotSpot.x <= 13 && hotSpot.y >= 7 && hotSpot.y <= 13) {
+                        return @"nesw-resize";
+                    }
+                }
             }
             
             // Check if we're in a drag operation

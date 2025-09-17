@@ -376,7 +376,8 @@ class MacRecorder extends EventEmitter {
 												width: targetWindow.width,
 												height: targetWindow.height,
 												displayId: this.options.displayId,
-												originalWindow: targetWindow
+												originalWindow: targetWindow,
+												captureArea: this.options.captureArea
 											}
 										}).catch(cursorError => {
 											console.warn('Cursor tracking failed to restart:', cursorError.message);
@@ -393,7 +394,8 @@ class MacRecorder extends EventEmitter {
 											width: targetWindow.width,
 											height: targetWindow.height,
 											displayId: this.options.displayId,
-											originalWindow: targetWindow
+											originalWindow: targetWindow,
+											captureArea: this.options.captureArea
 										}
 									}).catch(cursorError => {
 										console.warn('Cursor tracking failed to start:', cursorError.message);
@@ -715,17 +717,31 @@ class MacRecorder extends EventEmitter {
 
 		// Koordinat sistemi belirle: window-relative, display-relative veya global
 		if (options.windowRelative && options.windowInfo) {
-			// Window-relative koordinatlar için pencere bilgilerini kullan
-			// Cursor pozisyonu için Y dönüşümü YAPMA - sadece window offset'ini çıkar
-			this.cursorDisplayInfo = {
-				displayId: options.windowInfo.displayId || null,
-				x: options.windowInfo.x || 0,
-				y: options.windowInfo.y || 0,
-				width: options.windowInfo.width,
-				height: options.windowInfo.height,
-				windowRelative: true,
-				windowInfo: options.windowInfo
-			};
+			// Window recording için display'e relative captureArea koordinatlarını kullan
+			const captureArea = options.windowInfo.captureArea;
+			if (captureArea) {
+				// captureArea zaten display-relative koordinatlar
+				this.cursorDisplayInfo = {
+					displayId: options.windowInfo.displayId || null,
+					x: captureArea.x,  // Display-relative X
+					y: captureArea.y,  // Display-relative Y
+					width: captureArea.width,
+					height: captureArea.height,
+					windowRelative: true,
+					windowInfo: options.windowInfo
+				};
+			} else {
+				// Fallback: orijinal window koordinatları
+				this.cursorDisplayInfo = {
+					displayId: options.windowInfo.displayId || null,
+					x: options.windowInfo.x || 0,
+					y: options.windowInfo.y || 0,
+					width: options.windowInfo.width,
+					height: options.windowInfo.height,
+					windowRelative: true,
+					windowInfo: options.windowInfo
+				};
+			}
 		} else if (this.recordingDisplayInfo) {
 			// Recording başlatılmışsa o display'i kullan
 			this.cursorDisplayInfo = this.recordingDisplayInfo;
@@ -772,9 +788,27 @@ class MacRecorder extends EventEmitter {
 						let coordinateSystem = "global";
 
 						if (this.cursorDisplayInfo) {
-							// Offset'leri çıkar (display veya window)
-							x = position.x - this.cursorDisplayInfo.x;
-							y = position.y - this.cursorDisplayInfo.y;
+							if (this.cursorDisplayInfo.windowRelative) {
+								// Window recording: cursor'ı önce target display'e relative yap, sonra captureArea'ya relative yap
+								const targetDisplay = this.recordingDisplayInfo;
+								if (targetDisplay) {
+									// 1. Global -> Display-relative
+									const displayRelativeX = position.x - targetDisplay.x;
+									const displayRelativeY = position.y - targetDisplay.y;
+
+									// 2. Display-relative -> CaptureArea-relative (window-relative)
+									x = displayRelativeX - this.cursorDisplayInfo.x;
+									y = displayRelativeY - this.cursorDisplayInfo.y;
+								} else {
+									// Fallback: doğrudan offset çıkar
+									x = position.x - this.cursorDisplayInfo.x;
+									y = position.y - this.cursorDisplayInfo.y;
+								}
+							} else {
+								// Display recording: doğrudan offset çıkar
+								x = position.x - this.cursorDisplayInfo.x;
+								y = position.y - this.cursorDisplayInfo.y;
+							}
 
 							if (this.cursorDisplayInfo.windowRelative) {
 								// Window-relative koordinatlar
