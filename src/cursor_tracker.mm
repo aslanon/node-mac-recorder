@@ -55,217 +55,209 @@ NSString* getCursorType() {
         g_cursorTypeCounter++;
         
         @try {
-            // Get current cursor info
-            NSCursor *currentCursor = [NSCursor currentSystemCursor];
-            NSString *cursorType = @"default";
+            // ACCESSIBILITY API BASED CURSOR DETECTION
+            // Determine cursor type based on the UI element under the cursor
 
-            // Get cursor image info
-            NSImage *cursorImage = [currentCursor image];
-            NSPoint hotSpot = [currentCursor hotSpot];
-            NSSize imageSize = [cursorImage size];
-
-            // DEBUG: Log cursor details
-            NSLog(@"🖱️ CURSOR DEBUG: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
-                  imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
-            
-            // Check cursor type by comparing with standard cursors
-            if ([currentCursor isEqual:[NSCursor pointingHandCursor]] ||
-                (hotSpot.x >= 5 && hotSpot.x <= 7 && hotSpot.y >= 0 && hotSpot.y <= 4) ||
-                (hotSpot.x >= 12 && hotSpot.x <= 14 && hotSpot.y >= 7 && hotSpot.y <= 9)) {
-                return @"pointer";
-            } else if ([currentCursor isEqual:[NSCursor IBeamCursor]] ||
-                      (hotSpot.x >= 3 && hotSpot.x <= 5 && hotSpot.y >= 8 && hotSpot.y <= 10 &&
-                       imageSize.width <= 10 && imageSize.height >= 16)) {
-                return @"text";
-            } else if ([currentCursor isEqual:[NSCursor resizeLeftRightCursor]]) {
-                return @"col-resize";
-            } else if ([currentCursor isEqual:[NSCursor resizeUpDownCursor]]) {
-                return @"ns-resize";
-            } else if ([currentCursor isEqual:[NSCursor openHandCursor]]) {
-                return @"grab";
-            } else if ([currentCursor isEqual:[NSCursor closedHandCursor]]) {
-                return @"grabbing";
-            } else if ([currentCursor isEqual:[NSCursor crosshairCursor]]) {
-                return @"crosshair";
-            } else if ([currentCursor isEqual:[NSCursor disappearingItemCursor]]) {
-                return @"alias";
-            } else if ([currentCursor isEqual:[NSCursor dragCopyCursor]]) {
-                return @"copy";
-            } else if ([currentCursor isEqual:[NSCursor operationNotAllowedCursor]]) {
-                return @"not-allowed";
-            } else if ([currentCursor isEqual:[NSCursor contextualMenuCursor]]) {
-                return @"help";
-            }
-
-            // Additional detection based on image characteristics
-            if (imageSize.width > 0 && imageSize.height > 0) {
-                NSLog(@"🖱️ Checking cursor: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
-                      imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
-
-                // Hand cursors (grab/grabbing) - different from regular cursors
-                // Looking for cursors that are NOT the common patterns we know
-                bool isKnownPattern = false;
-
-                // Text cursor: narrow tall with centered hotspot
-                if (imageSize.width <= 12 && imageSize.height >= 16 &&
-                    hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2) {
-                    isKnownPattern = true;
-                }
-
-                // Pointer cursor: larger with off-center hotspot
-                if ((imageSize.width >= 28 && imageSize.height >= 32 && hotSpot.x <= 8) ||
-                    (imageSize.width == 32 && imageSize.height == 32 && hotSpot.x <= 15 && hotSpot.y <= 10)) {
-                    isKnownPattern = true;
-                }
-
-                // Default cursor: 32x32 with center hotspot
-                if (imageSize.width == 32 && imageSize.height == 32 &&
-                    hotSpot.x >= 14 && hotSpot.x <= 18 && hotSpot.y >= 14 && hotSpot.y <= 18) {
-                    isKnownPattern = true;
-                }
-
-                // Special cursor patterns detection
-                if (!isKnownPattern) {
-                    // Progress cursor (loading/spinning) - usually larger, center hotspot
-                    if (imageSize.width >= 24 && imageSize.width <= 40 &&
-                        imageSize.height >= 24 && imageSize.height <= 40 &&
-                        hotSpot.x >= imageSize.width/2 - 4 && hotSpot.x <= imageSize.width/2 + 4 &&
-                        hotSpot.y >= imageSize.height/2 - 4 && hotSpot.y <= imageSize.height/2 + 4) {
-                        NSLog(@"🖱️ DETECTED PROGRESS: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
-                              imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
-                        return @"progress";
-                    }
-
-                    // Zoom cursors (magnifying glass) - distinctive size/hotspot patterns
-                    if (imageSize.width >= 18 && imageSize.width <= 30 &&
-                        imageSize.height >= 18 && imageSize.height <= 30) {
-                        // Zoom-in usually has hotspot in center or slightly off
-                        if (hotSpot.x >= imageSize.width/2 - 3 && hotSpot.x <= imageSize.width/2 + 3) {
-                            NSLog(@"🖱️ DETECTED ZOOM-IN: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
-                            return @"zoom-in";
-                        }
-                        // Zoom-out usually has different hotspot pattern
-                        else {
-                            NSLog(@"🖱️ DETECTED ZOOM-OUT: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
-                            return @"zoom-out";
-                        }
-                    }
-
-                    // All-scroll cursor (move in all directions) - usually square with center hotspot
-                    if (imageSize.width >= 16 && imageSize.width <= 24 &&
-                        imageSize.height >= 16 && imageSize.height <= 24 &&
-                        abs(imageSize.width - imageSize.height) <= 2 &&
-                        hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2 &&
-                        hotSpot.y >= imageSize.height/2 - 2 && hotSpot.y <= imageSize.height/2 + 2) {
-                        NSLog(@"🖱️ DETECTED ALL-SCROLL: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
-                        return @"all-scroll";
-                    }
-
-                    // Diagonal resize cursors - typically 16x16 or similar
-                    if (imageSize.width >= 14 && imageSize.width <= 20 &&
-                        imageSize.height >= 14 && imageSize.height <= 20) {
-                        // NW-SE resize (diagonal top-left to bottom-right)
-                        if (hotSpot.x <= imageSize.width/2 && hotSpot.y <= imageSize.height/2) {
-                            NSLog(@"🖱️ DETECTED NWSE-RESIZE: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
-                            return @"nwse-resize";
-                        }
-                        // NE-SW resize (diagonal top-right to bottom-left)
-                        else if (hotSpot.x >= imageSize.width/2 && hotSpot.y <= imageSize.height/2) {
-                            NSLog(@"🖱️ DETECTED NESW-RESIZE: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
-                            return @"nesw-resize";
-                        }
-                        // Row resize (vertical resize)
-                        else if (abs(hotSpot.x - imageSize.width/2) <= 2) {
-                            NSLog(@"🖱️ DETECTED ROW-RESIZE: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
-                            return @"row-resize";
-                        }
-                    }
-
-                    // Hand cursors (grab/grabbing) - medium-sized, various hotspots
-                    if (imageSize.width >= 14 && imageSize.width <= 24 &&
-                        imageSize.height >= 14 && imageSize.height <= 24) {
-                        NSLog(@"🖱️ POTENTIAL GRAB/GRABBING: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
-                              imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
-
-                        // Try to differentiate grab vs grabbing by hotspot position
-                        if (hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2 &&
-                            hotSpot.y >= imageSize.height/2 - 2 && hotSpot.y <= imageSize.height/2 + 2) {
-                            NSLog(@"🖱️ DETECTED GRAB (center hotspot)");
-                            return @"grab";
-                        } else {
-                            NSLog(@"🖱️ DETECTED GRABBING (off-center hotspot)");
-                            return @"grabbing";
-                        }
-                    }
-                }
-            }
-
-            
-            // Check if we're in a drag operation
-            CGEventRef event = CGEventCreate(NULL);
-            if (event) {
-                CGEventType eventType = (CGEventType)CGEventGetType(event);
-                if (eventType == kCGEventLeftMouseDragged || 
-                    eventType == kCGEventRightMouseDragged) {
-                    CFRelease(event);
-                    return @"grabbing";
-                }
-                CFRelease(event);
-            }
-            
-            // Get the window under the cursor
             CGPoint cursorPos = CGEventGetLocation(CGEventCreate(NULL));
             AXUIElementRef systemWide = AXUIElementCreateSystemWide();
             AXUIElementRef elementAtPosition = NULL;
             AXError error = AXUIElementCopyElementAtPosition(systemWide, cursorPos.x, cursorPos.y, &elementAtPosition);
-            
+
+            NSString *cursorType = @"default"; // Default fallback
+
             if (error == kAXErrorSuccess && elementAtPosition) {
                 CFStringRef role = NULL;
                 error = AXUIElementCopyAttributeValue(elementAtPosition, kAXRoleAttribute, (CFTypeRef*)&role);
-                
+
                 if (error == kAXErrorSuccess && role) {
                     NSString *elementRole = (__bridge_transfer NSString*)role;
-                    
-                    // Check for clickable elements that should show pointer cursor
-                    if ([elementRole isEqualToString:@"AXLink"] ||
-                        [elementRole isEqualToString:@"AXButton"] ||
-                        [elementRole isEqualToString:@"AXMenuItem"] ||
-                        [elementRole isEqualToString:@"AXRadioButton"] ||
-                        [elementRole isEqualToString:@"AXCheckBox"]) {
-                        return @"pointer";
+                    NSLog(@"🎯 ELEMENT ROLE: %@", elementRole);
+
+                    // TEXT CURSORS
+                    if ([elementRole isEqualToString:@"AXTextField"] ||
+                        [elementRole isEqualToString:@"AXTextArea"] ||
+                        [elementRole isEqualToString:@"AXStaticText"] ||
+                        [elementRole isEqualToString:@"AXSearchField"]) {
+                        cursorType = @"text";
                     }
-                    
-                    // Check subrole for additional pointer cursor elements
+                    // POINTER CURSORS (clickable elements)
+                    else if ([elementRole isEqualToString:@"AXLink"] ||
+                             [elementRole isEqualToString:@"AXButton"] ||
+                             [elementRole isEqualToString:@"AXMenuItem"] ||
+                             [elementRole isEqualToString:@"AXRadioButton"] ||
+                             [elementRole isEqualToString:@"AXCheckBox"] ||
+                             [elementRole isEqualToString:@"AXPopUpButton"] ||
+                             [elementRole isEqualToString:@"AXTab"]) {
+                        cursorType = @"pointer";
+                    }
+                    // GRAB CURSORS (draggable elements)
+                    else if ([elementRole isEqualToString:@"AXImage"] ||
+                             [elementRole isEqualToString:@"AXGroup"]) {
+                        // Check if element is draggable
+                        CFBooleanRef draggable = NULL;
+                        error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXMovable"), (CFTypeRef*)&draggable);
+                        if (error == kAXErrorSuccess && draggable && CFBooleanGetValue(draggable)) {
+                            cursorType = @"grab";
+                        } else {
+                            cursorType = @"default";
+                        }
+                    }
+                    // PROGRESS CURSORS (loading/busy elements)
+                    else if ([elementRole isEqualToString:@"AXProgressIndicator"] ||
+                             [elementRole isEqualToString:@"AXBusyIndicator"]) {
+                        cursorType = @"progress";
+                    }
+                    // HELP CURSORS (help buttons/tooltips)
+                    else if ([elementRole isEqualToString:@"AXHelpTag"] ||
+                             [elementRole isEqualToString:@"AXTooltip"]) {
+                        cursorType = @"help";
+                    }
+                    // RESIZE CURSORS
+                    else if ([elementRole isEqualToString:@"AXSplitter"]) {
+                        // Get splitter orientation to determine resize direction
+                        CFStringRef orientation = NULL;
+                        error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXOrientation"), (CFTypeRef*)&orientation);
+                        if (error == kAXErrorSuccess && orientation) {
+                            NSString *orientationStr = (__bridge_transfer NSString*)orientation;
+                            if ([orientationStr isEqualToString:@"AXHorizontalOrientation"]) {
+                                cursorType = @"row-resize"; // vertical splitter -> row resize
+                            } else {
+                                cursorType = @"col-resize"; // horizontal splitter -> col resize
+                            }
+                        } else {
+                            cursorType = @"col-resize"; // default
+                        }
+                    }
+                    // SCROLL CURSORS
+                    else if ([elementRole isEqualToString:@"AXScrollBar"]) {
+                        // Check orientation for scroll direction
+                        CFStringRef orientation = NULL;
+                        error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXOrientation"), (CFTypeRef*)&orientation);
+                        if (error == kAXErrorSuccess && orientation) {
+                            NSString *orientationStr = (__bridge_transfer NSString*)orientation;
+                            if ([orientationStr isEqualToString:@"AXVerticalOrientation"]) {
+                                cursorType = @"ns-resize"; // vertical scrollbar
+                            } else {
+                                cursorType = @"col-resize"; // horizontal scrollbar
+                            }
+                        } else {
+                            cursorType = @"all-scroll";
+                        }
+                    }
+                    else if ([elementRole isEqualToString:@"AXScrollArea"]) {
+                        cursorType = @"all-scroll";
+                    }
+                    // CROSSHAIR CURSORS (drawing/selection tools)
+                    else if ([elementRole isEqualToString:@"AXCanvas"] ||
+                             [elementRole isEqualToString:@"AXDrawingArea"]) {
+                        cursorType = @"crosshair";
+                    }
+                    // ZOOM CURSORS (zoom controls)
+                    else if ([elementRole isEqualToString:@"AXZoomButton"]) {
+                        cursorType = @"zoom-in";
+                    }
+                    // NOT-ALLOWED CURSORS (disabled elements)
+                    else if ([elementRole isEqualToString:@"AXStaticText"] ||
+                             [elementRole isEqualToString:@"AXGroup"]) {
+                        // Check if element is disabled/readonly
+                        CFBooleanRef enabled = NULL;
+                        error = AXUIElementCopyAttributeValue(elementAtPosition, kAXEnabledAttribute, (CFTypeRef*)&enabled);
+                        if (error == kAXErrorSuccess && enabled && !CFBooleanGetValue(enabled)) {
+                            cursorType = @"not-allowed";
+                        }
+                    }
+                    // WINDOW BORDER RESIZE
+                    else if ([elementRole isEqualToString:@"AXWindow"]) {
+                        // Check mouse position relative to window bounds for resize detection
+                        CFTypeRef position = NULL;
+                        CFTypeRef size = NULL;
+                        error = AXUIElementCopyAttributeValue(elementAtPosition, kAXPositionAttribute, &position);
+                        AXError sizeError = AXUIElementCopyAttributeValue(elementAtPosition, kAXSizeAttribute, &size);
+
+                        if (error == kAXErrorSuccess && sizeError == kAXErrorSuccess && position && size) {
+                            CGPoint windowPos;
+                            CGSize windowSize;
+                            AXValueGetValue((AXValueRef)position, kAXValueTypeCGPoint, &windowPos);
+                            AXValueGetValue((AXValueRef)size, kAXValueTypeCGSize, &windowSize);
+
+                            CGFloat x = cursorPos.x - windowPos.x;
+                            CGFloat y = cursorPos.y - windowPos.y;
+                            CGFloat w = windowSize.width;
+                            CGFloat h = windowSize.height;
+                            CGFloat edge = 5.0; // 5px edge detection
+
+                            // Corner resize detection
+                            if ((x <= edge && y <= edge) || (x >= w-edge && y >= h-edge)) {
+                                cursorType = @"nwse-resize"; // Top-left or bottom-right corner
+                            }
+                            else if ((x >= w-edge && y <= edge) || (x <= edge && y >= h-edge)) {
+                                cursorType = @"nesw-resize"; // Top-right or bottom-left corner
+                            }
+                            // Edge resize detection
+                            else if (x <= edge || x >= w-edge) {
+                                cursorType = @"col-resize"; // Left or right edge
+                            }
+                            else if (y <= edge || y >= h-edge) {
+                                cursorType = @"row-resize"; // Top or bottom edge
+                            }
+                            else {
+                                cursorType = @"default";
+                            }
+
+                            if (position) CFRelease(position);
+                            if (size) CFRelease(size);
+                        } else {
+                            cursorType = @"default";
+                        }
+                    }
+
+                    // Check subroles for additional context
                     CFStringRef subrole = NULL;
                     error = AXUIElementCopyAttributeValue(elementAtPosition, kAXSubroleAttribute, (CFTypeRef*)&subrole);
                     if (error == kAXErrorSuccess && subrole) {
                         NSString *elementSubrole = (__bridge_transfer NSString*)subrole;
-                        
-                        if ([elementSubrole isEqualToString:@"AXClickable"] ||
-                            [elementSubrole isEqualToString:@"AXDisclosureTriangle"] ||
-                            [elementSubrole isEqualToString:@"AXToolbarButton"] ||
-                            [elementSubrole isEqualToString:@"AXCloseButton"] ||
+                        NSLog(@"🎯 ELEMENT SUBROLE: %@", elementSubrole);
+
+                        // Special button subroles
+                        if ([elementSubrole isEqualToString:@"AXCloseButton"] ||
                             [elementSubrole isEqualToString:@"AXMinimizeButton"] ||
-                            [elementSubrole isEqualToString:@"AXZoomButton"]) {
-                            return @"pointer";
+                            [elementSubrole isEqualToString:@"AXZoomButton"] ||
+                            [elementSubrole isEqualToString:@"AXToolbarButton"]) {
+                            cursorType = @"pointer";
+                        }
+                        // Copy/alias subroles
+                        else if ([elementSubrole isEqualToString:@"AXFileDrop"] ||
+                                 [elementSubrole isEqualToString:@"AXDropTarget"]) {
+                            cursorType = @"copy";
+                        }
+                        // Alias/shortcut subroles
+                        else if ([elementSubrole isEqualToString:@"AXAlias"] ||
+                                 [elementSubrole isEqualToString:@"AXShortcut"]) {
+                            cursorType = @"alias";
+                        }
+                        // Grabbing state (being dragged)
+                        else if ([elementSubrole isEqualToString:@"AXDragging"] ||
+                                 [elementSubrole isEqualToString:@"AXMoving"]) {
+                            cursorType = @"grabbing";
+                        }
+                        // Zoom controls
+                        else if ([elementSubrole isEqualToString:@"AXZoomIn"]) {
+                            cursorType = @"zoom-in";
+                        }
+                        else if ([elementSubrole isEqualToString:@"AXZoomOut"]) {
+                            cursorType = @"zoom-out";
                         }
                     }
-                    
-                    // Check for text elements
-                    if ([elementRole isEqualToString:@"AXTextField"] || 
-                        [elementRole isEqualToString:@"AXTextArea"] ||
-                        [elementRole isEqualToString:@"AXStaticText"]) {
-                        return @"text";
-                    }
                 }
-                
+
                 CFRelease(elementAtPosition);
             }
-            
+
             if (systemWide) {
                 CFRelease(systemWide);
             }
-            
+
+            NSLog(@"🎯 FINAL CURSOR TYPE: %@", cursorType);
             return cursorType;
             
         } @catch (NSException *exception) {
