@@ -112,7 +112,7 @@ NSString* getCursorType() {
                              [elementRole isEqualToString:@"AXTooltip"]) {
                         cursorType = @"help";
                     }
-                    // RESIZE CURSORS
+                    // RESIZE CURSORS - sadece AXSplitter için
                     else if ([elementRole isEqualToString:@"AXSplitter"]) {
                         // Get splitter orientation to determine resize direction
                         CFStringRef orientation = NULL;
@@ -120,34 +120,23 @@ NSString* getCursorType() {
                         if (error == kAXErrorSuccess && orientation) {
                             NSString *orientationStr = (__bridge_transfer NSString*)orientation;
                             if ([orientationStr isEqualToString:@"AXHorizontalOrientation"]) {
-                                cursorType = @"row-resize"; // vertical splitter -> row resize
+                                cursorType = @"ns-resize"; // Yatay splitter -> dikey hareket (north-south)
+                            } else if ([orientationStr isEqualToString:@"AXVerticalOrientation"]) {
+                                cursorType = @"col-resize"; // Dikey splitter -> yatay hareket (east-west)
                             } else {
-                                cursorType = @"col-resize"; // horizontal splitter -> col resize
+                                cursorType = @"default"; // Bilinmeyen orientation
                             }
                         } else {
-                            cursorType = @"col-resize"; // default
+                            cursorType = @"default"; // Orientation alınamazsa default
                         }
                     }
-                    // SCROLL CURSORS - sadece gerçek scroll kontrollerinde
+                    // SCROLL CURSORS - hep default olsun, all-scroll görünmesin
                     else if ([elementRole isEqualToString:@"AXScrollBar"]) {
-                        // Check orientation for scroll direction
-                        CFStringRef orientation = NULL;
-                        error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXOrientation"), (CFTypeRef*)&orientation);
-                        if (error == kAXErrorSuccess && orientation) {
-                            NSString *orientationStr = (__bridge_transfer NSString*)orientation;
-                            if ([orientationStr isEqualToString:@"AXVerticalOrientation"]) {
-                                cursorType = @"ns-resize"; // vertical scrollbar
-                            } else {
-                                cursorType = @"col-resize"; // horizontal scrollbar
-                            }
-                        } else {
-                            cursorType = @"default"; // fallback to default
-                        }
+                        cursorType = @"default"; // ScrollBar'lar için de default
                     }
-                    // AXScrollArea için sadece belirli durumlarda all-scroll, çoğunlukla default
+                    // AXScrollArea - hep default
                     else if ([elementRole isEqualToString:@"AXScrollArea"]) {
-                        // ScrollArea genellikle default olmalı, sadece özel durumlar için all-scroll
-                        cursorType = @"default";
+                        cursorType = @"default"; // ScrollArea her zaman default
                     }
                     // CROSSHAIR CURSORS (drawing/selection tools)
                     else if ([elementRole isEqualToString:@"AXCanvas"] ||
@@ -196,22 +185,38 @@ NSString* getCursorType() {
                                 // Sadece çok kenar köşelerde resize cursor'ı göster
                                 BOOL isOnBorder = NO;
 
-                                // Corner resize detection - çok dar alanda
-                                if ((x <= edge && y <= edge) || (x >= w-edge && y >= h-edge)) {
-                                    cursorType = @"nwse-resize";
+                                // Corner resize detection - çok dar alanda, doğru açılar
+                                if (x <= edge && y <= edge) {
+                                    cursorType = @"nwse-resize"; // Sol üst köşe - northwest-southeast
                                     isOnBorder = YES;
                                 }
-                                else if ((x >= w-edge && y <= edge) || (x <= edge && y >= h-edge)) {
-                                    cursorType = @"nesw-resize";
+                                else if (x >= w-edge && y <= edge) {
+                                    cursorType = @"nesw-resize"; // Sağ üst köşe - northeast-southwest
+                                    isOnBorder = YES;
+                                }
+                                else if (x <= edge && y >= h-edge) {
+                                    cursorType = @"nesw-resize"; // Sol alt köşe - southwest-northeast
+                                    isOnBorder = YES;
+                                }
+                                else if (x >= w-edge && y >= h-edge) {
+                                    cursorType = @"nwse-resize"; // Sağ alt köşe - southeast-northwest
                                     isOnBorder = YES;
                                 }
                                 // Edge resize detection - sadece çok kenarlarda
-                                else if ((x <= edge || x >= w-edge) && y > edge && y < h-edge) {
-                                    cursorType = @"col-resize";
+                                else if (x <= edge && y > edge && y < h-edge) {
+                                    cursorType = @"col-resize"; // Sol kenar - column resize (yatay)
                                     isOnBorder = YES;
                                 }
-                                else if ((y <= edge || y >= h-edge) && x > edge && x < w-edge) {
-                                    cursorType = @"row-resize";
+                                else if (x >= w-edge && y > edge && y < h-edge) {
+                                    cursorType = @"col-resize"; // Sağ kenar - column resize (yatay)
+                                    isOnBorder = YES;
+                                }
+                                else if (y <= edge && x > edge && x < w-edge) {
+                                    cursorType = @"ns-resize"; // Üst kenar - north-south resize (dikey)
+                                    isOnBorder = YES;
+                                }
+                                else if (y >= h-edge && x > edge && x < w-edge) {
+                                    cursorType = @"ns-resize"; // Alt kenar - north-south resize (dikey)
                                     isOnBorder = YES;
                                 }
 
