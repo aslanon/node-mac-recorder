@@ -58,11 +58,15 @@ NSString* getCursorType() {
             // Get current cursor info
             NSCursor *currentCursor = [NSCursor currentSystemCursor];
             NSString *cursorType = @"default";
-            
+
             // Get cursor image info
             NSImage *cursorImage = [currentCursor image];
             NSPoint hotSpot = [currentCursor hotSpot];
             NSSize imageSize = [cursorImage size];
+
+            // DEBUG: Log cursor details
+            NSLog(@"🖱️ CURSOR DEBUG: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
+                  imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
             
             // Check cursor type by comparing with standard cursors
             if ([currentCursor isEqual:[NSCursor pointingHandCursor]] ||
@@ -76,7 +80,7 @@ NSString* getCursorType() {
             } else if ([currentCursor isEqual:[NSCursor resizeLeftRightCursor]]) {
                 return @"col-resize";
             } else if ([currentCursor isEqual:[NSCursor resizeUpDownCursor]]) {
-                return @"row-resize";
+                return @"ns-resize";
             } else if ([currentCursor isEqual:[NSCursor openHandCursor]]) {
                 return @"grab";
             } else if ([currentCursor isEqual:[NSCursor closedHandCursor]]) {
@@ -91,6 +95,109 @@ NSString* getCursorType() {
                 return @"not-allowed";
             } else if ([currentCursor isEqual:[NSCursor contextualMenuCursor]]) {
                 return @"help";
+            }
+
+            // Additional detection based on image characteristics
+            if (imageSize.width > 0 && imageSize.height > 0) {
+                NSLog(@"🖱️ Checking cursor: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
+                      imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
+
+                // Hand cursors (grab/grabbing) - different from regular cursors
+                // Looking for cursors that are NOT the common patterns we know
+                bool isKnownPattern = false;
+
+                // Text cursor: narrow tall with centered hotspot
+                if (imageSize.width <= 12 && imageSize.height >= 16 &&
+                    hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2) {
+                    isKnownPattern = true;
+                }
+
+                // Pointer cursor: larger with off-center hotspot
+                if ((imageSize.width >= 28 && imageSize.height >= 32 && hotSpot.x <= 8) ||
+                    (imageSize.width == 32 && imageSize.height == 32 && hotSpot.x <= 15 && hotSpot.y <= 10)) {
+                    isKnownPattern = true;
+                }
+
+                // Default cursor: 32x32 with center hotspot
+                if (imageSize.width == 32 && imageSize.height == 32 &&
+                    hotSpot.x >= 14 && hotSpot.x <= 18 && hotSpot.y >= 14 && hotSpot.y <= 18) {
+                    isKnownPattern = true;
+                }
+
+                // Special cursor patterns detection
+                if (!isKnownPattern) {
+                    // Progress cursor (loading/spinning) - usually larger, center hotspot
+                    if (imageSize.width >= 24 && imageSize.width <= 40 &&
+                        imageSize.height >= 24 && imageSize.height <= 40 &&
+                        hotSpot.x >= imageSize.width/2 - 4 && hotSpot.x <= imageSize.width/2 + 4 &&
+                        hotSpot.y >= imageSize.height/2 - 4 && hotSpot.y <= imageSize.height/2 + 4) {
+                        NSLog(@"🖱️ DETECTED PROGRESS: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
+                              imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
+                        return @"progress";
+                    }
+
+                    // Zoom cursors (magnifying glass) - distinctive size/hotspot patterns
+                    if (imageSize.width >= 18 && imageSize.width <= 30 &&
+                        imageSize.height >= 18 && imageSize.height <= 30) {
+                        // Zoom-in usually has hotspot in center or slightly off
+                        if (hotSpot.x >= imageSize.width/2 - 3 && hotSpot.x <= imageSize.width/2 + 3) {
+                            NSLog(@"🖱️ DETECTED ZOOM-IN: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
+                            return @"zoom-in";
+                        }
+                        // Zoom-out usually has different hotspot pattern
+                        else {
+                            NSLog(@"🖱️ DETECTED ZOOM-OUT: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
+                            return @"zoom-out";
+                        }
+                    }
+
+                    // All-scroll cursor (move in all directions) - usually square with center hotspot
+                    if (imageSize.width >= 16 && imageSize.width <= 24 &&
+                        imageSize.height >= 16 && imageSize.height <= 24 &&
+                        abs(imageSize.width - imageSize.height) <= 2 &&
+                        hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2 &&
+                        hotSpot.y >= imageSize.height/2 - 2 && hotSpot.y <= imageSize.height/2 + 2) {
+                        NSLog(@"🖱️ DETECTED ALL-SCROLL: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
+                        return @"all-scroll";
+                    }
+
+                    // Diagonal resize cursors - typically 16x16 or similar
+                    if (imageSize.width >= 14 && imageSize.width <= 20 &&
+                        imageSize.height >= 14 && imageSize.height <= 20) {
+                        // NW-SE resize (diagonal top-left to bottom-right)
+                        if (hotSpot.x <= imageSize.width/2 && hotSpot.y <= imageSize.height/2) {
+                            NSLog(@"🖱️ DETECTED NWSE-RESIZE: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
+                            return @"nwse-resize";
+                        }
+                        // NE-SW resize (diagonal top-right to bottom-left)
+                        else if (hotSpot.x >= imageSize.width/2 && hotSpot.y <= imageSize.height/2) {
+                            NSLog(@"🖱️ DETECTED NESW-RESIZE: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
+                            return @"nesw-resize";
+                        }
+                        // Row resize (vertical resize)
+                        else if (abs(hotSpot.x - imageSize.width/2) <= 2) {
+                            NSLog(@"🖱️ DETECTED ROW-RESIZE: size=(%.0f,%.0f)", imageSize.width, imageSize.height);
+                            return @"row-resize";
+                        }
+                    }
+
+                    // Hand cursors (grab/grabbing) - medium-sized, various hotspots
+                    if (imageSize.width >= 14 && imageSize.width <= 24 &&
+                        imageSize.height >= 14 && imageSize.height <= 24) {
+                        NSLog(@"🖱️ POTENTIAL GRAB/GRABBING: size=(%.0f,%.0f), hotspot=(%.0f,%.0f)",
+                              imageSize.width, imageSize.height, hotSpot.x, hotSpot.y);
+
+                        // Try to differentiate grab vs grabbing by hotspot position
+                        if (hotSpot.x >= imageSize.width/2 - 2 && hotSpot.x <= imageSize.width/2 + 2 &&
+                            hotSpot.y >= imageSize.height/2 - 2 && hotSpot.y <= imageSize.height/2 + 2) {
+                            NSLog(@"🖱️ DETECTED GRAB (center hotspot)");
+                            return @"grab";
+                        } else {
+                            NSLog(@"🖱️ DETECTED GRABBING (off-center hotspot)");
+                            return @"grabbing";
+                        }
+                    }
+                }
             }
 
             
