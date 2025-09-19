@@ -3,6 +3,25 @@
 # Publish script for node-mac-recorder
 # Usage: ./publish.sh <patch|minor|major> "commit message"
 
+# Clean up development files before publishing
+echo "🧹 Cleaning up development files..."
+
+# Remove video files
+echo "   • Removing .mov and .mp4 files..."
+find . -name "*.mov" -type f -delete 2>/dev/null
+find . -name "*.mp4" -type f -delete 2>/dev/null
+
+# Remove test files
+echo "   • Removing test files..."
+find . -name "*test*" -type f -not -path "./node_modules/*" -delete 2>/dev/null
+
+# Remove debug files
+echo "   • Removing debug files..."
+find . -name "*debug*" -type f -not -path "./node_modules/*" -delete 2>/dev/null
+
+echo "✅ Cleanup completed"
+echo ""
+
 # Check if correct number of arguments provided
 if [ $# -ne 2 ]; then
     echo "❌ Usage: $0 <patch|minor|major> \"commit message\""
