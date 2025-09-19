@@ -365,10 +365,10 @@ class MacRecorder extends EventEmitter {
 					this.isRecording = true;
 					this.recordingStartTime = Date.now();
 
-					// Start unified cursor tracking for all recording types
-					// Use the same standard cursor tracking logic that works best (display-relative)
+					// Start unified cursor tracking with video-relative coordinates
+					// This ensures cursor positions match exactly with video frames
 					const standardCursorOptions = {
-						displayRelative: true,
+						videoRelative: true,
 						displayInfo: this.recordingDisplayInfo,
 						recordingType: this.options.windowId ? 'window' :
 									  this.options.captureArea ? 'area' : 'display',
@@ -652,12 +652,14 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
-	 * Unified cursor capture for all recording types - uses standardized display-relative coordinates
+	 * Unified cursor capture for all recording types - uses video-relative coordinates
 	 * @param {string|number} intervalOrFilepath - Cursor data JSON dosya yolu veya interval
 	 * @param {Object} options - Cursor capture seçenekleri
-	 * @param {boolean} options.displayRelative - Use display-relative coordinates (recommended)
+	 * @param {boolean} options.videoRelative - Use video-relative coordinates (recommended)
 	 * @param {Object} options.displayInfo - Display information for coordinate transformation
 	 * @param {string} options.recordingType - Type of recording: 'display', 'window', 'area'
+	 * @param {Object} options.captureArea - Capture area for area recording coordinate transformation
+	 * @param {number} options.windowId - Window ID for window recording coordinate transformation
 	 */
 	async startCursorCapture(intervalOrFilepath = 100, options = {}) {
 		let filepath;
@@ -679,16 +681,42 @@ class MacRecorder extends EventEmitter {
 			throw new Error("Cursor capture is already running");
 		}
 
-		// Use standardized display-relative coordinate system for all recording types
-		if (options.displayRelative && options.displayInfo) {
-			// Standardized display-relative coordinates for all recording types
+		// Use video-relative coordinate system for all recording types
+		if (options.videoRelative && options.displayInfo) {
+			// Calculate video offset based on recording type
+			let videoOffsetX = 0;
+			let videoOffsetY = 0;
+			let videoWidth = options.displayInfo.width || options.displayInfo.logicalWidth;
+			let videoHeight = options.displayInfo.height || options.displayInfo.logicalHeight;
+
+			if (options.recordingType === 'window' && options.windowId) {
+				// For window recording: offset = window position in display
+				if (options.captureArea) {
+					videoOffsetX = options.captureArea.x;
+					videoOffsetY = options.captureArea.y;
+					videoWidth = options.captureArea.width;
+					videoHeight = options.captureArea.height;
+				}
+			} else if (options.recordingType === 'area' && options.captureArea) {
+				// For area recording: offset = area position in display
+				videoOffsetX = options.captureArea.x;
+				videoOffsetY = options.captureArea.y;
+				videoWidth = options.captureArea.width;
+				videoHeight = options.captureArea.height;
+			}
+			// For display recording: offset remains 0,0
+
 			this.cursorDisplayInfo = {
 				displayId: options.displayInfo.displayId || options.displayInfo.id,
-				x: options.displayInfo.x || 0,
-				y: options.displayInfo.y || 0,
-				width: options.displayInfo.width || options.displayInfo.logicalWidth,
-				height: options.displayInfo.height || options.displayInfo.logicalHeight,
-				displayRelative: true,
+				displayX: options.displayInfo.x || 0,
+				displayY: options.displayInfo.y || 0,
+				displayWidth: options.displayInfo.width || options.displayInfo.logicalWidth,
+				displayHeight: options.displayInfo.height || options.displayInfo.logicalHeight,
+				videoOffsetX: videoOffsetX,
+				videoOffsetY: videoOffsetY,
+				videoWidth: videoWidth,
+				videoHeight: videoHeight,
+				videoRelative: true,
 				recordingType: options.recordingType || 'display',
 				// Store additional context for debugging
 				captureArea: options.captureArea,
@@ -698,7 +726,15 @@ class MacRecorder extends EventEmitter {
 			// Fallback: Use recording display info if available
 			this.cursorDisplayInfo = {
 				...this.recordingDisplayInfo,
-				displayRelative: true,
+				displayX: this.recordingDisplayInfo.x || 0,
+				displayY: this.recordingDisplayInfo.y || 0,
+				displayWidth: this.recordingDisplayInfo.width || this.recordingDisplayInfo.logicalWidth,
+				displayHeight: this.recordingDisplayInfo.height || this.recordingDisplayInfo.logicalHeight,
+				videoOffsetX: 0,
+				videoOffsetY: 0,
+				videoWidth: this.recordingDisplayInfo.width || this.recordingDisplayInfo.logicalWidth,
+				videoHeight: this.recordingDisplayInfo.height || this.recordingDisplayInfo.logicalHeight,
+				videoRelative: true,
 				recordingType: options.recordingType || 'display'
 			};
 		} else {
@@ -738,26 +774,30 @@ class MacRecorder extends EventEmitter {
 						const position = nativeBinding.getCursorPosition();
 						const timestamp = Date.now() - this.cursorCaptureStartTime;
 
-						// Standardized coordinate transformation for all recording types
+						// Video-relative coordinate transformation for all recording types
 						let x = position.x;
 						let y = position.y;
 						let coordinateSystem = "global";
 
-						// Apply display-relative transformation for all recording types
-						if (this.cursorDisplayInfo && this.cursorDisplayInfo.displayRelative) {
-							// Transform global → display-relative coordinates
-							x = position.x - this.cursorDisplayInfo.x;
-							y = position.y - this.cursorDisplayInfo.y;
-							coordinateSystem = "display-relative";
+						// Apply video-relative transformation for all recording types
+						if (this.cursorDisplayInfo && this.cursorDisplayInfo.videoRelative) {
+							// Step 1: Transform global → display-relative coordinates
+							const displayRelativeX = position.x - this.cursorDisplayInfo.displayX;
+							const displayRelativeY = position.y - this.cursorDisplayInfo.displayY;
 
-							// Optional bounds check for display (don't skip, just note if outside)
-							const outsideDisplay = x < 0 || y < 0 ||
-								x >= this.cursorDisplayInfo.width ||
-								y >= this.cursorDisplayInfo.height;
+							// Step 2: Transform display-relative → video-relative coordinates
+							x = displayRelativeX - this.cursorDisplayInfo.videoOffsetX;
+							y = displayRelativeY - this.cursorDisplayInfo.videoOffsetY;
+							coordinateSystem = "video-relative";
 
-							// For debugging - add metadata if cursor is outside recording area
-							if (outsideDisplay) {
-								coordinateSystem = "display-relative-outside";
+							// Bounds check for video area (don't skip, just note if outside)
+							const outsideVideo = x < 0 || y < 0 ||
+								x >= this.cursorDisplayInfo.videoWidth ||
+								y >= this.cursorDisplayInfo.videoHeight;
+
+							// For debugging - add metadata if cursor is outside video area
+							if (outsideVideo) {
+								coordinateSystem = "video-relative-outside";
 							}
 						}
 
@@ -769,12 +809,18 @@ class MacRecorder extends EventEmitter {
 							cursorType: position.cursorType,
 							type: position.eventType || "move",
 							coordinateSystem: coordinateSystem,
-							// Standardized metadata for all recording types
+							// Video-relative metadata for all recording types
 							recordingType: this.cursorDisplayInfo?.recordingType || "display",
+							videoInfo: this.cursorDisplayInfo ? {
+								width: this.cursorDisplayInfo.videoWidth,
+								height: this.cursorDisplayInfo.videoHeight,
+								offsetX: this.cursorDisplayInfo.videoOffsetX,
+								offsetY: this.cursorDisplayInfo.videoOffsetY
+							} : null,
 							displayInfo: this.cursorDisplayInfo ? {
 								displayId: this.cursorDisplayInfo.displayId,
-								width: this.cursorDisplayInfo.width,
-								height: this.cursorDisplayInfo.height
+								width: this.cursorDisplayInfo.displayWidth,
+								height: this.cursorDisplayInfo.displayHeight
 							} : null
 						};
 
