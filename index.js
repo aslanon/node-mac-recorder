@@ -283,16 +283,25 @@ class MacRecorder extends EventEmitter {
 			}
 		}
 
-		// DisplayId manuel ayarlanmışsa display bilgisini sakla
-		if (this.options.displayId !== null && !this.recordingDisplayInfo) {
+		// Ensure recordingDisplayInfo is always set for cursor tracking
+		if (!this.recordingDisplayInfo) {
 			try {
 				const displays = await this.getDisplays();
-				const targetDisplay = displays.find(d => d.id === this.options.displayId);
+				let targetDisplay;
+
+				if (this.options.displayId !== null) {
+					// Manual displayId specified
+					targetDisplay = displays.find(d => d.id === this.options.displayId);
+				} else {
+					// Default to main display
+					targetDisplay = displays.find(d => d.isPrimary) || displays[0];
+				}
+
 				if (targetDisplay) {
 					this.recordingDisplayInfo = {
-						displayId: this.options.displayId,
-						x: targetDisplay.x,
-						y: targetDisplay.y,
+						displayId: targetDisplay.id,
+						x: targetDisplay.x || 0,
+						y: targetDisplay.y || 0,
 						width: parseInt(targetDisplay.resolution.split("x")[0]),
 						height: parseInt(targetDisplay.resolution.split("x")[1]),
 						// Add scaling information for cursor coordinate transformation
@@ -356,56 +365,20 @@ class MacRecorder extends EventEmitter {
 					this.isRecording = true;
 					this.recordingStartTime = Date.now();
 
-					// Start cursor tracking automatically with recording
-					let cursorOptions = {};
+					// Start unified cursor tracking for all recording types
+					// Use the same standard cursor tracking logic that works best (display-relative)
+					const standardCursorOptions = {
+						displayRelative: true,
+						displayInfo: this.recordingDisplayInfo,
+						recordingType: this.options.windowId ? 'window' :
+									  this.options.captureArea ? 'area' : 'display',
+						captureArea: this.options.captureArea,
+						windowId: this.options.windowId
+					};
 
-					// For window recording, use simplified window-relative coordinates
-					if (this.options.windowId) {
-						// Use cached window info from the earlier window detection
-						this.getWindows().then(windows => {
-							const targetWindow = windows.find(w => w.id === this.options.windowId);
-							if (targetWindow) {
-								// Start cursor capture with simplified window-relative tracking
-								this.startCursorCapture(cursorFilePath, {
-									windowRelative: true,
-									windowInfo: {
-										// Use original global window coordinates for reference
-										x: targetWindow.x,
-										y: targetWindow.y,
-										width: targetWindow.width,
-										height: targetWindow.height,
-										displayId: this.options.displayId,
-										// Persist capture area so we can rebuild global offsets reliably
-										captureArea: this.options.captureArea,
-										// Keep a snapshot of the window details for debugging/analytics
-										originalWindow: targetWindow,
-										// Store display info for multi-display coordinate fixes
-										targetDisplay: this.recordingDisplayInfo
-									}
-								}).catch(cursorError => {
-									console.warn('Window cursor tracking failed:', cursorError.message);
-									// Fallback to display recording
-									this.startCursorCapture(cursorFilePath).catch(fallbackError => {
-										console.warn('Fallback cursor tracking failed:', fallbackError.message);
-									});
-								});
-							}
-						}).catch(error => {
-							console.warn('Could not get window info for cursor tracking:', error.message);
-							// Fallback to display cursor tracking
-							this.startCursorCapture(cursorFilePath).catch(cursorError => {
-								console.warn('Cursor tracking failed to start:', cursorError.message);
-							});
-						});
-					} else {
-						// For display recording, use display-relative cursor tracking
-						this.startCursorCapture(cursorFilePath, {
-							displayRelative: true,
-							displayInfo: this.recordingDisplayInfo
-						}).catch(cursorError => {
-							console.warn('Display cursor tracking failed:', cursorError.message);
-						});
-					}
+					this.startCursorCapture(cursorFilePath, standardCursorOptions).catch(cursorError => {
+						console.warn('Unified cursor tracking failed:', cursorError.message);
+					});
 
 					// Timer başlat (progress tracking için)
 					this.recordingTimer = setInterval(() => {
@@ -679,12 +652,12 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
-	 * Cursor capture başlatır - otomatik olarak dosyaya yazmaya başlar
-	 * Recording başlatılmışsa otomatik olarak display-relative koordinatlar kullanır
+	 * Unified cursor capture for all recording types - uses standardized display-relative coordinates
 	 * @param {string|number} intervalOrFilepath - Cursor data JSON dosya yolu veya interval
 	 * @param {Object} options - Cursor capture seçenekleri
-	 * @param {Object} options.windowInfo - Pencere bilgileri (window-relative koordinatlar için)
-	 * @param {boolean} options.windowRelative - Koordinatları pencereye göre relative yap
+	 * @param {boolean} options.displayRelative - Use display-relative coordinates (recommended)
+	 * @param {Object} options.displayInfo - Display information for coordinate transformation
+	 * @param {string} options.recordingType - Type of recording: 'display', 'window', 'area'
 	 */
 	async startCursorCapture(intervalOrFilepath = 100, options = {}) {
 		let filepath;
@@ -706,86 +679,28 @@ class MacRecorder extends EventEmitter {
 			throw new Error("Cursor capture is already running");
 		}
 
-		// Koordinat sistemi belirle: window-relative, display-relative veya global
-		if (options.windowRelative && options.windowInfo) {
-			const windowInfo = options.windowInfo;
-			const targetDisplay = windowInfo.targetDisplay || this.recordingDisplayInfo || null;
-			const captureArea = windowInfo.captureArea || null;
-			const hasNumber = (value) => typeof value === "number" && Number.isFinite(value);
-
-			let globalX = hasNumber(windowInfo.x) ? windowInfo.x : null;
-			let globalY = hasNumber(windowInfo.y) ? windowInfo.y : null;
-
-			if (captureArea && targetDisplay) {
-				if (!hasNumber(globalX) && hasNumber(captureArea.x) && hasNumber(targetDisplay.x)) {
-					globalX = targetDisplay.x + captureArea.x;
-				}
-				if (!hasNumber(globalY) && hasNumber(captureArea.y) && hasNumber(targetDisplay.y)) {
-					globalY = targetDisplay.y + captureArea.y;
-				}
-			}
-
-			if (!hasNumber(globalX)) {
-				if (captureArea && hasNumber(captureArea.x) && targetDisplay && hasNumber(targetDisplay.x)) {
-					globalX = targetDisplay.x + captureArea.x;
-				} else {
-					globalX = hasNumber(captureArea?.x) ? captureArea.x : 0;
-				}
-			}
-
-			if (!hasNumber(globalY)) {
-				if (captureArea && hasNumber(captureArea.y) && targetDisplay && hasNumber(targetDisplay.y)) {
-					globalY = targetDisplay.y + captureArea.y;
-				} else {
-					globalY = hasNumber(captureArea?.y) ? captureArea.y : 0;
-				}
-			}
-
-			const displayOffsetX = captureArea && hasNumber(captureArea.x)
-				? captureArea.x
-				: (targetDisplay && hasNumber(globalX) && hasNumber(targetDisplay.x)
-					? globalX - targetDisplay.x
-					: globalX);
-			const displayOffsetY = captureArea && hasNumber(captureArea.y)
-				? captureArea.y
-				: (targetDisplay && hasNumber(globalY) && hasNumber(targetDisplay.y)
-					? globalY - targetDisplay.y
-					: globalY);
-
+		// Use standardized display-relative coordinate system for all recording types
+		if (options.displayRelative && options.displayInfo) {
+			// Standardized display-relative coordinates for all recording types
 			this.cursorDisplayInfo = {
-				displayId:
-					windowInfo.displayId ??
-					targetDisplay?.displayId ??
-					targetDisplay?.id ??
-					null,
-				x: globalX,
-				y: globalY,
-				width: windowInfo.width,
-				height: windowInfo.height,
-				windowRelative: true,
-				windowInfo: {
-					...windowInfo,
-					globalX,
-					globalY,
-					displayOffsetX,
-					displayOffsetY
-				},
-				targetDisplay,
-				captureArea
-			};
-		} else if (options.displayRelative && options.displayInfo) {
-			// Display recording: Use display-relative coordinates
-			this.cursorDisplayInfo = {
-				displayId: options.displayInfo.displayId,
-				x: options.displayInfo.x,
-				y: options.displayInfo.y,
-				width: options.displayInfo.width,
-				height: options.displayInfo.height,
-				displayRelative: true
+				displayId: options.displayInfo.displayId || options.displayInfo.id,
+				x: options.displayInfo.x || 0,
+				y: options.displayInfo.y || 0,
+				width: options.displayInfo.width || options.displayInfo.logicalWidth,
+				height: options.displayInfo.height || options.displayInfo.logicalHeight,
+				displayRelative: true,
+				recordingType: options.recordingType || 'display',
+				// Store additional context for debugging
+				captureArea: options.captureArea,
+				windowId: options.windowId
 			};
 		} else if (this.recordingDisplayInfo) {
 			// Fallback: Use recording display info if available
-			this.cursorDisplayInfo = this.recordingDisplayInfo;
+			this.cursorDisplayInfo = {
+				...this.recordingDisplayInfo,
+				displayRelative: true,
+				recordingType: options.recordingType || 'display'
+			};
 		} else {
 			// Final fallback: Main display global coordinates
 			try {
@@ -823,37 +738,26 @@ class MacRecorder extends EventEmitter {
 						const position = nativeBinding.getCursorPosition();
 						const timestamp = Date.now() - this.cursorCaptureStartTime;
 
-						// Transform coordinates based on recording type
+						// Standardized coordinate transformation for all recording types
 						let x = position.x;
 						let y = position.y;
 						let coordinateSystem = "global";
 
-						if (this.cursorDisplayInfo) {
-							if (this.cursorDisplayInfo.windowRelative) {
-								// Window recording: Transform global → window-relative coordinates
-								x = position.x - this.cursorDisplayInfo.x;
-								y = position.y - this.cursorDisplayInfo.y;
-								coordinateSystem = "window-relative";
+						// Apply display-relative transformation for all recording types
+						if (this.cursorDisplayInfo && this.cursorDisplayInfo.displayRelative) {
+							// Transform global → display-relative coordinates
+							x = position.x - this.cursorDisplayInfo.x;
+							y = position.y - this.cursorDisplayInfo.y;
+							coordinateSystem = "display-relative";
 
-								// Window bounds check - skip if cursor is outside window
-								if (x < 0 || y < 0 || x >= this.cursorDisplayInfo.width || y >= this.cursorDisplayInfo.height) {
-									return; // Skip frame - cursor outside window
-								}
-							} else if (this.cursorDisplayInfo.displayRelative) {
-								// Display recording: Transform global → display-relative coordinates
-								x = position.x - this.cursorDisplayInfo.x;
-								y = position.y - this.cursorDisplayInfo.y;
-								coordinateSystem = "display-relative";
+							// Optional bounds check for display (don't skip, just note if outside)
+							const outsideDisplay = x < 0 || y < 0 ||
+								x >= this.cursorDisplayInfo.width ||
+								y >= this.cursorDisplayInfo.height;
 
-								// Display bounds check - skip if cursor is outside display
-								if (x < 0 || y < 0 || x >= this.cursorDisplayInfo.width || y >= this.cursorDisplayInfo.height) {
-									return; // Skip frame - cursor outside display
-								}
-							} else {
-								// Legacy fallback: Use global coordinates with basic offset
-								x = position.x - this.cursorDisplayInfo.x;
-								y = position.y - this.cursorDisplayInfo.y;
-								coordinateSystem = "display-relative";
+							// For debugging - add metadata if cursor is outside recording area
+							if (outsideDisplay) {
+								coordinateSystem = "display-relative-outside";
 							}
 						}
 
@@ -865,22 +769,13 @@ class MacRecorder extends EventEmitter {
 							cursorType: position.cursorType,
 							type: position.eventType || "move",
 							coordinateSystem: coordinateSystem,
-							// Include recording context for window-relative coordinates
-							...(this.cursorDisplayInfo?.windowRelative && {
-								windowInfo: {
-									width: this.cursorDisplayInfo.width,
-									height: this.cursorDisplayInfo.height,
-									displayId: this.cursorDisplayInfo.displayId
-								}
-							}),
-							// Include display context for display-relative coordinates
-							...(this.cursorDisplayInfo?.displayRelative && {
-								displayInfo: {
-									displayId: this.cursorDisplayInfo.displayId,
-									width: this.cursorDisplayInfo.width,
-									height: this.cursorDisplayInfo.height
-								}
-							})
+							// Standardized metadata for all recording types
+							recordingType: this.cursorDisplayInfo?.recordingType || "display",
+							displayInfo: this.cursorDisplayInfo ? {
+								displayId: this.cursorDisplayInfo.displayId,
+								width: this.cursorDisplayInfo.width,
+								height: this.cursorDisplayInfo.height
+							} : null
 						};
 
 						// Sadece eventType değiştiğinde veya pozisyon değiştiğinde kaydet
