@@ -11,13 +11,25 @@ echo "   • Removing .mov and .mp4 files..."
 find . -name "*.mov" -type f -delete 2>/dev/null
 find . -name "*.mp4" -type f -delete 2>/dev/null
 
-# Remove test files
-echo "   • Removing test files..."
-find . -name "*test*" -type f -not -path "./node_modules/*" -delete 2>/dev/null
+# Remove files containing specific keywords
+echo "   • Removing files containing test, debug, example, demo, sample..."
+find . -type f -not -path "./node_modules/*" \( \
+    -name "*test*" -o \
+    -name "*debug*" -o \
+    -name "*example*" -o \
+    -name "*demo*" -o \
+    -name "*sample*" \
+\) -delete 2>/dev/null
 
-# Remove debug files
-echo "   • Removing debug files..."
-find . -name "*debug*" -type f -not -path "./node_modules/*" -delete 2>/dev/null
+# Remove folders containing specific keywords
+echo "   • Removing folders containing test, debug, example, demo, sample..."
+find . -type d -not -path "./node_modules/*" \( \
+    -name "*test*" -o \
+    -name "*debug*" -o \
+    -name "*example*" -o \
+    -name "*demo*" -o \
+    -name "*sample*" \
+\) -exec rm -rf {} + 2>/dev/null
 
 echo "✅ Cleanup completed"
 echo ""
