@@ -40,6 +40,15 @@ static CursorTimerTarget *g_timerTarget = nil;
 static NSString *g_lastDetectedCursorType = nil;
 static int g_cursorTypeCounter = 0;
 
+static NSString* CopyAndReleaseCFString(CFStringRef value) {
+    if (!value) {
+        return nil;
+    }
+    NSString *result = [NSString stringWithString:(NSString *)value];
+    CFRelease(value);
+    return result;
+}
+
 // Mouse button state tracking
 static bool g_leftMouseDown = false;
 static bool g_rightMouseDown = false;
@@ -64,218 +73,262 @@ static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
             NSString *cursorType = @"default"; // Default fallback
 
             if (error == kAXErrorSuccess && elementAtPosition) {
+                NSString *elementRole = nil;
                 CFStringRef role = NULL;
                 error = AXUIElementCopyAttributeValue(elementAtPosition, kAXRoleAttribute, (CFTypeRef*)&role);
-
                 if (error == kAXErrorSuccess && role) {
-                    NSString *elementRole = (__bridge_transfer NSString*)role;
+                    elementRole = CopyAndReleaseCFString(role);
+                }
+
+                if (elementRole) {
                     NSLog(@"🎯 ELEMENT ROLE: %@", elementRole);
+                }
 
-                    // TEXT CURSORS
-                    if ([elementRole isEqualToString:@"AXTextField"] ||
-                        [elementRole isEqualToString:@"AXTextArea"] ||
-                        [elementRole isEqualToString:@"AXStaticText"] ||
-                        [elementRole isEqualToString:@"AXSearchField"]) {
-                        cursorType = @"text";
-                    }
-                    // POINTER CURSORS (clickable elements)
-                    else if ([elementRole isEqualToString:@"AXLink"] ||
-                             [elementRole isEqualToString:@"AXButton"] ||
-                             [elementRole isEqualToString:@"AXMenuItem"] ||
-                             [elementRole isEqualToString:@"AXRadioButton"] ||
-                             [elementRole isEqualToString:@"AXCheckBox"] ||
-                             [elementRole isEqualToString:@"AXPopUpButton"] ||
-                             [elementRole isEqualToString:@"AXTab"]) {
-                        cursorType = @"pointer";
-                    }
-                    // GRAB CURSORS (draggable elements)
-                    else if ([elementRole isEqualToString:@"AXImage"] ||
-                             [elementRole isEqualToString:@"AXGroup"]) {
-                        // Check if element is draggable
-                        CFBooleanRef draggable = NULL;
-                        error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXMovable"), (CFTypeRef*)&draggable);
-                        if (error == kAXErrorSuccess && draggable && CFBooleanGetValue(draggable)) {
-                            cursorType = @"grab";
-                        } else {
-                            cursorType = @"default";
-                        }
-                    }
-                    // PROGRESS CURSORS (loading/busy elements)
-                    else if ([elementRole isEqualToString:@"AXProgressIndicator"] ||
-                             [elementRole isEqualToString:@"AXBusyIndicator"]) {
-                        cursorType = @"progress";
-                    }
-                    // HELP CURSORS (help buttons/tooltips)
-                    else if ([elementRole isEqualToString:@"AXHelpTag"] ||
-                             [elementRole isEqualToString:@"AXTooltip"]) {
-                        cursorType = @"help";
-                    }
-                    // RESIZE CURSORS - sadece AXSplitter için
-                    else if ([elementRole isEqualToString:@"AXSplitter"]) {
-                        // Get splitter orientation to determine resize direction
-                        CFStringRef orientation = NULL;
-                        error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXOrientation"), (CFTypeRef*)&orientation);
-                        if (error == kAXErrorSuccess && orientation) {
-                            NSString *orientationStr = (__bridge_transfer NSString*)orientation;
-                            if ([orientationStr isEqualToString:@"AXHorizontalOrientation"]) {
-                                cursorType = @"ns-resize"; // Yatay splitter -> dikey hareket (north-south)
-                            } else if ([orientationStr isEqualToString:@"AXVerticalOrientation"]) {
-                                cursorType = @"col-resize"; // Dikey splitter -> yatay hareket (east-west)
-                            } else {
-                                cursorType = @"default"; // Bilinmeyen orientation
-                            }
-                        } else {
-                            cursorType = @"default"; // Orientation alınamazsa default
-                        }
-                    }
-                    // SCROLL CURSORS - hep default olsun, all-scroll görünmesin
-                    else if ([elementRole isEqualToString:@"AXScrollBar"]) {
-                        cursorType = @"default"; // ScrollBar'lar için de default
-                    }
-                    // AXScrollArea - hep default
-                    else if ([elementRole isEqualToString:@"AXScrollArea"]) {
-                        cursorType = @"default"; // ScrollArea her zaman default
-                    }
-                    // CROSSHAIR CURSORS (drawing/selection tools)
-                    else if ([elementRole isEqualToString:@"AXCanvas"] ||
-                             [elementRole isEqualToString:@"AXDrawingArea"]) {
-                        cursorType = @"crosshair";
-                    }
-                    // ZOOM CURSORS (zoom controls)
-                    else if ([elementRole isEqualToString:@"AXZoomButton"]) {
-                        cursorType = @"zoom-in";
-                    }
-                    // NOT-ALLOWED CURSORS (disabled elements)
-                    else if ([elementRole isEqualToString:@"AXStaticText"] ||
-                             [elementRole isEqualToString:@"AXGroup"]) {
-                        // Check if element is disabled/readonly
-                        CFBooleanRef enabled = NULL;
-                        error = AXUIElementCopyAttributeValue(elementAtPosition, kAXEnabledAttribute, (CFTypeRef*)&enabled);
-                        if (error == kAXErrorSuccess && enabled && !CFBooleanGetValue(enabled)) {
-                            cursorType = @"not-allowed";
-                        }
-                    }
-                    // WINDOW BORDER RESIZE - sadece pencere kenarlarında
-                    else if ([elementRole isEqualToString:@"AXWindow"]) {
-                        // Check window attributes to see if it's resizable
-                        CFBooleanRef resizable = NULL;
-                        AXError resizableError = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXResizeButton"), (CFTypeRef*)&resizable);
-
-                        // Sadece resize edilebilir pencereler için cursor değişimi
-                        if (resizableError == kAXErrorSuccess || true) { // AXResizeButton bulunamazsa da devam et
-                            CFTypeRef position = NULL;
-                            CFTypeRef size = NULL;
-                            error = AXUIElementCopyAttributeValue(elementAtPosition, kAXPositionAttribute, &position);
-                            AXError sizeError = AXUIElementCopyAttributeValue(elementAtPosition, kAXSizeAttribute, &size);
-
-                            if (error == kAXErrorSuccess && sizeError == kAXErrorSuccess && position && size) {
-                                CGPoint windowPos;
-                                CGSize windowSize;
-                                AXValueGetValue((AXValueRef)position, kAXValueTypeCGPoint, &windowPos);
-                                AXValueGetValue((AXValueRef)size, kAXValueTypeCGSize, &windowSize);
-
-                                CGFloat x = cursorPos.x - windowPos.x;
-                                CGFloat y = cursorPos.y - windowPos.y;
-                                CGFloat w = windowSize.width;
-                                CGFloat h = windowSize.height;
-                                CGFloat edge = 3.0; // Daha küçük edge detection (3px)
-
-                                // Sadece çok kenar köşelerde resize cursor'ı göster
-                                BOOL isOnBorder = NO;
-
-                                // Corner resize detection - çok dar alanda, doğru açılar
-                                if (x <= edge && y <= edge) {
-                                    cursorType = @"nwse-resize"; // Sol üst köşe - northwest-southeast
-                                    isOnBorder = YES;
-                                }
-                                else if (x >= w-edge && y <= edge) {
-                                    cursorType = @"nesw-resize"; // Sağ üst köşe - northeast-southwest
-                                    isOnBorder = YES;
-                                }
-                                else if (x <= edge && y >= h-edge) {
-                                    cursorType = @"nesw-resize"; // Sol alt köşe - southwest-northeast
-                                    isOnBorder = YES;
-                                }
-                                else if (x >= w-edge && y >= h-edge) {
-                                    cursorType = @"nwse-resize"; // Sağ alt köşe - southeast-northwest
-                                    isOnBorder = YES;
-                                }
-                                // Edge resize detection - sadece çok kenarlarda
-                                else if (x <= edge && y > edge && y < h-edge) {
-                                    cursorType = @"col-resize"; // Sol kenar - column resize (yatay)
-                                    isOnBorder = YES;
-                                }
-                                else if (x >= w-edge && y > edge && y < h-edge) {
-                                    cursorType = @"col-resize"; // Sağ kenar - column resize (yatay)
-                                    isOnBorder = YES;
-                                }
-                                else if (y <= edge && x > edge && x < w-edge) {
-                                    cursorType = @"ns-resize"; // Üst kenar - north-south resize (dikey)
-                                    isOnBorder = YES;
-                                }
-                                else if (y >= h-edge && x > edge && x < w-edge) {
-                                    cursorType = @"ns-resize"; // Alt kenar - north-south resize (dikey)
-                                    isOnBorder = YES;
-                                }
-
-                                // Eğer border'da değilse default
-                                if (!isOnBorder) {
-                                    cursorType = @"default";
-                                }
-
-                                if (position) CFRelease(position);
-                                if (size) CFRelease(size);
-                            } else {
-                                cursorType = @"default";
-                            }
-                        } else {
-                            cursorType = @"default";
-                        }
-                    }
-                    // HER DURUM İÇİN DEFAULT FALLBACK
-                    else {
-                        // Bilinmeyen elementler için her zaman default
+                // TEXT CURSORS
+                if ([elementRole isEqualToString:@"AXTextField"] ||
+                    [elementRole isEqualToString:@"AXTextArea"] ||
+                    [elementRole isEqualToString:@"AXStaticText"] ||
+                    [elementRole isEqualToString:@"AXSearchField"]) {
+                    cursorType = @"text";
+                }
+                // POINTER CURSORS (clickable elements)
+                else if ([elementRole isEqualToString:@"AXLink"] ||
+                         [elementRole isEqualToString:@"AXButton"] ||
+                         [elementRole isEqualToString:@"AXMenuItem"] ||
+                         [elementRole isEqualToString:@"AXRadioButton"] ||
+                         [elementRole isEqualToString:@"AXCheckBox"] ||
+                         [elementRole isEqualToString:@"AXPopUpButton"] ||
+                         [elementRole isEqualToString:@"AXTab"]) {
+                    cursorType = @"pointer";
+                }
+                // GRAB CURSORS (draggable elements)
+                else if ([elementRole isEqualToString:@"AXImage"] ||
+                         [elementRole isEqualToString:@"AXGroup"]) {
+                    // Check if element is draggable
+                    CFBooleanRef draggable = NULL;
+                    error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXMovable"), (CFTypeRef*)&draggable);
+                    if (error == kAXErrorSuccess && draggable && CFBooleanGetValue(draggable)) {
+                        cursorType = @"grab";
+                    } else {
                         cursorType = @"default";
                     }
+                }
+                // PROGRESS CURSORS (loading/busy elements)
+                else if ([elementRole isEqualToString:@"AXProgressIndicator"] ||
+                         [elementRole isEqualToString:@"AXBusyIndicator"]) {
+                    cursorType = @"progress";
+                }
+                // HELP CURSORS (help buttons/tooltips)
+                else if ([elementRole isEqualToString:@"AXHelpTag"] ||
+                         [elementRole isEqualToString:@"AXTooltip"]) {
+                    cursorType = @"help";
+                }
+                // RESIZE CURSORS - sadece AXSplitter için
+                else if ([elementRole isEqualToString:@"AXSplitter"]) {
+                    // Get splitter orientation to determine resize direction
+                    CFStringRef orientation = NULL;
+                    error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXOrientation"), (CFTypeRef*)&orientation);
+                    if (error == kAXErrorSuccess && orientation) {
+                        NSString *orientationStr = CopyAndReleaseCFString(orientation);
+                        if ([orientationStr isEqualToString:@"AXHorizontalOrientation"]) {
+                            cursorType = @"ns-resize"; // Yatay splitter -> dikey hareket (north-south)
+                        } else if ([orientationStr isEqualToString:@"AXVerticalOrientation"]) {
+                            cursorType = @"col-resize"; // Dikey splitter -> yatay hareket (east-west)
+                        } else {
+                            cursorType = @"default"; // Bilinmeyen orientation
+                        }
+                    } else {
+                        cursorType = @"default"; // Orientation alınamazsa default
+                    }
+                }
+                // SCROLL CURSORS - hep default olsun, all-scroll görünmesin
+                else if ([elementRole isEqualToString:@"AXScrollBar"]) {
+                    cursorType = @"default"; // ScrollBar'lar için de default
+                }
+                // AXScrollArea - hep default
+                else if ([elementRole isEqualToString:@"AXScrollArea"]) {
+                    cursorType = @"default"; // ScrollArea her zaman default
+                }
+                // CROSSHAIR CURSORS (drawing/selection tools)
+                else if ([elementRole isEqualToString:@"AXCanvas"] ||
+                         [elementRole isEqualToString:@"AXDrawingArea"]) {
+                    cursorType = @"crosshair";
+                }
+                // ZOOM CURSORS (zoom controls)
+                else if ([elementRole isEqualToString:@"AXZoomButton"]) {
+                    cursorType = @"zoom-in";
+                }
+                // NOT-ALLOWED CURSORS (disabled elements)
+                else if ([elementRole isEqualToString:@"AXStaticText"] ||
+                         [elementRole isEqualToString:@"AXGroup"]) {
+                    // Check if element is disabled/readonly
+                    CFBooleanRef enabled = NULL;
+                    error = AXUIElementCopyAttributeValue(elementAtPosition, kAXEnabledAttribute, (CFTypeRef*)&enabled);
+                    if (error == kAXErrorSuccess && enabled && !CFBooleanGetValue(enabled)) {
+                        cursorType = @"not-allowed";
+                    }
+                }
+                // WINDOW BORDER RESIZE - sadece pencere kenarlarında
+                else if ([elementRole isEqualToString:@"AXWindow"]) {
+                    // Check window attributes to see if it's resizable
+                    CFBooleanRef resizable = NULL;
+                    AXError resizableError = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXResizeButton"), (CFTypeRef*)&resizable);
 
-                    // Check subroles for additional context
-                    CFStringRef subrole = NULL;
-                    error = AXUIElementCopyAttributeValue(elementAtPosition, kAXSubroleAttribute, (CFTypeRef*)&subrole);
-                    if (error == kAXErrorSuccess && subrole) {
-                        NSString *elementSubrole = (__bridge_transfer NSString*)subrole;
-                        NSLog(@"🎯 ELEMENT SUBROLE: %@", elementSubrole);
+                    // Sadece resize edilebilir pencereler için cursor değişimi
+                    if (resizableError == kAXErrorSuccess || true) { // AXResizeButton bulunamazsa da devam et
+                        CFTypeRef position = NULL;
+                        CFTypeRef size = NULL;
+                        error = AXUIElementCopyAttributeValue(elementAtPosition, kAXPositionAttribute, &position);
+                        AXError sizeError = AXUIElementCopyAttributeValue(elementAtPosition, kAXSizeAttribute, &size);
 
-                        // Subrole override'ları - sadece çok spesifik durumlar için
-                        if ([elementSubrole isEqualToString:@"AXCloseButton"] ||
-                            [elementSubrole isEqualToString:@"AXMinimizeButton"] ||
-                            [elementSubrole isEqualToString:@"AXZoomButton"] ||
-                            [elementSubrole isEqualToString:@"AXToolbarButton"]) {
+                        if (error == kAXErrorSuccess && sizeError == kAXErrorSuccess && position && size) {
+                            CGPoint windowPos;
+                            CGSize windowSize;
+                            AXValueGetValue((AXValueRef)position, kAXValueTypeCGPoint, &windowPos);
+                            AXValueGetValue((AXValueRef)size, kAXValueTypeCGSize, &windowSize);
+
+                            CGFloat x = cursorPos.x - windowPos.x;
+                            CGFloat y = cursorPos.y - windowPos.y;
+                            CGFloat w = windowSize.width;
+                            CGFloat h = windowSize.height;
+                            CGFloat edge = 3.0; // Daha küçük edge detection (3px)
+
+                            // Sadece çok kenar köşelerde resize cursor'ı göster
+                            BOOL isOnBorder = NO;
+
+                            // Corner resize detection - çok dar alanda, doğru açılar
+                            if (x <= edge && y <= edge) {
+                                cursorType = @"nwse-resize"; // Sol üst köşe - northwest-southeast
+                                isOnBorder = YES;
+                            }
+                            else if (x >= w-edge && y <= edge) {
+                                cursorType = @"nesw-resize"; // Sağ üst köşe - northeast-southwest
+                                isOnBorder = YES;
+                            }
+                            else if (x <= edge && y >= h-edge) {
+                                cursorType = @"nesw-resize"; // Sol alt köşe - southwest-northeast
+                                isOnBorder = YES;
+                            }
+                            else if (x >= w-edge && y >= h-edge) {
+                                cursorType = @"nwse-resize"; // Sağ alt köşe - southeast-northwest
+                                isOnBorder = YES;
+                            }
+                            // Edge resize detection - sadece çok kenarlarda
+                            else if (x <= edge && y > edge && y < h-edge) {
+                                cursorType = @"col-resize"; // Sol kenar - column resize (yatay)
+                                isOnBorder = YES;
+                            }
+                            else if (x >= w-edge && y > edge && y < h-edge) {
+                                cursorType = @"col-resize"; // Sağ kenar - column resize (yatay)
+                                isOnBorder = YES;
+                            }
+                            else if (y <= edge && x > edge && x < w-edge) {
+                                cursorType = @"ns-resize"; // Üst kenar - north-south resize (dikey)
+                                isOnBorder = YES;
+                            }
+                            else if (y >= h-edge && x > edge && x < w-edge) {
+                                cursorType = @"ns-resize"; // Alt kenar - north-south resize (dikey)
+                                isOnBorder = YES;
+                            }
+
+                            // Eğer border'da değilse default
+                            if (!isOnBorder) {
+                                cursorType = @"default";
+                            }
+
+                            if (position) CFRelease(position);
+                            if (size) CFRelease(size);
+                        } else {
+                            cursorType = @"default";
+                        }
+                    } else {
+                        cursorType = @"default";
+                    }
+                }
+                // HER DURUM İÇİN DEFAULT FALLBACK
+                else {
+                    // Bilinmeyen elementler için her zaman default
+                    cursorType = @"default";
+                }
+
+                // Check subroles for additional context
+                CFStringRef subrole = NULL;
+                error = AXUIElementCopyAttributeValue(elementAtPosition, kAXSubroleAttribute, (CFTypeRef*)&subrole);
+                if (error == kAXErrorSuccess && subrole) {
+                    NSString *elementSubrole = CopyAndReleaseCFString(subrole);
+                    NSLog(@"🎯 ELEMENT SUBROLE: %@", elementSubrole);
+
+                    // Subrole override'ları - sadece çok spesifik durumlar için
+                    if ([elementSubrole isEqualToString:@"AXCloseButton"] ||
+                        [elementSubrole isEqualToString:@"AXMinimizeButton"] ||
+                        [elementSubrole isEqualToString:@"AXZoomButton"] ||
+                        [elementSubrole isEqualToString:@"AXToolbarButton"]) {
+                        cursorType = @"pointer";
+                    }
+                    // Copy/alias subroles - sadece bu durumlar için override
+                    else if ([elementSubrole isEqualToString:@"AXFileDrop"] ||
+                             [elementSubrole isEqualToString:@"AXDropTarget"]) {
+                        cursorType = @"copy";
+                    }
+                    // Alias/shortcut subroles
+                    else if ([elementSubrole isEqualToString:@"AXAlias"] ||
+                             [elementSubrole isEqualToString:@"AXShortcut"]) {
+                        cursorType = @"alias";
+                    }
+                    // Grabbing state (being dragged) - sadece gerçek drag sırasında
+                    else if ([elementSubrole isEqualToString:@"AXDragging"] ||
+                             [elementSubrole isEqualToString:@"AXMoving"]) {
+                        cursorType = @"grabbing";
+                    }
+                    // Zoom controls - sadece spesifik zoom butonları için
+                    else if ([elementSubrole isEqualToString:@"AXZoomIn"]) {
+                        cursorType = @"zoom-in";
+                    }
+                    else if ([elementSubrole isEqualToString:@"AXZoomOut"]) {
+                        cursorType = @"zoom-out";
+                    }
+                    // Subrole'dan bir şey bulamazsa role-based cursor'ı koruyoruz
+                }
+
+                CFStringRef roleDescriptionRef = NULL;
+                AXError descriptionError = AXUIElementCopyAttributeValue(elementAtPosition, kAXRoleDescriptionAttribute, (CFTypeRef*)&roleDescriptionRef);
+                if (descriptionError == kAXErrorSuccess && roleDescriptionRef) {
+                    NSString *roleDescription = CopyAndReleaseCFString(roleDescriptionRef);
+                    if (roleDescription) {
+                        NSString *roleDescriptionLower = [roleDescription lowercaseString];
+                        if ([roleDescriptionLower containsString:@"text"] ||
+                            [roleDescriptionLower containsString:@"editor"] ||
+                            [roleDescriptionLower containsString:@"code"] ||
+                            [roleDescriptionLower containsString:@"document"]) {
+                            cursorType = @"text";
+                        } else if ([roleDescriptionLower containsString:@"button"] ||
+                                   [roleDescriptionLower containsString:@"link"] ||
+                                   [roleDescriptionLower containsString:@"tab"]) {
                             cursorType = @"pointer";
                         }
-                        // Copy/alias subroles - sadece bu durumlar için override
-                        else if ([elementSubrole isEqualToString:@"AXFileDrop"] ||
-                                 [elementSubrole isEqualToString:@"AXDropTarget"]) {
-                            cursorType = @"copy";
-                        }
-                        // Alias/shortcut subroles
-                        else if ([elementSubrole isEqualToString:@"AXAlias"] ||
-                                 [elementSubrole isEqualToString:@"AXShortcut"]) {
-                            cursorType = @"alias";
-                        }
-                        // Grabbing state (being dragged) - sadece gerçek drag sırasında
-                        else if ([elementSubrole isEqualToString:@"AXDragging"] ||
-                                 [elementSubrole isEqualToString:@"AXMoving"]) {
-                            cursorType = @"grabbing";
-                        }
-                        // Zoom controls - sadece spesifik zoom butonları için
-                        else if ([elementSubrole isEqualToString:@"AXZoomIn"]) {
-                            cursorType = @"zoom-in";
-                        }
-                        else if ([elementSubrole isEqualToString:@"AXZoomOut"]) {
-                            cursorType = @"zoom-out";
-                        }
-                        // Subrole'dan bir şey bulamazsa role-based cursor'ı koruyoruz
                     }
+                }
+
+                CFBooleanRef isEditable = NULL;
+                if (AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXEditable"), (CFTypeRef*)&isEditable) == kAXErrorSuccess &&
+                    isEditable && CFBooleanGetValue(isEditable)) {
+                    cursorType = @"text";
+                }
+
+                CFBooleanRef supportsTextSelection = NULL;
+                if (AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXSupportsTextSelection"), (CFTypeRef*)&supportsTextSelection) == kAXErrorSuccess &&
+                    supportsTextSelection && CFBooleanGetValue(supportsTextSelection)) {
+                    cursorType = @"text";
+                }
+
+                CFTypeRef valueAttribute = NULL;
+                if (AXUIElementCopyAttributeValue(elementAtPosition, kAXValueAttribute, &valueAttribute) == kAXErrorSuccess && valueAttribute) {
+                    CFTypeID typeId = CFGetTypeID(valueAttribute);
+                    if (typeId == CFAttributedStringGetTypeID() ||
+                        typeId == CFStringGetTypeID()) {
+                        cursorType = @"text";
+                    }
+                    CFRelease(valueAttribute);
                 }
 
             }
@@ -482,10 +535,6 @@ NSString* getCursorType() {
         g_cursorTypeCounter++;
 
         NSString *systemCursorType = detectSystemCursorType();
-        if (systemCursorType && ![systemCursorType isEqualToString:@"default"]) {
-            NSLog(@"🎯 FINAL CURSOR TYPE: %@", systemCursorType);
-            return systemCursorType;
-        }
 
         NSString *axCursorType = nil;
         BOOL hasCursorPosition = NO;
@@ -520,7 +569,12 @@ NSString* getCursorType() {
         if (axCursorType && ![axCursorType isEqualToString:@"default"]) {
             finalType = axCursorType;
         } else if (systemCursorType && [systemCursorType length] > 0) {
-            finalType = systemCursorType;
+            if ([systemCursorType isEqualToString:@"pointer"] &&
+                (!axCursorType || [axCursorType isEqualToString:@"default"])) {
+                finalType = @"default";
+            } else {
+                finalType = systemCursorType;
+            }
         } else {
             finalType = @"default";
         }
