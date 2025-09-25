@@ -7,6 +7,10 @@
 #import <Accessibility/Accessibility.h>
 #import <dispatch/dispatch.h>
 
+#ifndef kAXHitTestParameterizedAttribute
+#define kAXHitTestParameterizedAttribute CFSTR("AXHitTest")
+#endif
+
 // Global state for cursor tracking
 static bool g_isCursorTracking = false;
 static CFMachPortRef g_eventTap = NULL;
@@ -49,15 +53,193 @@ static NSString* CopyAndReleaseCFString(CFStringRef value) {
     return result;
 }
 
+static BOOL pointInsideElementFrame(AXUIElementRef element, CGPoint point) {
+    if (!element) {
+        return NO;
+    }
+
+    AXValueRef positionValue = NULL;
+    AXValueRef sizeValue = NULL;
+
+    AXError positionError = AXUIElementCopyAttributeValue(element, kAXPositionAttribute, (CFTypeRef *)&positionValue);
+    AXError sizeError = AXUIElementCopyAttributeValue(element, kAXSizeAttribute, (CFTypeRef *)&sizeValue);
+
+    if (positionError != kAXErrorSuccess || sizeError != kAXErrorSuccess || !positionValue || !sizeValue) {
+        if (positionValue) CFRelease(positionValue);
+        if (sizeValue) CFRelease(sizeValue);
+        return NO;
+    }
+
+    CGPoint elementOrigin = CGPointZero;
+    CGSize elementSize = CGSizeZero;
+    AXValueGetValue(positionValue, kAXValueTypeCGPoint, &elementOrigin);
+    AXValueGetValue(sizeValue, kAXValueTypeCGSize, &elementSize);
+
+    CFRelease(positionValue);
+    CFRelease(sizeValue);
+
+    CGRect frame = CGRectMake(elementOrigin.x, elementOrigin.y, elementSize.width, elementSize.height);
+    return CGRectContainsPoint(frame, point);
+}
+
+static BOOL elementHasAction(AXUIElementRef element, CFStringRef actionName) {
+    if (!element || !actionName) {
+        return NO;
+    }
+
+    CFArrayRef actions = NULL;
+    AXError error = AXUIElementCopyActionNames(element, &actions);
+    if (error != kAXErrorSuccess || !actions) {
+        return NO;
+    }
+
+    BOOL hasAction = NO;
+    CFIndex count = CFArrayGetCount(actions);
+    for (CFIndex i = 0; i < count; i++) {
+        CFStringRef action = (CFStringRef)CFArrayGetValueAtIndex(actions, i);
+        if (CFStringCompare(action, actionName, 0) == kCFCompareEqualTo) {
+            hasAction = YES;
+            break;
+        }
+    }
+
+    CFRelease(actions);
+    return hasAction;
+}
+
+static BOOL elementIsClickable(AXUIElementRef element) {
+    if (!element) {
+        return NO;
+    }
+
+    CFStringRef roleRef = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXRoleAttribute, (CFTypeRef *)&roleRef) == kAXErrorSuccess && roleRef) {
+        NSString *role = CopyAndReleaseCFString(roleRef);
+        if ([role isEqualToString:@"AXButton"] ||
+            [role isEqualToString:@"AXLink"] ||
+            [role isEqualToString:@"AXMenuItem"] ||
+            [role isEqualToString:@"AXTab"] ||
+            [role isEqualToString:@"AXRadioButton"] ||
+            [role isEqualToString:@"AXCheckBox"] ||
+            [role isEqualToString:@"AXPopUpButton"]) {
+            return YES;
+        }
+    }
+
+    CFStringRef subroleRef = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXSubroleAttribute, (CFTypeRef *)&subroleRef) == kAXErrorSuccess && subroleRef) {
+        NSString *subrole = CopyAndReleaseCFString(subroleRef);
+        if ([subrole isEqualToString:@"AXLink"] ||
+            [subrole isEqualToString:@"AXFileDrop"] ||
+            [subrole isEqualToString:@"AXDropTarget"] ||
+            [subrole isEqualToString:@"AXToolbarButton"]) {
+            return YES;
+        }
+    }
+
+    if (elementHasAction(element, kAXPressAction) ||
+        elementHasAction(element, kAXShowMenuAction) ||
+        elementHasAction(element, CFSTR("AXConfirm"))) {
+        return YES;
+    }
+
+    CFTypeRef urlValue = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXURLAttribute, &urlValue) == kAXErrorSuccess && urlValue) {
+        CFRelease(urlValue);
+        return YES;
+    }
+    if (urlValue) {
+        CFRelease(urlValue);
+        urlValue = NULL;
+    }
+
+    CFBooleanRef isEnabled = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXEnabledAttribute, (CFTypeRef *)&isEnabled) == kAXErrorSuccess &&
+        isEnabled && CFBooleanGetValue(isEnabled)) {
+        CFRelease(isEnabled);
+        isEnabled = NULL;
+        if (elementHasAction(element, CFSTR("AXShowMenu")) || elementHasAction(element, CFSTR("AXDecrement")) || elementHasAction(element, CFSTR("AXIncrement"))) {
+            return YES;
+        }
+    }
+    if (isEnabled) {
+        CFRelease(isEnabled);
+        isEnabled = NULL;
+    }
+
+    return NO;
+}
+
+static BOOL elementSupportsText(AXUIElementRef element) {
+    if (!element) {
+        return NO;
+    }
+
+    BOOL supportsText = NO;
+
+    CFStringRef roleRef = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXRoleAttribute, (CFTypeRef *)&roleRef) == kAXErrorSuccess && roleRef) {
+        NSString *role = CopyAndReleaseCFString(roleRef);
+        if ([role isEqualToString:@"AXTextField"] ||
+            [role isEqualToString:@"AXTextArea"] ||
+            [role isEqualToString:@"AXSearchField"] ||
+            [role isEqualToString:@"AXStaticText"] ||
+            [role isEqualToString:@"AXDocument"] ||
+            [role isEqualToString:@"AXWebArea"]) {
+            supportsText = YES;
+        }
+    }
+
+    CFStringRef subroleRef = NULL;
+    if (!supportsText && AXUIElementCopyAttributeValue(element, kAXSubroleAttribute, (CFTypeRef *)&subroleRef) == kAXErrorSuccess && subroleRef) {
+        NSString *subrole = CopyAndReleaseCFString(subroleRef);
+        if ([subrole isEqualToString:@"AXSecureTextField"] ||
+            [subrole isEqualToString:@"AXTextAttachment"] ||
+            [subrole isEqualToString:@"AXTextField"]) {
+            supportsText = YES;
+        }
+    }
+
+    CFStringRef roleDescriptionRef = NULL;
+    if (!supportsText && AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute, (CFTypeRef *)&roleDescriptionRef) == kAXErrorSuccess && roleDescriptionRef) {
+        NSString *roleDescription = CopyAndReleaseCFString(roleDescriptionRef);
+        NSString *lower = [roleDescription lowercaseString];
+        if ([lower containsString:@"text"] ||
+            [lower containsString:@"editor"] ||
+            [lower containsString:@"code"] ||
+            [lower containsString:@"document"]) {
+            supportsText = YES;
+        }
+    }
+
+    CFBooleanRef editable = NULL;
+    if (!supportsText && AXUIElementCopyAttributeValue(element, CFSTR("AXEditable"), (CFTypeRef *)&editable) == kAXErrorSuccess && editable) {
+        supportsText = CFBooleanGetValue(editable);
+        CFRelease(editable);
+    }
+
+    CFBooleanRef supportsSelection = NULL;
+    if (!supportsText && AXUIElementCopyAttributeValue(element, CFSTR("AXSupportsTextSelection"), (CFTypeRef *)&supportsSelection) == kAXErrorSuccess && supportsSelection) {
+        supportsText = CFBooleanGetValue(supportsSelection);
+        CFRelease(supportsSelection);
+    }
+
+    CFTypeRef valueAttribute = NULL;
+    if (!supportsText && AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueAttribute) == kAXErrorSuccess && valueAttribute) {
+        CFTypeID typeId = CFGetTypeID(valueAttribute);
+        if (typeId == CFAttributedStringGetTypeID() || typeId == CFStringGetTypeID()) {
+            supportsText = YES;
+        }
+        CFRelease(valueAttribute);
+    }
+
+    return supportsText;
+}
+
 // Mouse button state tracking
 static bool g_leftMouseDown = false;
 static bool g_rightMouseDown = false;
 static NSString *g_lastEventType = @"move";
-
-// Event tap callback
-static CGEventRef eventTapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *userInfo) {
-    return event;
-}
 
 // Accessibility tabanlı cursor tip tespiti
 static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
@@ -334,6 +516,43 @@ static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
             }
 
             if (elementAtPosition) {
+                if ([cursorType isEqualToString:@"default"] && elementSupportsText(elementAtPosition)) {
+                    cursorType = @"text";
+                }
+
+                if ([cursorType isEqualToString:@"default"] && elementIsClickable(elementAtPosition)) {
+                    cursorType = @"pointer";
+                }
+
+                if ([cursorType isEqualToString:@"default"]) {
+                    AXValueRef pointValue = AXValueCreate(kAXValueTypeCGPoint, &cursorPos);
+                    if (pointValue) {
+                        AXUIElementRef deepElement = NULL;
+                        AXError hitError = AXUIElementCopyParameterizedAttributeValue(systemWide, kAXHitTestParameterizedAttribute, pointValue, (CFTypeRef *)&deepElement);
+                        CFRelease(pointValue);
+                        if (hitError == kAXErrorSuccess && deepElement) {
+                            if (elementSupportsText(deepElement)) {
+                                cursorType = @"text";
+                            } else if (elementIsClickable(deepElement)) {
+                                cursorType = @"pointer";
+                            }
+                            CFRelease(deepElement);
+                        }
+                    }
+                }
+
+                if ([cursorType isEqualToString:@"default"]) {
+                    AXUIElementRef focusedElement = NULL;
+                    if (AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute, (CFTypeRef *)&focusedElement) == kAXErrorSuccess && focusedElement) {
+                        if (elementSupportsText(focusedElement) && pointInsideElementFrame(focusedElement, cursorPos)) {
+                            cursorType = @"text";
+                        } else if (elementIsClickable(focusedElement) && pointInsideElementFrame(focusedElement, cursorPos)) {
+                            cursorType = @"pointer";
+                        }
+                        CFRelease(focusedElement);
+                    }
+                }
+
                 CFRelease(elementAtPosition);
             }
             if (systemWide) {
@@ -569,12 +788,10 @@ NSString* getCursorType() {
         if (axCursorType && ![axCursorType isEqualToString:@"default"]) {
             finalType = axCursorType;
         } else if (systemCursorType && [systemCursorType length] > 0) {
-            if ([systemCursorType isEqualToString:@"pointer"] &&
-                (!axCursorType || [axCursorType isEqualToString:@"default"])) {
-                finalType = @"default";
-            } else {
-                finalType = systemCursorType;
-            }
+            // Prefer the system cursor when accessibility reports a generic value.
+            finalType = systemCursorType;
+        } else if (axCursorType && [axCursorType length] > 0) {
+            finalType = axCursorType;
         } else {
             finalType = @"default";
         }
@@ -629,17 +846,8 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         
         CGPoint rawLocation = CGEventGetLocation(event);
         
-        // Apply DPR scaling correction for Retina displays
-        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
+        // Coordinates are already in logical space; no additional scaling needed here.
         CGPoint location = rawLocation;
-        
-        if (scalingInfo) {
-            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
-            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
-            
-            // Keep logical coordinates - no scaling needed here
-            location = rawLocation;
-        }
         NSDate *currentDate = [NSDate date];
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
@@ -702,17 +910,8 @@ void cursorTimerCallback() {
             CFRelease(event);
         }
         
-        // Apply DPR scaling correction for Retina displays
-        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
+        // Coordinates are already in logical space; no additional scaling needed here.
         CGPoint location = rawLocation;
-        
-        if (scalingInfo) {
-            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
-            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
-            
-            // Keep logical coordinates - no scaling needed here
-            location = rawLocation;
-        }
         
         NSDate *currentDate = [NSDate date];
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
@@ -1042,16 +1241,8 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         // Get display scaling information
         NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
         CGPoint logicalLocation = rawLocation;
-        
-        if (scalingInfo) {
-            CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
-            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
-            
-            // CGEventGetLocation returns LOGICAL coordinates (correct for JS layer)
-            // Keep logical coordinates - transformation happens in JS layer
-            logicalLocation = rawLocation;
-        }
-        
+        // CGEventGetLocation already returns logical coordinates; additional scaling happens in JS layer.
+
         NSString *cursorType = getCursorType();
         
         // Mouse button state'ini kontrol et
