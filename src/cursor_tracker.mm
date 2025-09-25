@@ -563,13 +563,51 @@ NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
 
-        // Use only the system cursor type for live detection.
-        NSString *systemCursorType = detectSystemCursorType();
-        if (systemCursorType && [systemCursorType length] > 0) {
-            NSLog(@"🎯 FINAL CURSOR TYPE (System): %@", systemCursorType);
-            return systemCursorType;
+        // Hybrid: AX (strict) first, then system cursor fallback.
+        BOOL hasCursorPosition = NO;
+        CGPoint cursorPos = CGPointZero;
+
+        CGEventRef event = CGEventCreate(NULL);
+        if (event) {
+            cursorPos = CGEventGetLocation(event);
+            hasCursorPosition = YES;
+            CFRelease(event);
         }
-        return @"default";
+
+        if (!hasCursorPosition) {
+            if ([NSThread isMainThread]) {
+                cursorPos = [NSEvent mouseLocation];
+                hasCursorPosition = YES;
+            } else {
+                __block CGPoint fallbackPos = CGPointZero;
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    fallbackPos = [NSEvent mouseLocation];
+                });
+                cursorPos = fallbackPos;
+                hasCursorPosition = YES;
+            }
+        }
+
+        NSString *axCursorType = nil;
+        if (hasCursorPosition) {
+            axCursorType = detectCursorTypeUsingAccessibility(cursorPos);
+        }
+
+        NSString *systemCursorType = detectSystemCursorType();
+
+        NSString *finalType = nil;
+        if (axCursorType && ![axCursorType isEqualToString:@"default"]) {
+            finalType = axCursorType;
+        } else if (systemCursorType && [systemCursorType length] > 0) {
+            finalType = systemCursorType;
+        } else if (axCursorType && [axCursorType length] > 0) {
+            finalType = axCursorType;
+        } else {
+            finalType = @"default";
+        }
+
+        NSLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
+        return finalType;
     }
 }
 
