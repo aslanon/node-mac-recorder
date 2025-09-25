@@ -1,4 +1,5 @@
 #import "screen_capture_kit.h"
+#import "logging.h"
 
 // Pure ScreenCaptureKit implementation - NO AVFoundation
 static SCStream * API_AVAILABLE(macos(12.3)) g_stream = nil;
@@ -13,11 +14,11 @@ static NSString *g_outputPath = nil;
 
 @implementation PureScreenCaptureDelegate
 - (void)stream:(SCStream * API_AVAILABLE(macos(12.3)))stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
-    NSLog(@"🛑 Pure ScreenCapture stream stopped");
+    MRLog(@"🛑 Pure ScreenCapture stream stopped");
     
     // Prevent recursive calls during cleanup
     if (g_isCleaningUp) {
-        NSLog(@"⚠️ Already cleaning up, ignoring delegate callback");
+        MRLog(@"⚠️ Already cleaning up, ignoring delegate callback");
         return;
     }
     
@@ -26,7 +27,7 @@ static NSString *g_outputPath = nil;
     if (error) {
         NSLog(@"❌ Stream error: %@", error);
     } else {
-        NSLog(@"✅ Stream stopped cleanly");
+        MRLog(@"✅ Stream stopped cleanly");
     }
     
     // Use dispatch_async to prevent potential deadlocks in Electron
@@ -50,7 +51,7 @@ static NSString *g_outputPath = nil;
 + (BOOL)startRecordingWithConfiguration:(NSDictionary *)config delegate:(id)delegate error:(NSError **)error {
     @synchronized([ScreenCaptureKitRecorder class]) {
         if (g_isRecording || g_isCleaningUp) {
-            NSLog(@"⚠️ Already recording or cleaning up (recording:%d cleaning:%d)", g_isRecording, g_isCleaningUp);
+        MRLog(@"⚠️ Already recording or cleaning up (recording:%d cleaning:%d)", g_isRecording, g_isCleaningUp);
             return NO;
         }
         
@@ -73,13 +74,13 @@ static NSString *g_outputPath = nil;
     NSNumber *includeMicrophone = config[@"includeMicrophone"];
     NSNumber *includeSystemAudio = config[@"includeSystemAudio"];
     
-    NSLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
-    NSLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@ crop=%@", 
+    MRLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
+    MRLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@ crop=%@", 
           captureCursor, includeMicrophone, includeSystemAudio, displayId, windowId, captureRect);
     
     // CRITICAL DEBUG: Log EXACT audio parameter values
-    NSLog(@"🔍 AUDIO DEBUG: includeMicrophone type=%@ value=%d", [includeMicrophone class], [includeMicrophone boolValue]);
-    NSLog(@"🔍 AUDIO DEBUG: includeSystemAudio type=%@ value=%d", [includeSystemAudio class], [includeSystemAudio boolValue]);
+    MRLog(@"🔍 AUDIO DEBUG: includeMicrophone type=%@ value=%d", [includeMicrophone class], [includeMicrophone boolValue]);
+    MRLog(@"🔍 AUDIO DEBUG: includeSystemAudio type=%@ value=%d", [includeSystemAudio class], [includeSystemAudio boolValue]);
     
     // Get shareable content
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
@@ -88,13 +89,13 @@ static NSString *g_outputPath = nil;
             return;
         }
         
-        NSLog(@"✅ Got %lu displays, %lu windows for pure recording", 
+        MRLog(@"✅ Got %lu displays, %lu windows for pure recording", 
               content.displays.count, content.windows.count);
         
         // CRITICAL DEBUG: List all available displays in ScreenCaptureKit
-        NSLog(@"🔍 ScreenCaptureKit available displays:");
+        MRLog(@"🔍 ScreenCaptureKit available displays:");
         for (SCDisplay *display in content.displays) {
-            NSLog(@"   Display ID=%u, Size=%dx%d, Frame=(%.0f,%.0f,%.0fx%.0f)", 
+            MRLog(@"   Display ID=%u, Size=%dx%d, Frame=(%.0f,%.0f,%.0fx%.0f)", 
                   display.displayID, (int)display.width, (int)display.height,
                   display.frame.origin.x, display.frame.origin.y,
                   display.frame.size.width, display.frame.size.height);
@@ -119,7 +120,7 @@ static NSString *g_outputPath = nil;
             }
             
             if (targetWindow && targetApp) {
-                NSLog(@"🪟 Recording window: %@ (%ux%u)", 
+                MRLog(@"🪟 Recording window: %@ (%ux%u)", 
                       targetWindow.title, (unsigned)targetWindow.frame.size.width, (unsigned)targetWindow.frame.size.height);
                 filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
                 recordingWidth = (NSInteger)targetWindow.frame.size.width;
@@ -134,12 +135,12 @@ static NSString *g_outputPath = nil;
             
             if (displayId && [displayId integerValue] != 0) {
                 // Find specific display
-                NSLog(@"🎯 Looking for display ID=%@ in ScreenCaptureKit list", displayId);
+                MRLog(@"🎯 Looking for display ID=%@ in ScreenCaptureKit list", displayId);
                 for (SCDisplay *display in content.displays) {
-                    NSLog(@"   Checking display ID=%u vs requested=%u", display.displayID, [displayId unsignedIntValue]);
+                    MRLog(@"   Checking display ID=%u vs requested=%u", display.displayID, [displayId unsignedIntValue]);
                     if (display.displayID == [displayId unsignedIntValue]) {
                         targetDisplay = display;
-                        NSLog(@"✅ FOUND matching display ID=%u", display.displayID);
+                        MRLog(@"✅ FOUND matching display ID=%u", display.displayID);
                         break;
                     }
                 }
@@ -158,7 +159,7 @@ static NSString *g_outputPath = nil;
                 return;
             }
             
-            NSLog(@"🖥️ Recording display %u (%dx%d)", 
+            MRLog(@"🖥️ Recording display %u (%dx%d)", 
                   targetDisplay.displayID, (int)targetDisplay.width, (int)targetDisplay.height);
             filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
             recordingWidth = targetDisplay.width;
@@ -171,7 +172,7 @@ static NSString *g_outputPath = nil;
             CGFloat cropHeight = [captureRect[@"height"] doubleValue];
             
             if (cropWidth > 0 && cropHeight > 0) {
-                NSLog(@"🔲 Crop area specified: %.0fx%.0f at (%.0f,%.0f)", 
+                MRLog(@"🔲 Crop area specified: %.0fx%.0f at (%.0f,%.0f)", 
                       cropWidth, cropHeight, 
                       [captureRect[@"x"] doubleValue], [captureRect[@"y"] doubleValue]);
                 recordingWidth = (NSInteger)cropWidth;
@@ -200,11 +201,11 @@ static NSString *g_outputPath = nil;
                 CGFloat displayRelativeX = globalX - displayBounds.origin.x;
                 CGFloat displayRelativeY = globalY - displayBounds.origin.y;
                 
-                NSLog(@"🌐 Global coords: (%.0f,%.0f) on Display ID=%u", globalX, globalY, targetDisplay.displayID);
-                NSLog(@"🖥️ Display bounds: (%.0f,%.0f,%.0fx%.0f)", 
+                MRLog(@"🌐 Global coords: (%.0f,%.0f) on Display ID=%u", globalX, globalY, targetDisplay.displayID);
+                MRLog(@"🖥️ Display bounds: (%.0f,%.0f,%.0fx%.0f)", 
                       displayBounds.origin.x, displayBounds.origin.y, 
                       displayBounds.size.width, displayBounds.size.height);
-                NSLog(@"📍 Display-relative: (%.0f,%.0f) -> SourceRect", displayRelativeX, displayRelativeY);
+                MRLog(@"📍 Display-relative: (%.0f,%.0f) -> SourceRect", displayRelativeX, displayRelativeY);
                 
                 // Validate coordinates are within display bounds
                 if (displayRelativeX >= 0 && displayRelativeY >= 0 && 
@@ -213,11 +214,11 @@ static NSString *g_outputPath = nil;
                     
                     CGRect sourceRect = CGRectMake(displayRelativeX, displayRelativeY, cropWidth, cropHeight);
                     streamConfig.sourceRect = sourceRect;
-                    NSLog(@"✂️ Crop sourceRect applied: (%.0f,%.0f) %.0fx%.0f (display-relative)", 
+                    MRLog(@"✂️ Crop sourceRect applied: (%.0f,%.0f) %.0fx%.0f (display-relative)", 
                           displayRelativeX, displayRelativeY, cropWidth, cropHeight);
                 } else {
                     NSLog(@"❌ Crop coordinates out of display bounds - skipping crop");
-                    NSLog(@"   Relative: (%.0f,%.0f) size:(%.0fx%.0f) vs display:(%.0fx%.0f)",
+                    MRLog(@"   Relative: (%.0f,%.0f) size:(%.0fx%.0f) vs display:(%.0fx%.0f)",
                           displayRelativeX, displayRelativeY, cropWidth, cropHeight,
                           displayBounds.size.width, displayBounds.size.height);
                 }
@@ -228,14 +229,14 @@ static NSString *g_outputPath = nil;
         BOOL shouldShowCursor = captureCursor ? [captureCursor boolValue] : YES;
         streamConfig.showsCursor = shouldShowCursor;
         
-        NSLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
+        MRLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
               recordingWidth, recordingHeight, shouldShowCursor);
         
         // AUDIO SUPPORT - Enable both microphone and system audio
-        NSLog(@"🔍 AUDIO PROCESSING: includeMicrophone=%@ includeSystemAudio=%@", includeMicrophone, includeSystemAudio);
+        MRLog(@"🔍 AUDIO PROCESSING: includeMicrophone=%@ includeSystemAudio=%@", includeMicrophone, includeSystemAudio);
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
         BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
-        NSLog(@"🔍 AUDIO COMPUTED: shouldCaptureMic=%d shouldCaptureSystemAudio=%d", shouldCaptureMic, shouldCaptureSystemAudio);
+        MRLog(@"🔍 AUDIO COMPUTED: shouldCaptureMic=%d shouldCaptureSystemAudio=%d", shouldCaptureMic, shouldCaptureSystemAudio);
         
         // Enable audio if either microphone or system audio is requested
         if (@available(macOS 13.0, *)) {
@@ -245,19 +246,19 @@ static NSString *g_outputPath = nil;
                 streamConfig.channelCount = 2;
                 
                 if (shouldCaptureMic && shouldCaptureSystemAudio) {
-                    NSLog(@"🎵 Both microphone and system audio enabled");
+                    MRLog(@"🎵 Both microphone and system audio enabled");
                 } else if (shouldCaptureMic) {
-                    NSLog(@"🎤 Microphone audio enabled");
+                    MRLog(@"🎤 Microphone audio enabled");
                 } else {
-                    NSLog(@"🔊 System audio enabled");
+                    MRLog(@"🔊 System audio enabled");
                 }
             } else {
                 streamConfig.capturesAudio = NO;
-                NSLog(@"🔇 Audio disabled");
+                MRLog(@"🔇 Audio disabled");
             }
         } else {
             streamConfig.capturesAudio = NO;
-            NSLog(@"🔇 Audio disabled (macOS < 13.0)");
+            MRLog(@"🔇 Audio disabled (macOS < 13.0)");
         }
         
         // Create pure ScreenCaptureKit recording output
@@ -328,7 +329,7 @@ static NSString *g_outputPath = nil;
             return;
         }
         
-        NSLog(@"✅ Pure recording output added to stream");
+        MRLog(@"✅ Pure recording output added to stream");
         
         // Start capture with recording
         [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
@@ -336,7 +337,7 @@ static NSString *g_outputPath = nil;
                 NSLog(@"❌ Failed to start pure capture: %@", startError);
                 g_isRecording = NO;
             } else {
-                NSLog(@"🎉 PURE ScreenCaptureKit recording started successfully!");
+                MRLog(@"🎉 PURE ScreenCaptureKit recording started successfully!");
                 g_isRecording = YES;
             }
         }];
@@ -351,7 +352,7 @@ static NSString *g_outputPath = nil;
         return;
     }
     
-    NSLog(@"🛑 Stopping pure ScreenCaptureKit recording");
+    MRLog(@"🛑 Stopping pure ScreenCaptureKit recording");
     
     // Store stream reference to prevent it from being deallocated
     SCStream *streamToStop = g_stream;
@@ -360,7 +361,7 @@ static NSString *g_outputPath = nil;
         if (error) {
             NSLog(@"❌ Stop error: %@", error);
         }
-        NSLog(@"✅ Pure stream stopped");
+        MRLog(@"✅ Pure stream stopped");
         
         // Immediately reset recording state to allow new recordings
         g_isRecording = NO;
@@ -383,7 +384,7 @@ static NSString *g_outputPath = nil;
 
 + (void)finalizeRecording {
     @synchronized([ScreenCaptureKitRecorder class]) {
-        NSLog(@"🎬 Finalizing pure ScreenCaptureKit recording");
+        MRLog(@"🎬 Finalizing pure ScreenCaptureKit recording");
         
         // Set cleanup flag now that we're actually cleaning up
         g_isCleaningUp = YES;
@@ -391,7 +392,7 @@ static NSString *g_outputPath = nil;
         
         if (g_recordingOutput) {
             // SCRecordingOutput finalizes automatically
-            NSLog(@"✅ Pure recording output finalized");
+            MRLog(@"✅ Pure recording output finalized");
         }
         
         [ScreenCaptureKitRecorder cleanupVideoWriter];
@@ -405,29 +406,29 @@ static NSString *g_outputPath = nil;
 
 + (void)cleanupVideoWriter {
     @synchronized([ScreenCaptureKitRecorder class]) {
-        NSLog(@"🧹 Starting ScreenCaptureKit cleanup");
+        MRLog(@"🧹 Starting ScreenCaptureKit cleanup");
         
         // Clean up in proper order to prevent crashes
         if (g_stream) {
             g_stream = nil;
-            NSLog(@"✅ Stream reference cleared");
+            MRLog(@"✅ Stream reference cleared");
         }
         
         if (g_recordingOutput) {
             g_recordingOutput = nil;
-            NSLog(@"✅ Recording output reference cleared");
+            MRLog(@"✅ Recording output reference cleared");
         }
         
         if (g_streamDelegate) {
             g_streamDelegate = nil;
-            NSLog(@"✅ Stream delegate reference cleared");
+            MRLog(@"✅ Stream delegate reference cleared");
         }
         
         g_isRecording = NO;
         g_isCleaningUp = NO;  // Reset cleanup flag
         g_outputPath = nil;
         
-        NSLog(@"🧹 Pure ScreenCaptureKit cleanup complete");
+        MRLog(@"🧹 Pure ScreenCaptureKit cleanup complete");
     }
 }
 

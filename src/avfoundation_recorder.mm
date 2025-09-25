@@ -5,6 +5,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <AppKit/AppKit.h>
 #include <string>
+#import "logging.h"
 
 static AVAssetWriter *g_avWriter = nil;
 static AVAssetWriterInput *g_avVideoInput = nil;
@@ -32,7 +33,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
     }
     
     @try {
-        NSLog(@"🎬 AVFoundation: Starting recording initialization");
+        MRLog(@"🎬 AVFoundation: Starting recording initialization");
         
         // Create output URL
         NSString *outputPathStr = [NSString stringWithUTF8String:outputPath.c_str()];
@@ -42,7 +43,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         NSError *removeError = nil;
         [[NSFileManager defaultManager] removeItemAtURL:outputURL error:&removeError];
         if (removeError && removeError.code != NSFileNoSuchFileError) {
-            NSLog(@"⚠️ AVFoundation: Warning removing existing file: %@", removeError);
+            MRLog(@"⚠️ AVFoundation: Warning removing existing file: %@", removeError);
         }
         
         // Create asset writer
@@ -85,21 +86,21 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             recordingSize = actualImageSize;
         }
         
-        NSLog(@"🎯 CRITICAL: Logical %.0fx%.0f → Actual image %.0fx%.0f", 
+        MRLog(@"🎯 CRITICAL: Logical %.0fx%.0f → Actual image %.0fx%.0f", 
               logicalSize.width, logicalSize.height, actualImageSize.width, actualImageSize.height);
         
-        NSLog(@"🖥️ Display bounds (logical): %.0fx%.0f", logicalSize.width, logicalSize.height);
-        NSLog(@"🖥️ Display pixels (physical): %.0fx%.0f", physicalSize.width, physicalSize.height);
+        MRLog(@"🖥️ Display bounds (logical): %.0fx%.0f", logicalSize.width, logicalSize.height);
+        MRLog(@"🖥️ Display pixels (physical): %.0fx%.0f", physicalSize.width, physicalSize.height);
         
         if (scaleFactor > 1.5) {
-            NSLog(@"🔍 Scale factor: %.1fx → Retina display detected (macOS 14/13 scaling fix applied)", scaleFactor);
+            MRLog(@"🔍 Scale factor: %.1fx → Retina display detected (macOS 14/13 scaling fix applied)", scaleFactor);
         } else if (scaleFactor > 1.1) {
-            NSLog(@"🔍 Scale factor: %.1fx → Non-standard scaling detected", scaleFactor);
+            MRLog(@"🔍 Scale factor: %.1fx → Non-standard scaling detected", scaleFactor);
         } else {
-            NSLog(@"🔍 Scale factor: %.1fx → Standard display", scaleFactor);
+            MRLog(@"🔍 Scale factor: %.1fx → Standard display", scaleFactor);
         }
         
-        NSLog(@"🎯 Recording size: %.0fx%.0f (using actual physical dimensions for Retina fix)", recordingSize.width, recordingSize.height);
+        MRLog(@"🎯 Recording size: %.0fx%.0f (using actual physical dimensions for Retina fix)", recordingSize.width, recordingSize.height);
         
         // Video settings with macOS compatibility
         NSString *codecKey;
@@ -142,7 +143,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             (NSString*)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
         };
         
-        NSLog(@"🔧 Using pixel format: %u", pixelFormat);
+        MRLog(@"🔧 Using pixel format: %u", pixelFormat);
         
         g_avPixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_avVideoInput sourcePixelBufferAttributes:pixelBufferAttributes];
         
@@ -253,11 +254,11 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                         size_t imageWidth = CGImageGetWidth(screenImage);
                         size_t imageHeight = CGImageGetHeight(screenImage);
                         
-                        NSLog(@"🔍 Debug: Buffer %zux%zu, Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                        MRLog(@"🔍 Debug: Buffer %zux%zu, Image %zux%zu", bufferWidth, bufferHeight, imageWidth, imageHeight);
                         
                         if (bufferWidth != imageWidth || bufferHeight != imageHeight) {
-                            NSLog(@"🔧 EXPECTED SIZE DIFFERENCE: Buffer %zux%zu (logical) vs Image %zux%zu (physical)", bufferWidth, bufferHeight, imageWidth, imageHeight);
-                            NSLog(@"   This is normal on Retina displays - scaling handled correctly now");
+                            MRLog(@"🔧 EXPECTED SIZE DIFFERENCE: Buffer %zux%zu (logical) vs Image %zux%zu (physical)", bufferWidth, bufferHeight, imageWidth, imageHeight);
+                            MRLog(@"   This is normal on Retina displays - scaling handled correctly now");
                         }
                         
                         CVPixelBufferLockBaseAddress(pixelBuffer, 0);
@@ -332,7 +333,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         dispatch_resume(g_avTimer);
         g_avIsRecording = true;
         
-        NSLog(@"🎥 AVFoundation recording started: %dx%d @ 10fps", 
+        MRLog(@"🎥 AVFoundation recording started: %dx%d @ 10fps", 
               (int)recordingSize.width, (int)recordingSize.height);
         
         return true;
@@ -365,7 +366,7 @@ extern "C" bool stopAVFoundationRecording() {
             });
             
             g_avTimer = nil;
-            NSLog(@"✅ AVFoundation timer stopped safely");
+            MRLog(@"✅ AVFoundation timer stopped safely");
         }
         
         // Finish writing with null checks
@@ -391,7 +392,7 @@ extern "C" bool stopAVFoundationRecording() {
         g_avPixelBufferAdaptor = nil;
         g_avFrameNumber = 0;
         
-        NSLog(@"✅ AVFoundation recording stopped");
+        MRLog(@"✅ AVFoundation recording stopped");
         return true;
         
     } @catch (NSException *exception) {

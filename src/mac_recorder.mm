@@ -4,6 +4,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <CoreAudio/CoreAudio.h>
+#import "logging.h"
 
 // Import screen capture (ScreenCaptureKit only)
 #import "screen_capture_kit.h"
@@ -70,11 +71,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     
     // IMPORTANT: Clean up any stale recording state before starting
     // This fixes the issue where macOS 14/13 users get "recording already in progress"
-    NSLog(@"🧹 Cleaning up any previous recording state...");
+    MRLog(@"🧹 Cleaning up any previous recording state...");
     cleanupRecording();
     
     if (g_isRecording) {
-        NSLog(@"⚠️ Still recording after cleanup - forcing stop");
+        MRLog(@"⚠️ Still recording after cleanup - forcing stop");
         return Napi::Boolean::New(env, false);
     }
     
@@ -168,13 +169,13 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         // Window ID support 
         if (options.Has("windowId") && !options.Get("windowId").IsNull()) {
             windowID = options.Get("windowId").As<Napi::Number>().Uint32Value();
-            NSLog(@"🪟 Window ID specified: %u", windowID);
+            MRLog(@"🪟 Window ID specified: %u", windowID);
         }
     }
     
     @try {
         // Smart Recording Selection: ScreenCaptureKit vs Alternative
-        NSLog(@"🎯 Smart Recording Engine Selection");
+        MRLog(@"🎯 Smart Recording Engine Selection");
         
         // Electron environment detection (removed disable logic)
         BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
@@ -186,8 +187,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                           [NSBundle.mainBundle.bundlePath containsString:@"Electron"]);
         
         if (isElectron) {
-            NSLog(@"⚡ Electron environment detected - continuing with ScreenCaptureKit");
-            NSLog(@"⚠️ Warning: ScreenCaptureKit in Electron may require additional stability measures");
+            MRLog(@"⚡ Electron environment detected - continuing with ScreenCaptureKit");
+            MRLog(@"⚠️ Warning: ScreenCaptureKit in Electron may require additional stability measures");
         }
         
         // Check macOS version for ScreenCaptureKit compatibility
@@ -196,13 +197,13 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         BOOL isM14Plus = (osVersion.majorVersion >= 14);
         BOOL isM13Plus = (osVersion.majorVersion >= 13);
         
-        NSLog(@"🖥️ macOS Version: %ld.%ld.%ld", 
+        MRLog(@"🖥️ macOS Version: %ld.%ld.%ld", 
               (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
         
         // Force AVFoundation for debugging/testing
         BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL);
         if (forceAVFoundation) {
-            NSLog(@"🔧 FORCE_AVFOUNDATION environment variable detected - skipping ScreenCaptureKit");
+            MRLog(@"🔧 FORCE_AVFOUNDATION environment variable detected - skipping ScreenCaptureKit");
         }
         
         // Electron-first priority: This application is built for Electron.js
@@ -210,16 +211,16 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         // macOS 14/13 → AVFoundation (including Electron)
         if (isM15Plus && !forceAVFoundation) {
             if (isElectron) {
-                NSLog(@"⚡ ELECTRON PRIORITY: macOS 15+ Electron → ScreenCaptureKit with full support");
+                MRLog(@"⚡ ELECTRON PRIORITY: macOS 15+ Electron → ScreenCaptureKit with full support");
             } else {
-                NSLog(@"✅ macOS 15+ Node.js → ScreenCaptureKit available with full compatibility");
+                MRLog(@"✅ macOS 15+ Node.js → ScreenCaptureKit available with full compatibility");
             }
             
             // Try ScreenCaptureKit with extensive safety measures
             @try {
                 if ([ScreenCaptureKitRecorder isScreenCaptureKitAvailable]) {
-                    NSLog(@"✅ ScreenCaptureKit availability check passed");
-                    NSLog(@"🎯 Using ScreenCaptureKit - overlay windows will be automatically excluded");
+                    MRLog(@"✅ ScreenCaptureKit availability check passed");
+                    MRLog(@"🎯 Using ScreenCaptureKit - overlay windows will be automatically excluded");
                     
                     // Create configuration for ScreenCaptureKit
                 NSMutableDictionary *sckConfig = [NSMutableDictionary dictionary];
@@ -251,7 +252,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         if (!sckStarted && !g_isRecording) {
                             sckTimedOut = YES;
-                            NSLog(@"⏰ ScreenCaptureKit initialization timeout (3s)");
+                            MRLog(@"⏰ ScreenCaptureKit initialization timeout (3s)");
                         }
                     });
                     
@@ -263,8 +264,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                             
                             // ScreenCaptureKit başlatma başarılı - validation yapmıyoruz
                             sckStarted = YES;
-                            NSLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
-                            NSLog(@"✅ ScreenCaptureKit recording started successfully");
+                            MRLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
+                            MRLog(@"✅ ScreenCaptureKit recording started successfully");
                             g_isRecording = true;
                             return Napi::Boolean::New(env, true);
                         } else {
@@ -274,7 +275,6 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     } @catch (NSException *sckException) {
                         NSLog(@"❌ Exception during ScreenCaptureKit startup: %@", sckException.reason);
                     }
-                    
                     NSLog(@"❌ ScreenCaptureKit failed or unsafe - will fallback to AVFoundation");
                     
                 } else {
@@ -285,22 +285,22 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             }
             
             // If we reach here, ScreenCaptureKit failed, so fall through to AVFoundation
-            NSLog(@"⏭️ ScreenCaptureKit failed - falling back to AVFoundation");
+            MRLog(@"⏭️ ScreenCaptureKit failed - falling back to AVFoundation");
         } else {
             // macOS 14/13 or forced AVFoundation → ALWAYS use AVFoundation (Electron supported!)
             if (isElectron) {
                 if (isM14Plus) {
-                    NSLog(@"⚡ ELECTRON PRIORITY: macOS 14/13 Electron → AVFoundation with full support");
+                    MRLog(@"⚡ ELECTRON PRIORITY: macOS 14/13 Electron → AVFoundation with full support");
                 } else if (isM13Plus) {
-                    NSLog(@"⚡ ELECTRON PRIORITY: macOS 13 Electron → AVFoundation with limited features");
+                    MRLog(@"⚡ ELECTRON PRIORITY: macOS 13 Electron → AVFoundation with limited features");
                 }
             } else {
                 if (isM15Plus) {
-                    NSLog(@"🎯 macOS 15+ Node.js with FORCE_AVFOUNDATION → using AVFoundation");
+                    MRLog(@"🎯 macOS 15+ Node.js with FORCE_AVFOUNDATION → using AVFoundation");
                 } else if (isM14Plus) {
-                    NSLog(@"🎯 macOS 14 Node.js → using AVFoundation (primary method)");
+                    MRLog(@"🎯 macOS 14 Node.js → using AVFoundation (primary method)");
                 } else if (isM13Plus) {
-                    NSLog(@"🎯 macOS 13 Node.js → using AVFoundation (limited features)");  
+                    MRLog(@"🎯 macOS 13 Node.js → using AVFoundation (limited features)");  
                 }
             }
             
@@ -310,11 +310,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             }
             
             // DIRECT AVFoundation for all environments (Node.js + Electron)
-            NSLog(@"⏭️ Using AVFoundation directly - supports both Node.js and Electron");
+            MRLog(@"⏭️ Using AVFoundation directly - supports both Node.js and Electron");
         }
         
         // AVFoundation recording (either fallback from ScreenCaptureKit or direct)
-        NSLog(@"🎥 Starting AVFoundation recording...");
+        MRLog(@"🎥 Starting AVFoundation recording...");
         
         @try {
             // Import AVFoundation recording functions (if available)
@@ -331,8 +331,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                       captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId);
             
             if (avResult) {
-                NSLog(@"🎥 RECORDING METHOD: AVFoundation");
-                NSLog(@"✅ AVFoundation recording started successfully");
+                MRLog(@"🎥 RECORDING METHOD: AVFoundation");
+                MRLog(@"✅ AVFoundation recording started successfully");
                 g_isRecording = true;
                 return Napi::Boolean::New(env, true);
             } else {
@@ -358,12 +358,12 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
 Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    NSLog(@"📞 StopRecording native method called");
+    MRLog(@"📞 StopRecording native method called");
     
     // Try ScreenCaptureKit first
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {
-            NSLog(@"🛑 Stopping ScreenCaptureKit recording");
+            MRLog(@"🛑 Stopping ScreenCaptureKit recording");
             [ScreenCaptureKitRecorder stopRecording];
             g_isRecording = false;
             return Napi::Boolean::New(env, true);
@@ -376,7 +376,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     
     @try {
         if (isAVFoundationRecording()) {
-            NSLog(@"🛑 Stopping AVFoundation recording");
+            MRLog(@"🛑 Stopping AVFoundation recording");
             if (stopAVFoundationRecording()) {
                 g_isRecording = false;
                 return Napi::Boolean::New(env, true);
@@ -392,7 +392,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
         return Napi::Boolean::New(env, false);
     }
     
-    NSLog(@"⚠️ No active recording found to stop");
+    MRLog(@"⚠️ No active recording found to stop");
     g_isRecording = false;
     return Napi::Boolean::New(env, true);
 }

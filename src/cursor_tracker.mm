@@ -6,6 +6,7 @@
 #import <Carbon/Carbon.h>
 #import <Accessibility/Accessibility.h>
 #import <dispatch/dispatch.h>
+#import "logging.h"
 
 #ifndef kAXHitTestParameterizedAttribute
 #define kAXHitTestParameterizedAttribute CFSTR("AXHitTest")
@@ -547,7 +548,7 @@ static NSString* detectSystemCursorType(void) {
             cursorType = @"default";
         }
 
-        NSLog(@"🎯 SYSTEM CURSOR TYPE: %@", cursorType ? cursorType : @"(nil)");
+        MRLog(@"🎯 SYSTEM CURSOR TYPE: %@", cursorType ? cursorType : @"(nil)");
     };
 
     if ([NSThread isMainThread]) {
@@ -606,7 +607,7 @@ NSString* getCursorType() {
             finalType = @"default";
         }
 
-        NSLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
+        MRLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
         return finalType;
     }
 }
