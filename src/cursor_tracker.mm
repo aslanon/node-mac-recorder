@@ -106,7 +106,7 @@ static BOOL CopyAttributeBoolean(AXUIElementRef element, CFStringRef attribute, 
     return YES;
 }
 
-static BOOL ElementHasAction(AXUIElementRef element, CFStringRef action) {
+static __attribute__((unused)) BOOL ElementHasAction(AXUIElementRef element, CFStringRef action) {
     if (!element || !action) {
         return NO;
     }
@@ -563,51 +563,13 @@ NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
 
+        // Use only the system cursor type for live detection.
         NSString *systemCursorType = detectSystemCursorType();
-
-        NSString *axCursorType = nil;
-        BOOL hasCursorPosition = NO;
-        CGPoint cursorPos = CGPointZero;
-
-        CGEventRef event = CGEventCreate(NULL);
-        if (event) {
-            cursorPos = CGEventGetLocation(event);
-            hasCursorPosition = YES;
-            CFRelease(event);
+        if (systemCursorType && [systemCursorType length] > 0) {
+            NSLog(@"🎯 FINAL CURSOR TYPE (System): %@", systemCursorType);
+            return systemCursorType;
         }
-
-        if (!hasCursorPosition) {
-            if ([NSThread isMainThread]) {
-                cursorPos = [NSEvent mouseLocation];
-                hasCursorPosition = YES;
-            } else {
-                __block CGPoint fallbackPos = CGPointZero;
-                dispatch_sync(dispatch_get_main_queue(), ^{
-                    fallbackPos = [NSEvent mouseLocation];
-                });
-                cursorPos = fallbackPos;
-                hasCursorPosition = YES;
-            }
-        }
-
-        if (hasCursorPosition) {
-            axCursorType = detectCursorTypeUsingAccessibility(cursorPos);
-        }
-
-        NSString *finalType = nil;
-        if (axCursorType && ![axCursorType isEqualToString:@"default"]) {
-            finalType = axCursorType;
-        } else if (systemCursorType && [systemCursorType length] > 0) {
-            // Prefer the system cursor when accessibility reports a generic value.
-            finalType = systemCursorType;
-        } else if (axCursorType && [axCursorType length] > 0) {
-            finalType = axCursorType;
-        } else {
-            finalType = @"default";
-        }
-
-        NSLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
-        return finalType;
+        return @"default";
     }
 }
 
@@ -662,9 +624,6 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
-        // Debug fields: capture raw AX and system cursor types
-        NSString *axTypeDbg = detectCursorTypeUsingAccessibility(location);
-        NSString *sysTypeDbg = detectSystemCursorType();
         // (already captured above)
         NSString *eventType = @"move";
         
@@ -698,9 +657,7 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             @"timestamp": @(timestamp),
             @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
-            @"type": eventType,
-            @"axCursorType": axTypeDbg ? axTypeDbg : @"",
-            @"systemCursorType": sysTypeDbg ? sysTypeDbg : @""
+            @"type": eventType
         };
         
         // Direkt dosyaya yaz
@@ -733,9 +690,6 @@ void cursorTimerCallback() {
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
-        // Debug fields: capture raw AX and system cursor types
-        NSString *axTypeDbg = detectCursorTypeUsingAccessibility(location);
-        NSString *sysTypeDbg = detectSystemCursorType();
         
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
@@ -744,9 +698,7 @@ void cursorTimerCallback() {
             @"timestamp": @(timestamp),
             @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
-            @"type": @"move",
-            @"axCursorType": axTypeDbg ? axTypeDbg : @"",
-            @"systemCursorType": sysTypeDbg ? sysTypeDbg : @""
+            @"type": @"move"
         };
         
         // Direkt dosyaya yaz
