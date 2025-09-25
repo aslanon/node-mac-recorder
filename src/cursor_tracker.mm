@@ -248,13 +248,7 @@ static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPo
         CFRelease(valueAttribute);
     }
 
-    if (StringEqualsAny(role, @[@"AXProgressIndicator", @"AXBusyIndicator"])) {
-        return @"progress";
-    }
-
-    if (StringEqualsAny(role, @[@"AXHelpTag", @"AXTooltip"])) {
-        return @"help";
-    }
+    // Leave progress/help to system cursor; don't force via AX
 
     if ([role isEqualToString:@"AXSplitter"]) {
         NSString *orientation = CopyAttributeString(element, CFSTR("AXOrientation"));
@@ -273,11 +267,11 @@ static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPo
         }
     }
 
-    if (StringEqualsAny(role, @[@"AXMenuItem", @"AXButton", @"AXLink", @"AXTab", @"AXRadioButton", @"AXCheckBox", @"AXPopUpButton"])) {
+    // Pointer (hand) only for actual links; buttons remain default arrow on macOS
+    if (StringEqualsAny(role, @[@"AXLink"])) {
         return @"pointer";
     }
-
-    if (StringEqualsAny(subrole, @[@"AXLink", @"AXToolbarButton", @"AXFileDrop", @"AXDropTarget"])) {
+    if (StringEqualsAny(subrole, @[@"AXLink"])) {
         return @"pointer";
     }
 
@@ -295,11 +289,7 @@ static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPo
         }
     }
 
-    if (ElementHasAction(element, kAXPressAction) ||
-        ElementHasAction(element, kAXShowMenuAction) ||
-        ElementHasAction(element, CFSTR("AXConfirm"))) {
-        return @"pointer";
-    }
+    // Actions alone do not imply pointer hand on macOS; ignore
 
     CFTypeRef urlValue = NULL;
     if (AXUIElementCopyAttributeValue(element, kAXURLAttribute, &urlValue) == kAXErrorSuccess && urlValue) {
@@ -310,23 +300,37 @@ static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPo
         CFRelease(urlValue);
     }
 
-    BOOL isDraggable = NO;
-    if (CopyAttributeBoolean(element, CFSTR("AXDraggable"), &isDraggable) && isDraggable) {
-        return @"grab";
-    }
+    // Grab/open-hand often comes from system cursor; avoid forcing via AX
 
-    BOOL isMovable = NO;
-    if (CopyAttributeBoolean(element, CFSTR("AXMovable"), &isMovable) && isMovable) {
-        return @"grab";
-    }
+    // Zoom is rare; prefer system cursor unless explicitly needed
+    
+    return nil;
+}
 
-    if (subrole && [subrole isEqualToString:@"AXZoomIn"]) {
-        return @"zoom-in";
+static AXUIElementRef CopyParent(AXUIElementRef element) {
+    if (!element) return NULL;
+    AXUIElementRef parent = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXParentAttribute, (CFTypeRef *)&parent) == kAXErrorSuccess && parent) {
+        return parent; // retained
     }
-    if (subrole && [subrole isEqualToString:@"AXZoomOut"]) {
-        return @"zoom-out";
-    }
+    if (parent) CFRelease(parent);
+    return NULL;
+}
 
+static NSString* CursorTypeFromElementOrAncestors(AXUIElementRef element, CGPoint cursorPos, int maxDepth) {
+    AXUIElementRef current = element;
+    int depth = 0;
+    while (current && depth < maxDepth) {
+        NSString *t = CursorTypeFromAccessibilityElement(current, cursorPos);
+        if (t && [t length] > 0) {
+            return t;
+        }
+        AXUIElementRef parent = CopyParent(current);
+        if (current != element) CFRelease(current);
+        current = parent;
+        depth++;
+    }
+    if (current && current != element) CFRelease(current);
     return nil;
 }
 
@@ -348,7 +352,7 @@ static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
         AXUIElementRef elementAtPosition = NULL;
         AXError error = AXUIElementCopyElementAtPosition(systemWide, cursorPos.x, cursorPos.y, &elementAtPosition);
         if (error == kAXErrorSuccess && elementAtPosition) {
-            cursorType = CursorTypeFromAccessibilityElement(elementAtPosition, cursorPos);
+            cursorType = CursorTypeFromElementOrAncestors(elementAtPosition, cursorPos, 6);
             CFRelease(elementAtPosition);
         }
 
@@ -359,7 +363,7 @@ static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
                 AXError hitError = AXUIElementCopyParameterizedAttributeValue(systemWide, kAXHitTestParameterizedAttribute, pointValue, (CFTypeRef *)&hitElement);
                 CFRelease(pointValue);
                 if (hitError == kAXErrorSuccess && hitElement) {
-                    cursorType = CursorTypeFromAccessibilityElement(hitElement, cursorPos);
+                    cursorType = CursorTypeFromElementOrAncestors(hitElement, cursorPos, 6);
                     CFRelease(hitElement);
                 }
             }
@@ -658,6 +662,10 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
+        // Debug fields: capture raw AX and system cursor types
+        NSString *axTypeDbg = detectCursorTypeUsingAccessibility(location);
+        NSString *sysTypeDbg = detectSystemCursorType();
+        // (already captured above)
         NSString *eventType = @"move";
         
         // Event tipini belirle
@@ -690,7 +698,9 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             @"timestamp": @(timestamp),
             @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
-            @"type": eventType
+            @"type": eventType,
+            @"axCursorType": axTypeDbg ? axTypeDbg : @"",
+            @"systemCursorType": sysTypeDbg ? sysTypeDbg : @""
         };
         
         // Direkt dosyaya yaz
@@ -723,6 +733,9 @@ void cursorTimerCallback() {
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
+        // Debug fields: capture raw AX and system cursor types
+        NSString *axTypeDbg = detectCursorTypeUsingAccessibility(location);
+        NSString *sysTypeDbg = detectSystemCursorType();
         
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
@@ -731,7 +744,9 @@ void cursorTimerCallback() {
             @"timestamp": @(timestamp),
             @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
-            @"type": @"move"
+            @"type": @"move",
+            @"axCursorType": axTypeDbg ? axTypeDbg : @"",
+            @"systemCursorType": sysTypeDbg ? sysTypeDbg : @""
         };
         
         // Direkt dosyaya yaz
