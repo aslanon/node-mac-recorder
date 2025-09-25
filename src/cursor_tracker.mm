@@ -53,7 +53,84 @@ static NSString* CopyAndReleaseCFString(CFStringRef value) {
     return result;
 }
 
-static BOOL pointInsideElementFrame(AXUIElementRef element, CGPoint point) {
+static inline BOOL StringEqualsAny(NSString *value, NSArray<NSString *> *candidates) {
+    if (!value) {
+        return NO;
+    }
+    for (NSString *candidate in candidates) {
+        if ([value isEqualToString:candidate]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static NSString* CopyAttributeString(AXUIElementRef element, CFStringRef attribute) {
+    if (!element || !attribute) {
+        return nil;
+    }
+
+    CFStringRef value = NULL;
+    AXError error = AXUIElementCopyAttributeValue(element, attribute, (CFTypeRef *)&value);
+    if (error == kAXErrorSuccess && value) {
+        return CopyAndReleaseCFString(value);
+    }
+
+    if (value) {
+        CFRelease(value);
+    }
+    return nil;
+}
+
+static BOOL CopyAttributeBoolean(AXUIElementRef element, CFStringRef attribute, BOOL *outValue) {
+    if (!element || !attribute || !outValue) {
+        return NO;
+    }
+
+    CFTypeRef rawValue = NULL;
+    AXError error = AXUIElementCopyAttributeValue(element, attribute, &rawValue);
+    if (error != kAXErrorSuccess || !rawValue) {
+        if (rawValue) {
+            CFRelease(rawValue);
+        }
+        return NO;
+    }
+
+    BOOL result = NO;
+    if (CFGetTypeID(rawValue) == CFBooleanGetTypeID()) {
+        result = CFBooleanGetValue((CFBooleanRef)rawValue);
+    }
+
+    CFRelease(rawValue);
+    *outValue = result;
+    return YES;
+}
+
+static BOOL ElementHasAction(AXUIElementRef element, CFStringRef action) {
+    if (!element || !action) {
+        return NO;
+    }
+
+    CFArrayRef actions = NULL;
+    AXError error = AXUIElementCopyActionNames(element, &actions);
+    if (error != kAXErrorSuccess || !actions) {
+        return NO;
+    }
+
+    BOOL hasAction = NO;
+    CFIndex count = CFArrayGetCount(actions);
+    for (CFIndex i = 0; i < count; i++) {
+        CFStringRef candidate = (CFStringRef)CFArrayGetValueAtIndex(actions, i);
+        if (CFStringCompare(candidate, action, 0) == kCFCompareEqualTo) {
+            hasAction = YES;
+            break;
+        }
+    }
+    CFRelease(actions);
+    return hasAction;
+}
+
+static BOOL PointInsideElementFrame(AXUIElementRef element, CGPoint point) {
     if (!element) {
         return NO;
     }
@@ -70,170 +147,187 @@ static BOOL pointInsideElementFrame(AXUIElementRef element, CGPoint point) {
         return NO;
     }
 
-    CGPoint elementOrigin = CGPointZero;
-    CGSize elementSize = CGSizeZero;
-    AXValueGetValue(positionValue, kAXValueTypeCGPoint, &elementOrigin);
-    AXValueGetValue(sizeValue, kAXValueTypeCGSize, &elementSize);
+    CGPoint origin = CGPointZero;
+    CGSize size = CGSizeZero;
+    AXValueGetValue(positionValue, kAXValueTypeCGPoint, &origin);
+    AXValueGetValue(sizeValue, kAXValueTypeCGSize, &size);
 
     CFRelease(positionValue);
     CFRelease(sizeValue);
 
-    CGRect frame = CGRectMake(elementOrigin.x, elementOrigin.y, elementSize.width, elementSize.height);
+    CGRect frame = CGRectMake(origin.x, origin.y, size.width, size.height);
     return CGRectContainsPoint(frame, point);
 }
 
-static BOOL elementHasAction(AXUIElementRef element, CFStringRef actionName) {
-    if (!element || !actionName) {
-        return NO;
+static NSString* CursorTypeForWindowBorder(AXUIElementRef element, CGPoint cursorPos) {
+    AXValueRef positionValue = NULL;
+    AXValueRef sizeValue = NULL;
+
+    AXError positionError = AXUIElementCopyAttributeValue(element, kAXPositionAttribute, (CFTypeRef *)&positionValue);
+    AXError sizeError = AXUIElementCopyAttributeValue(element, kAXSizeAttribute, (CFTypeRef *)&sizeValue);
+
+    if (positionError != kAXErrorSuccess || sizeError != kAXErrorSuccess || !positionValue || !sizeValue) {
+        if (positionValue) CFRelease(positionValue);
+        if (sizeValue) CFRelease(sizeValue);
+        return nil;
     }
 
-    CFArrayRef actions = NULL;
-    AXError error = AXUIElementCopyActionNames(element, &actions);
-    if (error != kAXErrorSuccess || !actions) {
-        return NO;
+    CGPoint windowOrigin = CGPointZero;
+    CGSize windowSize = CGSizeZero;
+    AXValueGetValue(positionValue, kAXValueTypeCGPoint, &windowOrigin);
+    AXValueGetValue(sizeValue, kAXValueTypeCGSize, &windowSize);
+
+    CFRelease(positionValue);
+    CFRelease(sizeValue);
+
+    CGFloat edge = 4.0;
+    CGFloat x = cursorPos.x - windowOrigin.x;
+    CGFloat y = cursorPos.y - windowOrigin.y;
+    CGFloat w = windowSize.width;
+    CGFloat h = windowSize.height;
+
+    if (x < 0 || y < 0 || x > w || y > h) {
+        return nil;
     }
 
-    BOOL hasAction = NO;
-    CFIndex count = CFArrayGetCount(actions);
-    for (CFIndex i = 0; i < count; i++) {
-        CFStringRef action = (CFStringRef)CFArrayGetValueAtIndex(actions, i);
-        if (CFStringCompare(action, actionName, 0) == kCFCompareEqualTo) {
-            hasAction = YES;
-            break;
-        }
+    BOOL nearLeft = (x >= 0 && x <= edge);
+    BOOL nearRight = (x >= w - edge && x <= w);
+    BOOL nearTop = (y >= 0 && y <= edge);
+    BOOL nearBottom = (y >= h - edge && y <= h);
+
+    if ((nearLeft && nearTop) || (nearRight && nearBottom)) {
+        return @"nwse-resize";
+    }
+    if ((nearRight && nearTop) || (nearLeft && nearBottom)) {
+        return @"nesw-resize";
+    }
+    if (nearLeft || nearRight) {
+        return @"col-resize";
+    }
+    if (nearTop || nearBottom) {
+        return @"ns-resize";
     }
 
-    CFRelease(actions);
-    return hasAction;
+    return nil;
 }
 
-static BOOL elementIsClickable(AXUIElementRef element) {
+static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPoint cursorPos) {
     if (!element) {
-        return NO;
+        return nil;
     }
 
-    CFStringRef roleRef = NULL;
-    if (AXUIElementCopyAttributeValue(element, kAXRoleAttribute, (CFTypeRef *)&roleRef) == kAXErrorSuccess && roleRef) {
-        NSString *role = CopyAndReleaseCFString(roleRef);
-        if ([role isEqualToString:@"AXButton"] ||
-            [role isEqualToString:@"AXLink"] ||
-            [role isEqualToString:@"AXMenuItem"] ||
-            [role isEqualToString:@"AXTab"] ||
-            [role isEqualToString:@"AXRadioButton"] ||
-            [role isEqualToString:@"AXCheckBox"] ||
-            [role isEqualToString:@"AXPopUpButton"]) {
-            return YES;
+    NSString *role = CopyAttributeString(element, kAXRoleAttribute);
+    NSString *subrole = CopyAttributeString(element, kAXSubroleAttribute);
+    NSString *roleDescription = CopyAttributeString(element, kAXRoleDescriptionAttribute);
+
+    if (StringEqualsAny(role, @[@"AXTextField", @"AXTextArea", @"AXSearchField"])) {
+        return @"text";
+    }
+
+    if (StringEqualsAny(subrole, @[@"AXSecureTextField", @"AXTextField"])) {
+        return @"text";
+    }
+
+    BOOL isEditable = NO;
+    if (CopyAttributeBoolean(element, CFSTR("AXEditable"), &isEditable) && isEditable) {
+        return @"text";
+    }
+
+    BOOL supportsSelection = NO;
+    if (CopyAttributeBoolean(element, CFSTR("AXSupportsTextSelection"), &supportsSelection) && supportsSelection) {
+        return @"text";
+    }
+
+    CFTypeRef valueAttribute = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueAttribute) == kAXErrorSuccess && valueAttribute) {
+        CFTypeID typeId = CFGetTypeID(valueAttribute);
+        if (typeId == CFAttributedStringGetTypeID() || typeId == CFStringGetTypeID()) {
+            CFRelease(valueAttribute);
+            return @"text";
+        }
+        CFRelease(valueAttribute);
+    }
+
+    if (StringEqualsAny(role, @[@"AXProgressIndicator", @"AXBusyIndicator"])) {
+        return @"progress";
+    }
+
+    if (StringEqualsAny(role, @[@"AXHelpTag", @"AXTooltip"])) {
+        return @"help";
+    }
+
+    if ([role isEqualToString:@"AXSplitter"]) {
+        NSString *orientation = CopyAttributeString(element, CFSTR("AXOrientation"));
+        if ([orientation isEqualToString:@"AXHorizontalOrientation"]) {
+            return @"ns-resize";
+        }
+        if ([orientation isEqualToString:@"AXVerticalOrientation"]) {
+            return @"col-resize";
         }
     }
 
-    CFStringRef subroleRef = NULL;
-    if (AXUIElementCopyAttributeValue(element, kAXSubroleAttribute, (CFTypeRef *)&subroleRef) == kAXErrorSuccess && subroleRef) {
-        NSString *subrole = CopyAndReleaseCFString(subroleRef);
-        if ([subrole isEqualToString:@"AXLink"] ||
-            [subrole isEqualToString:@"AXFileDrop"] ||
-            [subrole isEqualToString:@"AXDropTarget"] ||
-            [subrole isEqualToString:@"AXToolbarButton"]) {
-            return YES;
+    if ([role isEqualToString:@"AXWindow"]) {
+        NSString *windowCursor = CursorTypeForWindowBorder(element, cursorPos);
+        if (windowCursor) {
+            return windowCursor;
         }
     }
 
-    if (elementHasAction(element, kAXPressAction) ||
-        elementHasAction(element, kAXShowMenuAction) ||
-        elementHasAction(element, CFSTR("AXConfirm"))) {
-        return YES;
+    if (StringEqualsAny(role, @[@"AXMenuItem", @"AXButton", @"AXLink", @"AXTab", @"AXRadioButton", @"AXCheckBox", @"AXPopUpButton"])) {
+        return @"pointer";
+    }
+
+    if (StringEqualsAny(subrole, @[@"AXLink", @"AXToolbarButton", @"AXFileDrop", @"AXDropTarget"])) {
+        return @"pointer";
+    }
+
+    if (roleDescription) {
+        NSString *lower = [roleDescription lowercaseString];
+        if ([lower containsString:@"button"] ||
+            [lower containsString:@"link"] ||
+            [lower containsString:@"tab"]) {
+            return @"pointer";
+        }
+        if ([lower containsString:@"text"] ||
+            [lower containsString:@"editor"] ||
+            [lower containsString:@"document"]) {
+            return @"text";
+        }
+    }
+
+    if (ElementHasAction(element, kAXPressAction) ||
+        ElementHasAction(element, kAXShowMenuAction) ||
+        ElementHasAction(element, CFSTR("AXConfirm"))) {
+        return @"pointer";
     }
 
     CFTypeRef urlValue = NULL;
     if (AXUIElementCopyAttributeValue(element, kAXURLAttribute, &urlValue) == kAXErrorSuccess && urlValue) {
         CFRelease(urlValue);
-        return YES;
+        return @"pointer";
     }
     if (urlValue) {
         CFRelease(urlValue);
-        urlValue = NULL;
     }
 
-    CFBooleanRef isEnabled = NULL;
-    if (AXUIElementCopyAttributeValue(element, kAXEnabledAttribute, (CFTypeRef *)&isEnabled) == kAXErrorSuccess &&
-        isEnabled && CFBooleanGetValue(isEnabled)) {
-        CFRelease(isEnabled);
-        isEnabled = NULL;
-        if (elementHasAction(element, CFSTR("AXShowMenu")) || elementHasAction(element, CFSTR("AXDecrement")) || elementHasAction(element, CFSTR("AXIncrement"))) {
-            return YES;
-        }
-    }
-    if (isEnabled) {
-        CFRelease(isEnabled);
-        isEnabled = NULL;
+    BOOL isDraggable = NO;
+    if (CopyAttributeBoolean(element, CFSTR("AXDraggable"), &isDraggable) && isDraggable) {
+        return @"grab";
     }
 
-    return NO;
-}
-
-static BOOL elementSupportsText(AXUIElementRef element) {
-    if (!element) {
-        return NO;
+    BOOL isMovable = NO;
+    if (CopyAttributeBoolean(element, CFSTR("AXMovable"), &isMovable) && isMovable) {
+        return @"grab";
     }
 
-    BOOL supportsText = NO;
-
-    CFStringRef roleRef = NULL;
-    if (AXUIElementCopyAttributeValue(element, kAXRoleAttribute, (CFTypeRef *)&roleRef) == kAXErrorSuccess && roleRef) {
-        NSString *role = CopyAndReleaseCFString(roleRef);
-        if ([role isEqualToString:@"AXTextField"] ||
-            [role isEqualToString:@"AXTextArea"] ||
-            [role isEqualToString:@"AXSearchField"] ||
-            [role isEqualToString:@"AXStaticText"] ||
-            [role isEqualToString:@"AXDocument"] ||
-            [role isEqualToString:@"AXWebArea"]) {
-            supportsText = YES;
-        }
+    if (subrole && [subrole isEqualToString:@"AXZoomIn"]) {
+        return @"zoom-in";
+    }
+    if (subrole && [subrole isEqualToString:@"AXZoomOut"]) {
+        return @"zoom-out";
     }
 
-    CFStringRef subroleRef = NULL;
-    if (!supportsText && AXUIElementCopyAttributeValue(element, kAXSubroleAttribute, (CFTypeRef *)&subroleRef) == kAXErrorSuccess && subroleRef) {
-        NSString *subrole = CopyAndReleaseCFString(subroleRef);
-        if ([subrole isEqualToString:@"AXSecureTextField"] ||
-            [subrole isEqualToString:@"AXTextAttachment"] ||
-            [subrole isEqualToString:@"AXTextField"]) {
-            supportsText = YES;
-        }
-    }
-
-    CFStringRef roleDescriptionRef = NULL;
-    if (!supportsText && AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute, (CFTypeRef *)&roleDescriptionRef) == kAXErrorSuccess && roleDescriptionRef) {
-        NSString *roleDescription = CopyAndReleaseCFString(roleDescriptionRef);
-        NSString *lower = [roleDescription lowercaseString];
-        if ([lower containsString:@"text"] ||
-            [lower containsString:@"editor"] ||
-            [lower containsString:@"code"] ||
-            [lower containsString:@"document"]) {
-            supportsText = YES;
-        }
-    }
-
-    CFBooleanRef editable = NULL;
-    if (!supportsText && AXUIElementCopyAttributeValue(element, CFSTR("AXEditable"), (CFTypeRef *)&editable) == kAXErrorSuccess && editable) {
-        supportsText = CFBooleanGetValue(editable);
-        CFRelease(editable);
-    }
-
-    CFBooleanRef supportsSelection = NULL;
-    if (!supportsText && AXUIElementCopyAttributeValue(element, CFSTR("AXSupportsTextSelection"), (CFTypeRef *)&supportsSelection) == kAXErrorSuccess && supportsSelection) {
-        supportsText = CFBooleanGetValue(supportsSelection);
-        CFRelease(supportsSelection);
-    }
-
-    CFTypeRef valueAttribute = NULL;
-    if (!supportsText && AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueAttribute) == kAXErrorSuccess && valueAttribute) {
-        CFTypeID typeId = CFGetTypeID(valueAttribute);
-        if (typeId == CFAttributedStringGetTypeID() || typeId == CFStringGetTypeID()) {
-            supportsText = YES;
-        }
-        CFRelease(valueAttribute);
-    }
-
-    return supportsText;
+    return nil;
 }
 
 // Mouse button state tracking
@@ -244,333 +338,45 @@ static NSString *g_lastEventType = @"move";
 // Accessibility tabanlı cursor tip tespiti
 static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
     @autoreleasepool {
-        @try {
-            // ACCESSIBILITY API BASED CURSOR DETECTION
-            // Determine cursor type based on the UI element under the cursor
-
-            AXUIElementRef systemWide = AXUIElementCreateSystemWide();
-            AXUIElementRef elementAtPosition = NULL;
-            AXError error = AXUIElementCopyElementAtPosition(systemWide, cursorPos.x, cursorPos.y, &elementAtPosition);
-
-            NSString *cursorType = @"default"; // Default fallback
-
-            if (error == kAXErrorSuccess && elementAtPosition) {
-                NSString *elementRole = nil;
-                CFStringRef role = NULL;
-                error = AXUIElementCopyAttributeValue(elementAtPosition, kAXRoleAttribute, (CFTypeRef*)&role);
-                if (error == kAXErrorSuccess && role) {
-                    elementRole = CopyAndReleaseCFString(role);
-                }
-
-                if (elementRole) {
-                    NSLog(@"🎯 ELEMENT ROLE: %@", elementRole);
-                }
-
-                // TEXT CURSORS
-                if ([elementRole isEqualToString:@"AXTextField"] ||
-                    [elementRole isEqualToString:@"AXTextArea"] ||
-                    [elementRole isEqualToString:@"AXStaticText"] ||
-                    [elementRole isEqualToString:@"AXSearchField"]) {
-                    cursorType = @"text";
-                }
-                // POINTER CURSORS (clickable elements)
-                else if ([elementRole isEqualToString:@"AXLink"] ||
-                         [elementRole isEqualToString:@"AXButton"] ||
-                         [elementRole isEqualToString:@"AXMenuItem"] ||
-                         [elementRole isEqualToString:@"AXRadioButton"] ||
-                         [elementRole isEqualToString:@"AXCheckBox"] ||
-                         [elementRole isEqualToString:@"AXPopUpButton"] ||
-                         [elementRole isEqualToString:@"AXTab"]) {
-                    cursorType = @"pointer";
-                }
-                // GRAB CURSORS (draggable elements)
-                else if ([elementRole isEqualToString:@"AXImage"] ||
-                         [elementRole isEqualToString:@"AXGroup"]) {
-                    // Check if element is draggable
-                    CFBooleanRef draggable = NULL;
-                    error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXMovable"), (CFTypeRef*)&draggable);
-                    if (error == kAXErrorSuccess && draggable && CFBooleanGetValue(draggable)) {
-                        cursorType = @"grab";
-                    } else {
-                        cursorType = @"default";
-                    }
-                }
-                // PROGRESS CURSORS (loading/busy elements)
-                else if ([elementRole isEqualToString:@"AXProgressIndicator"] ||
-                         [elementRole isEqualToString:@"AXBusyIndicator"]) {
-                    cursorType = @"progress";
-                }
-                // HELP CURSORS (help buttons/tooltips)
-                else if ([elementRole isEqualToString:@"AXHelpTag"] ||
-                         [elementRole isEqualToString:@"AXTooltip"]) {
-                    cursorType = @"help";
-                }
-                // RESIZE CURSORS - sadece AXSplitter için
-                else if ([elementRole isEqualToString:@"AXSplitter"]) {
-                    // Get splitter orientation to determine resize direction
-                    CFStringRef orientation = NULL;
-                    error = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXOrientation"), (CFTypeRef*)&orientation);
-                    if (error == kAXErrorSuccess && orientation) {
-                        NSString *orientationStr = CopyAndReleaseCFString(orientation);
-                        if ([orientationStr isEqualToString:@"AXHorizontalOrientation"]) {
-                            cursorType = @"ns-resize"; // Yatay splitter -> dikey hareket (north-south)
-                        } else if ([orientationStr isEqualToString:@"AXVerticalOrientation"]) {
-                            cursorType = @"col-resize"; // Dikey splitter -> yatay hareket (east-west)
-                        } else {
-                            cursorType = @"default"; // Bilinmeyen orientation
-                        }
-                    } else {
-                        cursorType = @"default"; // Orientation alınamazsa default
-                    }
-                }
-                // SCROLL CURSORS - hep default olsun, all-scroll görünmesin
-                else if ([elementRole isEqualToString:@"AXScrollBar"]) {
-                    cursorType = @"default"; // ScrollBar'lar için de default
-                }
-                // AXScrollArea - hep default
-                else if ([elementRole isEqualToString:@"AXScrollArea"]) {
-                    cursorType = @"default"; // ScrollArea her zaman default
-                }
-                // CROSSHAIR CURSORS (drawing/selection tools)
-                else if ([elementRole isEqualToString:@"AXCanvas"] ||
-                         [elementRole isEqualToString:@"AXDrawingArea"]) {
-                    cursorType = @"crosshair";
-                }
-                // ZOOM CURSORS (zoom controls)
-                else if ([elementRole isEqualToString:@"AXZoomButton"]) {
-                    cursorType = @"zoom-in";
-                }
-                // NOT-ALLOWED CURSORS (disabled elements)
-                else if ([elementRole isEqualToString:@"AXStaticText"] ||
-                         [elementRole isEqualToString:@"AXGroup"]) {
-                    // Check if element is disabled/readonly
-                    CFBooleanRef enabled = NULL;
-                    error = AXUIElementCopyAttributeValue(elementAtPosition, kAXEnabledAttribute, (CFTypeRef*)&enabled);
-                    if (error == kAXErrorSuccess && enabled && !CFBooleanGetValue(enabled)) {
-                        cursorType = @"not-allowed";
-                    }
-                }
-                // WINDOW BORDER RESIZE - sadece pencere kenarlarında
-                else if ([elementRole isEqualToString:@"AXWindow"]) {
-                    // Check window attributes to see if it's resizable
-                    CFBooleanRef resizable = NULL;
-                    AXError resizableError = AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXResizeButton"), (CFTypeRef*)&resizable);
-
-                    // Sadece resize edilebilir pencereler için cursor değişimi
-                    if (resizableError == kAXErrorSuccess || true) { // AXResizeButton bulunamazsa da devam et
-                        CFTypeRef position = NULL;
-                        CFTypeRef size = NULL;
-                        error = AXUIElementCopyAttributeValue(elementAtPosition, kAXPositionAttribute, &position);
-                        AXError sizeError = AXUIElementCopyAttributeValue(elementAtPosition, kAXSizeAttribute, &size);
-
-                        if (error == kAXErrorSuccess && sizeError == kAXErrorSuccess && position && size) {
-                            CGPoint windowPos;
-                            CGSize windowSize;
-                            AXValueGetValue((AXValueRef)position, kAXValueTypeCGPoint, &windowPos);
-                            AXValueGetValue((AXValueRef)size, kAXValueTypeCGSize, &windowSize);
-
-                            CGFloat x = cursorPos.x - windowPos.x;
-                            CGFloat y = cursorPos.y - windowPos.y;
-                            CGFloat w = windowSize.width;
-                            CGFloat h = windowSize.height;
-                            CGFloat edge = 3.0; // Daha küçük edge detection (3px)
-
-                            // Sadece çok kenar köşelerde resize cursor'ı göster
-                            BOOL isOnBorder = NO;
-
-                            // Corner resize detection - çok dar alanda, doğru açılar
-                            if (x <= edge && y <= edge) {
-                                cursorType = @"nwse-resize"; // Sol üst köşe - northwest-southeast
-                                isOnBorder = YES;
-                            }
-                            else if (x >= w-edge && y <= edge) {
-                                cursorType = @"nesw-resize"; // Sağ üst köşe - northeast-southwest
-                                isOnBorder = YES;
-                            }
-                            else if (x <= edge && y >= h-edge) {
-                                cursorType = @"nesw-resize"; // Sol alt köşe - southwest-northeast
-                                isOnBorder = YES;
-                            }
-                            else if (x >= w-edge && y >= h-edge) {
-                                cursorType = @"nwse-resize"; // Sağ alt köşe - southeast-northwest
-                                isOnBorder = YES;
-                            }
-                            // Edge resize detection - sadece çok kenarlarda
-                            else if (x <= edge && y > edge && y < h-edge) {
-                                cursorType = @"col-resize"; // Sol kenar - column resize (yatay)
-                                isOnBorder = YES;
-                            }
-                            else if (x >= w-edge && y > edge && y < h-edge) {
-                                cursorType = @"col-resize"; // Sağ kenar - column resize (yatay)
-                                isOnBorder = YES;
-                            }
-                            else if (y <= edge && x > edge && x < w-edge) {
-                                cursorType = @"ns-resize"; // Üst kenar - north-south resize (dikey)
-                                isOnBorder = YES;
-                            }
-                            else if (y >= h-edge && x > edge && x < w-edge) {
-                                cursorType = @"ns-resize"; // Alt kenar - north-south resize (dikey)
-                                isOnBorder = YES;
-                            }
-
-                            // Eğer border'da değilse default
-                            if (!isOnBorder) {
-                                cursorType = @"default";
-                            }
-
-                            if (position) CFRelease(position);
-                            if (size) CFRelease(size);
-                        } else {
-                            cursorType = @"default";
-                        }
-                    } else {
-                        cursorType = @"default";
-                    }
-                }
-                // HER DURUM İÇİN DEFAULT FALLBACK
-                else {
-                    // Bilinmeyen elementler için her zaman default
-                    cursorType = @"default";
-                }
-
-                // Check subroles for additional context
-                CFStringRef subrole = NULL;
-                error = AXUIElementCopyAttributeValue(elementAtPosition, kAXSubroleAttribute, (CFTypeRef*)&subrole);
-                if (error == kAXErrorSuccess && subrole) {
-                    NSString *elementSubrole = CopyAndReleaseCFString(subrole);
-                    NSLog(@"🎯 ELEMENT SUBROLE: %@", elementSubrole);
-
-                    // Subrole override'ları - sadece çok spesifik durumlar için
-                    if ([elementSubrole isEqualToString:@"AXCloseButton"] ||
-                        [elementSubrole isEqualToString:@"AXMinimizeButton"] ||
-                        [elementSubrole isEqualToString:@"AXZoomButton"] ||
-                        [elementSubrole isEqualToString:@"AXToolbarButton"]) {
-                        cursorType = @"pointer";
-                    }
-                    // Copy/alias subroles - sadece bu durumlar için override
-                    else if ([elementSubrole isEqualToString:@"AXFileDrop"] ||
-                             [elementSubrole isEqualToString:@"AXDropTarget"]) {
-                        cursorType = @"copy";
-                    }
-                    // Alias/shortcut subroles
-                    else if ([elementSubrole isEqualToString:@"AXAlias"] ||
-                             [elementSubrole isEqualToString:@"AXShortcut"]) {
-                        cursorType = @"alias";
-                    }
-                    // Grabbing state (being dragged) - sadece gerçek drag sırasında
-                    else if ([elementSubrole isEqualToString:@"AXDragging"] ||
-                             [elementSubrole isEqualToString:@"AXMoving"]) {
-                        cursorType = @"grabbing";
-                    }
-                    // Zoom controls - sadece spesifik zoom butonları için
-                    else if ([elementSubrole isEqualToString:@"AXZoomIn"]) {
-                        cursorType = @"zoom-in";
-                    }
-                    else if ([elementSubrole isEqualToString:@"AXZoomOut"]) {
-                        cursorType = @"zoom-out";
-                    }
-                    // Subrole'dan bir şey bulamazsa role-based cursor'ı koruyoruz
-                }
-
-                CFStringRef roleDescriptionRef = NULL;
-                AXError descriptionError = AXUIElementCopyAttributeValue(elementAtPosition, kAXRoleDescriptionAttribute, (CFTypeRef*)&roleDescriptionRef);
-                if (descriptionError == kAXErrorSuccess && roleDescriptionRef) {
-                    NSString *roleDescription = CopyAndReleaseCFString(roleDescriptionRef);
-                    if (roleDescription) {
-                        NSString *roleDescriptionLower = [roleDescription lowercaseString];
-                        if ([roleDescriptionLower containsString:@"text"] ||
-                            [roleDescriptionLower containsString:@"editor"] ||
-                            [roleDescriptionLower containsString:@"code"] ||
-                            [roleDescriptionLower containsString:@"document"]) {
-                            cursorType = @"text";
-                        } else if ([roleDescriptionLower containsString:@"button"] ||
-                                   [roleDescriptionLower containsString:@"link"] ||
-                                   [roleDescriptionLower containsString:@"tab"]) {
-                            cursorType = @"pointer";
-                        }
-                    }
-                }
-
-                CFBooleanRef isEditable = NULL;
-                if (AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXEditable"), (CFTypeRef*)&isEditable) == kAXErrorSuccess &&
-                    isEditable && CFBooleanGetValue(isEditable)) {
-                    cursorType = @"text";
-                }
-
-                CFBooleanRef supportsTextSelection = NULL;
-                if (AXUIElementCopyAttributeValue(elementAtPosition, CFSTR("AXSupportsTextSelection"), (CFTypeRef*)&supportsTextSelection) == kAXErrorSuccess &&
-                    supportsTextSelection && CFBooleanGetValue(supportsTextSelection)) {
-                    cursorType = @"text";
-                }
-
-                CFTypeRef valueAttribute = NULL;
-                if (AXUIElementCopyAttributeValue(elementAtPosition, kAXValueAttribute, &valueAttribute) == kAXErrorSuccess && valueAttribute) {
-                    CFTypeID typeId = CFGetTypeID(valueAttribute);
-                    if (typeId == CFAttributedStringGetTypeID() ||
-                        typeId == CFStringGetTypeID()) {
-                        cursorType = @"text";
-                    }
-                    CFRelease(valueAttribute);
-                }
-
-            }
-
-            if (elementAtPosition) {
-                if ([cursorType isEqualToString:@"default"] && elementSupportsText(elementAtPosition)) {
-                    cursorType = @"text";
-                }
-
-                if ([cursorType isEqualToString:@"default"] && elementIsClickable(elementAtPosition)) {
-                    cursorType = @"pointer";
-                }
-
-                if ([cursorType isEqualToString:@"default"]) {
-                    AXValueRef pointValue = AXValueCreate(kAXValueTypeCGPoint, &cursorPos);
-                    if (pointValue) {
-                        AXUIElementRef deepElement = NULL;
-                        AXError hitError = AXUIElementCopyParameterizedAttributeValue(systemWide, kAXHitTestParameterizedAttribute, pointValue, (CFTypeRef *)&deepElement);
-                        CFRelease(pointValue);
-                        if (hitError == kAXErrorSuccess && deepElement) {
-                            if (elementSupportsText(deepElement)) {
-                                cursorType = @"text";
-                            } else if (elementIsClickable(deepElement)) {
-                                cursorType = @"pointer";
-                            }
-                            CFRelease(deepElement);
-                        }
-                    }
-                }
-
-                if ([cursorType isEqualToString:@"default"]) {
-                    AXUIElementRef focusedElement = NULL;
-                    if (AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute, (CFTypeRef *)&focusedElement) == kAXErrorSuccess && focusedElement) {
-                        if (elementSupportsText(focusedElement) && pointInsideElementFrame(focusedElement, cursorPos)) {
-                            cursorType = @"text";
-                        } else if (elementIsClickable(focusedElement) && pointInsideElementFrame(focusedElement, cursorPos)) {
-                            cursorType = @"pointer";
-                        }
-                        CFRelease(focusedElement);
-                    }
-                }
-
-                CFRelease(elementAtPosition);
-            }
-            if (systemWide) {
-                CFRelease(systemWide);
-            }
-
-            // Son güvence - eğer cursorType hala nil veya geçersizse default'a çevir
-            if (!cursorType || [cursorType length] == 0) {
-                cursorType = @"default";
-            }
-
-            NSLog(@"🎯 AX CURSOR TYPE: %@", cursorType);
-            return cursorType;
-            
-        } @catch (NSException *exception) {
-            NSLog(@"Error in detectCursorTypeUsingAccessibility: %@", exception);
-            return @"default";
+        AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+        if (!systemWide) {
+            return nil;
         }
+
+        NSString *cursorType = nil;
+
+        AXUIElementRef elementAtPosition = NULL;
+        AXError error = AXUIElementCopyElementAtPosition(systemWide, cursorPos.x, cursorPos.y, &elementAtPosition);
+        if (error == kAXErrorSuccess && elementAtPosition) {
+            cursorType = CursorTypeFromAccessibilityElement(elementAtPosition, cursorPos);
+            CFRelease(elementAtPosition);
+        }
+
+        if (!cursorType) {
+            AXValueRef pointValue = AXValueCreate(kAXValueTypeCGPoint, &cursorPos);
+            if (pointValue) {
+                AXUIElementRef hitElement = NULL;
+                AXError hitError = AXUIElementCopyParameterizedAttributeValue(systemWide, kAXHitTestParameterizedAttribute, pointValue, (CFTypeRef *)&hitElement);
+                CFRelease(pointValue);
+                if (hitError == kAXErrorSuccess && hitElement) {
+                    cursorType = CursorTypeFromAccessibilityElement(hitElement, cursorPos);
+                    CFRelease(hitElement);
+                }
+            }
+        }
+
+        if (!cursorType) {
+            AXUIElementRef focusedElement = NULL;
+            if (AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute, (CFTypeRef *)&focusedElement) == kAXErrorSuccess && focusedElement) {
+                if (PointInsideElementFrame(focusedElement, cursorPos)) {
+                    cursorType = CursorTypeFromAccessibilityElement(focusedElement, cursorPos);
+                }
+                CFRelease(focusedElement);
+            }
+        }
+
+        CFRelease(systemWide);
+        return cursorType;
     }
 }
 
