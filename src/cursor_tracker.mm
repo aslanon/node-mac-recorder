@@ -392,56 +392,100 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
 
     NSString *normalized = [[value stringByReplacingOccurrencesOfString:@"_" withString:@"-"] lowercaseString];
 
-    if ([normalized containsString:@"arrow"]) {
+    // Arrow cursor patterns
+    if ([normalized containsString:@"arrow"] || [normalized containsString:@"default"]) {
         return @"default";
     }
+
+    // Text cursor patterns
     if ([normalized containsString:@"ibeam"] ||
         [normalized containsString:@"insertion"] ||
-        [normalized containsString:@"text"]) {
+        [normalized containsString:@"text"] ||
+        [normalized containsString:@"edit"]) {
         return @"text";
     }
-    if ([normalized containsString:@"openhand"]) {
+
+    // Hand cursors
+    if ([normalized containsString:@"openhand"] || [normalized containsString:@"open-hand"]) {
         return @"grab";
     }
-    if ([normalized containsString:@"closedhand"]) {
+    if ([normalized containsString:@"closedhand"] || [normalized containsString:@"closed-hand"]) {
         return @"grabbing";
     }
+
+    // Pointer cursor patterns
     if ([normalized containsString:@"pointing"] ||
-        ([normalized containsString:@"hand"] && ![normalized containsString:@"closed"])) {
+        [normalized containsString:@"pointinghand"] ||
+        ([normalized containsString:@"hand"] && ![normalized containsString:@"closed"] && ![normalized containsString:@"open"]) ||
+        [normalized containsString:@"link"] ||
+        [normalized containsString:@"button"]) {
         return @"pointer";
     }
-    if ([normalized containsString:@"crosshair"]) {
+
+    // Crosshair patterns
+    if ([normalized containsString:@"crosshair"] || [normalized containsString:@"cross-hair"]) {
         return @"crosshair";
     }
+
+    // Not allowed patterns
     if ([normalized containsString:@"not-allowed"] ||
         [normalized containsString:@"notallowed"] ||
-        [normalized containsString:@"forbidden"]) {
+        [normalized containsString:@"forbidden"] ||
+        [normalized containsString:@"operation-not-allowed"]) {
         return @"not-allowed";
     }
-    if ([normalized containsString:@"dragcopy"] || [normalized containsString:@"copy"]) {
+
+    // Copy cursor patterns
+    if ([normalized containsString:@"dragcopy"] ||
+        [normalized containsString:@"drag-copy"] ||
+        [normalized containsString:@"copy"]) {
         return @"copy";
     }
-    if ([normalized containsString:@"draglink"] || [normalized containsString:@"alias"]) {
+
+    // Alias cursor patterns
+    if ([normalized containsString:@"draglink"] ||
+        [normalized containsString:@"drag-link"] ||
+        [normalized containsString:@"alias"]) {
         return @"alias";
     }
-    if ([normalized containsString:@"context"] && [normalized containsString:@"menu"]) {
+
+    // Context menu patterns
+    if (([normalized containsString:@"context"] && [normalized containsString:@"menu"]) ||
+        [normalized containsString:@"contextual-menu"]) {
         return @"context-menu";
     }
+
+    // Zoom patterns
     if ([normalized containsString:@"zoom"]) {
         if ([normalized containsString:@"out"]) {
             return @"zoom-out";
         }
         return @"zoom-in";
     }
+
+    // Resize cursor patterns - more comprehensive
     if ([normalized containsString:@"resize"] || [normalized containsString:@"size"]) {
-        BOOL diagonalUp = [normalized containsString:@"diagonalup"] || [normalized containsString:@"nesw"];
-        BOOL diagonalDown = [normalized containsString:@"diagonaldown"] || [normalized containsString:@"nwse"];
+        // Diagonal resize cursors
+        BOOL diagonalUp = [normalized containsString:@"diagonalup"] ||
+                          [normalized containsString:@"diagonal-up"] ||
+                          [normalized containsString:@"nesw"];
+        BOOL diagonalDown = [normalized containsString:@"diagonaldown"] ||
+                            [normalized containsString:@"diagonal-down"] ||
+                            [normalized containsString:@"nwse"];
+
+        // Horizontal and vertical resize
         BOOL horizontal = [normalized containsString:@"leftright"] ||
+                          [normalized containsString:@"left-right"] ||
                           [normalized containsString:@"horizontal"] ||
-                          ([normalized containsString:@"left"] && [normalized containsString:@"right"]);
+                          ([normalized containsString:@"left"] && [normalized containsString:@"right"]) ||
+                          [normalized containsString:@"col"] ||
+                          [normalized containsString:@"column"];
+
         BOOL vertical = [normalized containsString:@"updown"] ||
+                        [normalized containsString:@"up-down"] ||
                         [normalized containsString:@"vertical"] ||
-                        ([normalized containsString:@"up"] && [normalized containsString:@"down"]);
+                        ([normalized containsString:@"up"] && [normalized containsString:@"down"]) ||
+                        [normalized containsString:@"row"];
 
         if (diagonalUp) {
             return @"nesw-resize";
@@ -455,6 +499,22 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
         if (horizontal) {
             return @"col-resize";
         }
+
+        // Generic resize fallback
+        return @"default"; // or could be a generic resize
+    }
+
+    // Additional specific patterns
+    if ([normalized containsString:@"wait"] || [normalized containsString:@"busy"]) {
+        return @"wait";
+    }
+
+    if ([normalized containsString:@"help"] || [normalized containsString:@"question"]) {
+        return @"help";
+    }
+
+    if ([normalized containsString:@"progress"]) {
+        return @"progress";
     }
 
     return nil;
@@ -462,9 +522,10 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
 
 static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
     if (!cursor) {
-        return nil;
+        return @"default";
     }
 
+    // Standard macOS cursors
     if (cursor == [NSCursor arrowCursor]) {
         return @"default";
     }
@@ -499,34 +560,66 @@ static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
     if (cursor == [NSCursor contextualMenuCursor]) {
         return @"context-menu";
     }
-    if ([NSCursor respondsToSelector:@selector(resizeLeftRightCursor)] &&
-        (cursor == [NSCursor resizeLeftRightCursor] ||
-         cursor == [NSCursor resizeLeftCursor] ||
-         cursor == [NSCursor resizeRightCursor])) {
-        return @"col-resize";
+
+    // Resize cursors - improved detection
+    if ([NSCursor respondsToSelector:@selector(resizeLeftRightCursor)]) {
+        if (cursor == [NSCursor resizeLeftRightCursor]) {
+            return @"col-resize";
+        }
     }
-    if ([NSCursor respondsToSelector:@selector(resizeUpDownCursor)] &&
-        (cursor == [NSCursor resizeUpDownCursor] ||
-         cursor == [NSCursor resizeUpCursor] ||
-         cursor == [NSCursor resizeDownCursor])) {
-        return @"ns-resize";
+    if ([NSCursor respondsToSelector:@selector(resizeLeftCursor)]) {
+        if (cursor == [NSCursor resizeLeftCursor]) {
+            return @"col-resize";
+        }
     }
+    if ([NSCursor respondsToSelector:@selector(resizeRightCursor)]) {
+        if (cursor == [NSCursor resizeRightCursor]) {
+            return @"col-resize";
+        }
+    }
+    if ([NSCursor respondsToSelector:@selector(resizeUpDownCursor)]) {
+        if (cursor == [NSCursor resizeUpDownCursor]) {
+            return @"ns-resize";
+        }
+    }
+    if ([NSCursor respondsToSelector:@selector(resizeUpCursor)]) {
+        if (cursor == [NSCursor resizeUpCursor]) {
+            return @"ns-resize";
+        }
+    }
+    if ([NSCursor respondsToSelector:@selector(resizeDownCursor)]) {
+        if (cursor == [NSCursor resizeDownCursor]) {
+            return @"ns-resize";
+        }
+    }
+
     if ([NSCursor respondsToSelector:@selector(disappearingItemCursor)] &&
         cursor == [NSCursor disappearingItemCursor]) {
         return @"default";
     }
 
-    NSString *derived = cursorTypeFromCursorName(NSStringFromClass([cursor class]));
+    // Try to get class name and description for debugging
+    NSString *className = NSStringFromClass([cursor class]);
+    NSString *description = [cursor description];
+
+    MRLog(@"🔍 Unknown cursor class: %@, description: %@", className ?: @"nil", description ?: @"nil");
+
+    // Try name-based detection
+    NSString *derived = cursorTypeFromCursorName(className);
     if (derived) {
+        MRLog(@"🎯 Cursor type from class name: %@", derived);
         return derived;
     }
 
-    derived = cursorTypeFromCursorName([cursor description]);
+    derived = cursorTypeFromCursorName(description);
     if (derived) {
+        MRLog(@"🎯 Cursor type from description: %@", derived);
         return derived;
     }
 
-    return nil;
+    // Default fallback
+    MRLog(@"⚠️ Unknown cursor type, defaulting to 'default'");
+    return @"default";
 }
 
 static NSString* detectSystemCursorType(void) {
@@ -534,21 +627,59 @@ static NSString* detectSystemCursorType(void) {
 
     void (^fetchCursorBlock)(void) = ^{
         NSCursor *currentCursor = nil;
+
+        // Try different methods to get current cursor
         if ([NSCursor respondsToSelector:@selector(currentSystemCursor)]) {
             currentCursor = [NSCursor currentSystemCursor];
+            NSLog(@"🖱️ currentSystemCursor: %@", currentCursor ?: @"nil");
         }
+
         if (!currentCursor) {
             currentCursor = [NSCursor currentCursor];
+            NSLog(@"🖱️ currentCursor: %@", currentCursor ?: @"nil");
         }
 
-        NSString *derivedType = cursorTypeFromNSCursor(currentCursor);
-        if (derivedType) {
-            cursorType = derivedType;
-        } else if (currentCursor) {
+        if (currentCursor) {
+            NSString *className = NSStringFromClass([currentCursor class]);
+            NSString *description = [currentCursor description];
+            NSLog(@"🖱️ Cursor class: %@, description: %@", className ?: @"nil", description ?: @"nil");
+
+            // Try to identify cursor by hotspot and size (more reliable than pointer equality)
+            NSPoint hotspot = [currentCursor hotSpot];
+            NSSize cursorSize = [[currentCursor image] size];
+
+            NSLog(@"🎯 Cursor hotspot: (%.1f, %.1f), size: %.1fx%.1f",
+                  hotspot.x, hotspot.y, cursorSize.width, cursorSize.height);
+
+            // Common cursor patterns by hotspot (adjusted for modern macOS cursor sizes)
+            if ((hotspot.x >= 0.0 && hotspot.x <= 3.0) && (hotspot.y >= 0.0 && hotspot.y <= 3.0)) {
+                // Arrow cursor typically has hotspot at top-left corner
+                cursorType = @"default";
+                NSLog(@"🎯 ARROW CURSOR (by hotspot) -> default");
+            } else if ((hotspot.x >= 12.0 && hotspot.x <= 16.0) && (hotspot.y >= 6.0 && hotspot.y <= 10.0)) {
+                // I-beam cursor typically has hotspot around middle
+                cursorType = @"text";
+                NSLog(@"🎯 IBEAM CURSOR (by hotspot) -> text");
+            } else if ((hotspot.x >= 5.0 && hotspot.x <= 10.0) && (hotspot.y >= 0.0 && hotspot.y <= 4.0)) {
+                // Pointing hand cursor typically has hotspot at finger tip
+                cursorType = @"pointer";
+                NSLog(@"🎯 POINTING HAND CURSOR (by hotspot) -> pointer");
+            } else {
+                // Fallback to more detailed analysis
+                NSString *derivedType = cursorTypeFromNSCursor(currentCursor);
+                if (derivedType && ![derivedType isEqualToString:@"default"]) {
+                    cursorType = derivedType;
+                    NSLog(@"🎯 SYSTEM CURSOR TYPE (derived): %@", cursorType);
+                } else {
+                    // Use accessibility detection if system cursor is generic
+                    cursorType = @"default";
+                    NSLog(@"🎯 SYSTEM CURSOR TYPE -> default (will try AX)");
+                }
+            }
+        } else {
+            NSLog(@"🖱️ No current cursor found");
             cursorType = @"default";
         }
-
-        MRLog(@"🎯 SYSTEM CURSOR TYPE: %@", cursorType ? cursorType : @"(nil)");
     };
 
     if ([NSThread isMainThread]) {
@@ -564,7 +695,7 @@ NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
 
-        // Hybrid: AX (strict) first, then system cursor fallback.
+        // Get cursor position first
         BOOL hasCursorPosition = NO;
         CGPoint cursorPos = CGPointZero;
 
@@ -589,25 +720,35 @@ NSString* getCursorType() {
             }
         }
 
+        // Try multiple detection methods
+        NSString *systemCursorType = detectSystemCursorType();
         NSString *axCursorType = nil;
+
         if (hasCursorPosition) {
             axCursorType = detectCursorTypeUsingAccessibility(cursorPos);
         }
 
-        NSString *systemCursorType = detectSystemCursorType();
+        NSString *finalType = @"default";
 
-        NSString *finalType = nil;
-        if (axCursorType && ![axCursorType isEqualToString:@"default"]) {
-            finalType = axCursorType;
-        } else if (systemCursorType && [systemCursorType length] > 0) {
+        // System cursor has priority since it's more accurate for visual state
+        NSLog(@"🎯 CURSOR DECISION: system='%@', ax='%@'", systemCursorType ?: @"nil", axCursorType ?: @"nil");
+
+        // Use system cursor if available (it's more accurate for visual appearance)
+        if (systemCursorType && [systemCursorType length] > 0) {
             finalType = systemCursorType;
-        } else if (axCursorType && [axCursorType length] > 0) {
+            NSLog(@"🎯 Using SYSTEM cursor: %@", finalType);
+        }
+        // Fallback to AX cursor if system cursor is not available
+        else if (axCursorType && [axCursorType length] > 0) {
             finalType = axCursorType;
-        } else {
-            finalType = @"default";
+            NSLog(@"🎯 Using AX cursor (fallback): %@", finalType);
+        }
+        // Final fallback
+        else {
+            NSLog(@"🎯 Fallback to default cursor");
         }
 
-        MRLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
+        NSLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
         return finalType;
     }
 }
