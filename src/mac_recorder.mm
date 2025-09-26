@@ -591,16 +591,16 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
         }
         Napi::Array result = Napi::Array::New(env, displays.count);
         
-        NSLog(@"Found %lu displays", (unsigned long)displays.count);
-        
+        // NSLog(@"Found %lu displays", (unsigned long)displays.count);
+
         for (NSUInteger i = 0; i < displays.count; i++) {
             NSDictionary *display = displays[i];
-            NSLog(@"Display %lu: ID=%u, Name=%@, Size=%@x%@", 
-                  (unsigned long)i,
-                  [display[@"id"] unsignedIntValue],
-                  display[@"name"],
-                  display[@"width"],
-                  display[@"height"]);
+            // NSLog(@"Display %lu: ID=%u, Name=%@, Size=%@x%@",
+            //       (unsigned long)i,
+            //       [display[@"id"] unsignedIntValue],
+            //       display[@"name"],
+            //       display[@"width"],
+            //       display[@"height"]);
                   
             Napi::Object displayObj = Napi::Object::New(env);
             displayObj.Set("id", Napi::Number::New(env, [display[@"id"] unsignedIntValue]));

@@ -525,7 +525,7 @@ static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
         return @"default";
     }
 
-    // Standard macOS cursors
+    // PRIORITY: Standard macOS cursor pointer equality (most reliable)
     if (cursor == [NSCursor arrowCursor]) {
         return @"default";
     }
@@ -602,23 +602,28 @@ static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
     NSString *className = NSStringFromClass([cursor class]);
     NSString *description = [cursor description];
 
-    MRLog(@"🔍 Unknown cursor class: %@, description: %@", className ?: @"nil", description ?: @"nil");
+    // Debug: Check for pointer cursor patterns
+    if (className && ([className containsString:@"pointing"] || [className containsString:@"Hand"])) {
+        NSLog(@"🔍 POINTER CLASS: %@", className);
+        return @"pointer";
+    }
+    if (description && ([description containsString:@"pointing"] || [description containsString:@"hand"])) {
+        NSLog(@"🔍 POINTER DESC: %@", description);
+        return @"pointer";
+    }
 
     // Try name-based detection
     NSString *derived = cursorTypeFromCursorName(className);
     if (derived) {
-        MRLog(@"🎯 Cursor type from class name: %@", derived);
         return derived;
     }
 
     derived = cursorTypeFromCursorName(description);
     if (derived) {
-        MRLog(@"🎯 Cursor type from description: %@", derived);
         return derived;
     }
 
     // Default fallback
-    MRLog(@"⚠️ Unknown cursor type, defaulting to 'default'");
     return @"default";
 }
 
@@ -631,61 +636,71 @@ static NSString* detectSystemCursorType(void) {
         // Try different methods to get current cursor
         if ([NSCursor respondsToSelector:@selector(currentSystemCursor)]) {
             currentCursor = [NSCursor currentSystemCursor];
-            NSLog(@"🖱️ currentSystemCursor: %@", currentCursor ?: @"nil");
         }
 
         if (!currentCursor) {
             currentCursor = [NSCursor currentCursor];
-            NSLog(@"🖱️ currentCursor: %@", currentCursor ?: @"nil");
         }
 
         if (currentCursor) {
             NSString *className = NSStringFromClass([currentCursor class]);
             NSString *description = [currentCursor description];
-            NSLog(@"🖱️ Cursor class: %@, description: %@", className ?: @"nil", description ?: @"nil");
-
             // Use more direct cursor detection approach
             NSImage *cursorImage = [currentCursor image];
             NSPoint hotspot = [currentCursor hotSpot];
             NSSize imageSize = [cursorImage size];
 
-            NSLog(@"🎯 Cursor analysis: size=%.1fx%.1f, hotspot=(%.1f,%.1f)",
-                  imageSize.width, imageSize.height, hotspot.x, hotspot.y);
+            // ROBUST cursor detection - works with any cursor size
+            CGFloat aspectRatio = imageSize.width / imageSize.height;
+            CGFloat relativeHotspotX = hotspot.x / imageSize.width;
+            CGFloat relativeHotspotY = hotspot.y / imageSize.height;
 
-            // Updated pattern recognition based on observed values
-            if (imageSize.width >= 8.0 && imageSize.width <= 12.0 &&
-                imageSize.height >= 16.0 && imageSize.height <= 20.0 &&
-                hotspot.x >= 3.0 && hotspot.x <= 5.0 && hotspot.y >= 8.0 && hotspot.y <= 10.0) {
-                // I-beam cursor: narrow and tall, hotspot in middle
+            // Debug: Show proportional analysis
+            NSLog(@"🔍 CURSOR: %.1fx%.1f ratio=%.2f hotspot=(%.2f,%.2f)",
+                  imageSize.width, imageSize.height, aspectRatio, relativeHotspotX, relativeHotspotY);
+
+            // UPDATED with real cursor data:
+            // Arrow: 17x23 ratio=0.74 hotspot=(0.24,0.17)
+            // Text: 9x18 ratio=0.50 hotspot=(0.44,0.50)
+            // Pointer: 32x32 ratio=1.00 hotspot=(0.41,0.25)
+
+            // 1. TEXT/I-BEAM CURSOR - narrow ratio, center hotspot
+            if (aspectRatio >= 0.45 && aspectRatio <= 0.60 && // Narrow (0.50 typical)
+                relativeHotspotX >= 0.35 && relativeHotspotX <= 0.55 && // Center X (0.44 typical)
+                relativeHotspotY >= 0.40 && relativeHotspotY <= 0.60) { // Center Y (0.50 typical)
                 cursorType = @"text";
-                NSLog(@"🎯 DETECTED IBEAM CURSOR -> text");
             }
-            else if (imageSize.width <= 20.0 && imageSize.height <= 25.0 &&
-                     hotspot.x <= 5.0 && hotspot.y <= 5.0) {
-                // Arrow cursor: small size, hotspot at top-left
+            // 2. ARROW CURSOR - medium ratio, top-left hotspot
+            else if (aspectRatio >= 0.65 && aspectRatio <= 0.85 && // Medium (0.74 typical)
+                     relativeHotspotX >= 0.15 && relativeHotspotX <= 0.35 && // Left side (0.24 typical)
+                     relativeHotspotY >= 0.10 && relativeHotspotY <= 0.25) { // Top area (0.17 typical)
                 cursorType = @"default";
-                NSLog(@"🎯 DETECTED ARROW CURSOR -> default");
             }
-            else if (imageSize.width >= 15.0 && imageSize.width <= 25.0 &&
-                     imageSize.height >= 15.0 && imageSize.height <= 25.0 &&
-                     hotspot.x >= 5.0 && hotspot.x <= 10.0 && hotspot.y <= 8.0) {
-                // Hand cursor: squarish, hotspot at fingertip
+            // 3. POINTER CURSOR - square ratio, left-center hotspot
+            else if (aspectRatio >= 0.90 && aspectRatio <= 1.10 && // Square (1.00 typical)
+                     relativeHotspotX >= 0.30 && relativeHotspotX <= 0.50 && // Left-center (0.41 typical)
+                     relativeHotspotY >= 0.15 && relativeHotspotY <= 0.35) { // Upper area (0.25 typical)
                 cursorType = @"pointer";
-                NSLog(@"🎯 DETECTED HAND CURSOR -> pointer");
+            }
+            // 4. GRAB CURSOR - square, center hotspot
+            else if (aspectRatio >= 0.90 && aspectRatio <= 1.10 && // Square
+                     relativeHotspotX >= 0.40 && relativeHotspotX <= 0.60 && // Center X
+                     relativeHotspotY >= 0.40 && relativeHotspotY <= 0.60) { // Center Y
+                cursorType = @"grab";
             }
             else {
                 // Try to use a different approach - cursor name introspection
                 NSString *derived = cursorTypeFromNSCursor(currentCursor);
                 if (derived && ![derived isEqualToString:@"default"]) {
                     cursorType = derived;
-                    NSLog(@"🎯 DERIVED FROM ANALYSIS: %@", cursorType);
+                    // NSLog(@"🎯 DERIVED FROM ANALYSIS: %@", cursorType);
                 } else {
                     cursorType = @"default";
-                    NSLog(@"🎯 FALLBACK TO DEFAULT (will check AX)");
+                    // NSLog(@"🎯 FALLBACK TO DEFAULT (will check AX)");
                 }
             }
         } else {
-            NSLog(@"🖱️ No current cursor found");
+            // NSLog(@"🖱️ No current cursor found");
             cursorType = @"default";
         }
     };
@@ -738,35 +753,33 @@ NSString* getCursorType() {
 
         NSString *finalType = @"default";
 
-        // Smart decision logic: AX for special cases, system for normal cases
-        NSLog(@"🎯 CURSOR DECISION: system='%@', ax='%@'", systemCursorType ?: @"nil", axCursorType ?: @"nil");
-
-        // If system cursor detected something specific (not default), use it
-        if (systemCursorType && [systemCursorType length] > 0 && ![systemCursorType isEqualToString:@"default"]) {
-            finalType = systemCursorType;
-            NSLog(@"🎯 Using SYSTEM cursor (specific): %@", finalType);
+        // SYSTEM CURSOR FIRST - more reliable for visual state
+        // Always trust system cursor first, only use AX for very specific cases
+        if (systemCursorType && [systemCursorType length] > 0) {
+            // Only override system cursor with AX if system is "default" AND AX gives us text/resize
+            if ([systemCursorType isEqualToString:@"default"] && axCursorType &&
+                ([axCursorType isEqualToString:@"text"] ||
+                 [axCursorType containsString:@"resize"] ||
+                 [axCursorType isEqualToString:@"crosshair"])) {
+                finalType = axCursorType;
+            } else {
+                finalType = systemCursorType;
+            }
         }
-        // If AX detected something specific and system is default, use AX
-        else if (axCursorType && [axCursorType length] > 0 && ![axCursorType isEqualToString:@"default"] &&
-                 (!systemCursorType || [systemCursorType isEqualToString:@"default"])) {
-            finalType = axCursorType;
-            NSLog(@"🎯 Using AX cursor (specific over default): %@", finalType);
-        }
-        // Otherwise use system cursor (including default)
-        else if (systemCursorType && [systemCursorType length] > 0) {
-            finalType = systemCursorType;
-            NSLog(@"🎯 Using SYSTEM cursor: %@", finalType);
-        }
-        // Final fallback to AX or default
+        // Only if system completely fails, use AX
         else if (axCursorType && [axCursorType length] > 0) {
             finalType = axCursorType;
-            NSLog(@"🎯 Using AX cursor (final fallback): %@", finalType);
         }
         else {
-            NSLog(@"🎯 Ultimate fallback to default");
+            finalType = @"default";
         }
 
-        NSLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
+        // Only log when cursor type changes
+        static NSString *lastLoggedType = nil;
+        if (![finalType isEqualToString:lastLoggedType]) {
+            NSLog(@"🎯 %@", finalType);
+            lastLoggedType = [finalType copy];
+        }
         return finalType;
     }
 }
@@ -1065,79 +1078,57 @@ NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
         uint32_t displayCount;
         CGDirectDisplayID displayIDs[32];
         CGGetActiveDisplayList(32, displayIDs, &displayCount);
-        
+
         // Find which display contains this point
         for (uint32_t i = 0; i < displayCount; i++) {
             CGDirectDisplayID displayID = displayIDs[i];
             CGRect displayBounds = CGDisplayBounds(displayID);
-            
-            NSLog(@"🔍 Display %u: bounds(%.0f,%.0f %.0fx%.0f), cursor(%.0f,%.0f)", 
-                  displayID, displayBounds.origin.x, displayBounds.origin.y, 
-                  displayBounds.size.width, displayBounds.size.height,
-                  globalPoint.x, globalPoint.y);
-            
-            // CRITICAL FIX: Manual bounds check for better coordinate system compatibility
-            BOOL isInBounds = (globalPoint.x >= displayBounds.origin.x && 
+
+            BOOL isInBounds = (globalPoint.x >= displayBounds.origin.x &&
                               globalPoint.x < displayBounds.origin.x + displayBounds.size.width &&
-                              globalPoint.y >= displayBounds.origin.y && 
+                              globalPoint.y >= displayBounds.origin.y &&
                               globalPoint.y < displayBounds.origin.y + displayBounds.size.height);
-            
-            NSLog(@"🔍 Manual bounds check: %s", isInBounds ? "INSIDE" : "OUTSIDE");
-            
+
             // Check if point is within this display
             if (isInBounds) {
-                // CRITICAL FIX: Get REAL physical dimensions using multiple detection methods
-                // Method 1: CGDisplayCreateImage (may be scaled on some systems)
+                // Get physical dimensions
                 CGImageRef testImage = CGDisplayCreateImage(displayID);
                 CGSize imageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
                 CGImageRelease(testImage);
-                
-                // Method 2: Native display mode detection for true physical resolution
+
                 CGSize actualPhysicalSize = imageSize;
                 CFArrayRef displayModes = CGDisplayCopyAllDisplayModes(displayID, NULL);
                 if (displayModes) {
                     CFIndex modeCount = CFArrayGetCount(displayModes);
                     CGSize maxResolution = CGSizeMake(0, 0);
-                    
-                    // Find the highest resolution mode (native resolution)
+
                     for (CFIndex i = 0; i < modeCount; i++) {
                         CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(displayModes, i);
                         CGSize modeSize = CGSizeMake(CGDisplayModeGetWidth(mode), CGDisplayModeGetHeight(mode));
-                        
-                        if (modeSize.width > maxResolution.width || 
+
+                        if (modeSize.width > maxResolution.width ||
                             (modeSize.width == maxResolution.width && modeSize.height > maxResolution.height)) {
                             maxResolution = modeSize;
                         }
                     }
-                    
-                    // Use the max resolution if it's significantly higher than image size
+
                     if (maxResolution.width > imageSize.width * 1.5 || maxResolution.height > imageSize.height * 1.5) {
                         actualPhysicalSize = maxResolution;
-                        NSLog(@"🔍 Using display mode detection: %.0fx%.0f (was %.0fx%.0f)", 
-                              maxResolution.width, maxResolution.height, imageSize.width, imageSize.height);
                     } else {
                         actualPhysicalSize = imageSize;
-                        NSLog(@"🔍 Using image size detection: %.0fx%.0f", imageSize.width, imageSize.height);
                     }
-                    
+
                     CFRelease(displayModes);
                 } else {
                     actualPhysicalSize = imageSize;
                 }
-                
+
                 CGSize logicalSize = displayBounds.size;
                 CGSize reportedPhysicalSize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
-                
-                NSLog(@"🔍 REAL scaling info:");
-                NSLog(@"   Logical: %.0fx%.0f", logicalSize.width, logicalSize.height);
-                NSLog(@"   Reported physical: %.0fx%.0f", reportedPhysicalSize.width, reportedPhysicalSize.height);
-                NSLog(@"   ACTUAL physical: %.0fx%.0f", actualPhysicalSize.width, actualPhysicalSize.height);
-                
+
                 CGFloat scaleX = actualPhysicalSize.width / logicalSize.width;
                 CGFloat scaleY = actualPhysicalSize.height / logicalSize.height;
                 CGFloat scaleFactor = MAX(scaleX, scaleY);
-                
-                NSLog(@"🔍 REAL scale factors: X=%.2f, Y=%.2f, Final=%.2f", scaleX, scaleY, scaleFactor);
                 
                 return @{
                     @"displayID": @(displayID),
@@ -1149,39 +1140,37 @@ NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
             }
         }
         
-        // Fallback to main display with REAL physical dimensions
+        // Fallback to main display
         CGDirectDisplayID mainDisplay = CGMainDisplayID();
         CGRect displayBounds = CGDisplayBounds(mainDisplay);
-        
-        // Get REAL physical dimensions using multiple detection methods
+
         CGImageRef testImage = CGDisplayCreateImage(mainDisplay);
         CGSize imageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
         CGImageRelease(testImage);
-        
-        // Try display mode detection for true native resolution
+
         CGSize actualPhysicalSize = imageSize;
         CFArrayRef displayModes = CGDisplayCopyAllDisplayModes(mainDisplay, NULL);
         if (displayModes) {
             CFIndex modeCount = CFArrayGetCount(displayModes);
             CGSize maxResolution = CGSizeMake(0, 0);
-            
+
             for (CFIndex i = 0; i < modeCount; i++) {
                 CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(displayModes, i);
                 CGSize modeSize = CGSizeMake(CGDisplayModeGetWidth(mode), CGDisplayModeGetHeight(mode));
-                
-                if (modeSize.width > maxResolution.width || 
+
+                if (modeSize.width > maxResolution.width ||
                     (modeSize.width == maxResolution.width && modeSize.height > maxResolution.height)) {
                     maxResolution = modeSize;
                 }
             }
-            
+
             if (maxResolution.width > imageSize.width * 1.5 || maxResolution.height > imageSize.height * 1.5) {
                 actualPhysicalSize = maxResolution;
             }
-            
+
             CFRelease(displayModes);
         }
-        
+
         CGSize logicalSize = displayBounds.size;
         CGFloat scaleFactor = MAX(actualPhysicalSize.width / logicalSize.width, actualPhysicalSize.height / logicalSize.height);
         
@@ -1209,10 +1198,7 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
             CFRelease(event);
         }
         
-        // Get display scaling information
-        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
         CGPoint logicalLocation = rawLocation;
-        // CGEventGetLocation already returns logical coordinates; additional scaling happens in JS layer.
 
         NSString *cursorType = getCursorType();
         
@@ -1250,27 +1236,11 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         result.Set("cursorType", Napi::String::New(env, [cursorType UTF8String]));
         result.Set("eventType", Napi::String::New(env, [eventType UTF8String]));
         
-        // Add scaling info for coordinate transformation
+        // Basic display info
+        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
         if (scalingInfo) {
             CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
-            NSSize logicalSize = [[scalingInfo objectForKey:@"logicalSize"] sizeValue];
-            NSSize physicalSize = [[scalingInfo objectForKey:@"physicalSize"] sizeValue];
-            NSRect displayBounds = [[scalingInfo objectForKey:@"displayBounds"] rectValue];
-            
             result.Set("scaleFactor", Napi::Number::New(env, scaleFactor));
-            result.Set("rawX", Napi::Number::New(env, (int)rawLocation.x));
-            result.Set("rawY", Napi::Number::New(env, (int)rawLocation.y));
-            
-            // Add display dimension info for JS coordinate transformation
-            Napi::Object displayInfo = Napi::Object::New(env);
-            displayInfo.Set("logicalWidth", Napi::Number::New(env, logicalSize.width));
-            displayInfo.Set("logicalHeight", Napi::Number::New(env, logicalSize.height));
-            displayInfo.Set("physicalWidth", Napi::Number::New(env, physicalSize.width));
-            displayInfo.Set("physicalHeight", Napi::Number::New(env, physicalSize.height));
-            displayInfo.Set("displayX", Napi::Number::New(env, displayBounds.origin.x));
-            displayInfo.Set("displayY", Napi::Number::New(env, displayBounds.origin.y));
-            
-            result.Set("displayInfo", displayInfo);
         }
         
         return result;

@@ -217,7 +217,7 @@ class MacRecorder extends EventEmitter {
 							adjustedX = targetWindow.x - display.x;
 							adjustedY = targetWindow.y - display.y;
 							
-							console.log(`🔧 macOS 14/13 coordinate fix: Global (${targetWindow.x},${targetWindow.y}) -> Display-relative (${adjustedX},${adjustedY})`);
+							// console.log(`🔧 macOS 14/13 coordinate fix: Global (${targetWindow.x},${targetWindow.y}) -> Display-relative (${adjustedX},${adjustedY})`);
 							break;
 						}
 					}
@@ -271,9 +271,9 @@ class MacRecorder extends EventEmitter {
 						height: targetWindow.height,
 					};
 
-					console.log(
-						`Window ${targetWindow.appName}: display=${targetDisplayId}, coords=${targetWindow.x},${targetWindow.y} -> ${adjustedX},${adjustedY}`
-					);
+					// console.log(
+					//	`Window ${targetWindow.appName}: display=${targetDisplayId}, coords=${targetWindow.x},${targetWindow.y} -> ${adjustedX},${adjustedY}`
+					// );
 				}
 			} catch (error) {
 				console.warn(
@@ -357,7 +357,7 @@ class MacRecorder extends EventEmitter {
 						recordingOptions
 					);
 				} catch (error) {
-					console.log('Native recording failed, trying alternative method');
+					// console.log('Native recording failed, trying alternative method');
 					success = false;
 				}
 
@@ -466,7 +466,7 @@ class MacRecorder extends EventEmitter {
 				try {
 					success = nativeBinding.stopRecording();
 				} catch (nativeError) {
-					console.log('Native stop failed:', nativeError.message);
+					// console.log('Native stop failed:', nativeError.message);
 					success = true; // Assume success to avoid throwing
 				}
 
