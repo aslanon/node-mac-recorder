@@ -644,36 +644,44 @@ static NSString* detectSystemCursorType(void) {
             NSString *description = [currentCursor description];
             NSLog(@"🖱️ Cursor class: %@, description: %@", className ?: @"nil", description ?: @"nil");
 
-            // Try to identify cursor by hotspot and size (more reliable than pointer equality)
+            // Use more direct cursor detection approach
+            NSImage *cursorImage = [currentCursor image];
             NSPoint hotspot = [currentCursor hotSpot];
-            NSSize cursorSize = [[currentCursor image] size];
+            NSSize imageSize = [cursorImage size];
 
-            NSLog(@"🎯 Cursor hotspot: (%.1f, %.1f), size: %.1fx%.1f",
-                  hotspot.x, hotspot.y, cursorSize.width, cursorSize.height);
+            NSLog(@"🎯 Cursor analysis: size=%.1fx%.1f, hotspot=(%.1f,%.1f)",
+                  imageSize.width, imageSize.height, hotspot.x, hotspot.y);
 
-            // Common cursor patterns by hotspot (adjusted for modern macOS cursor sizes)
-            if ((hotspot.x >= 0.0 && hotspot.x <= 3.0) && (hotspot.y >= 0.0 && hotspot.y <= 3.0)) {
-                // Arrow cursor typically has hotspot at top-left corner
-                cursorType = @"default";
-                NSLog(@"🎯 ARROW CURSOR (by hotspot) -> default");
-            } else if ((hotspot.x >= 12.0 && hotspot.x <= 16.0) && (hotspot.y >= 6.0 && hotspot.y <= 10.0)) {
-                // I-beam cursor typically has hotspot around middle
+            // Updated pattern recognition based on observed values
+            if (imageSize.width >= 8.0 && imageSize.width <= 12.0 &&
+                imageSize.height >= 16.0 && imageSize.height <= 20.0 &&
+                hotspot.x >= 3.0 && hotspot.x <= 5.0 && hotspot.y >= 8.0 && hotspot.y <= 10.0) {
+                // I-beam cursor: narrow and tall, hotspot in middle
                 cursorType = @"text";
-                NSLog(@"🎯 IBEAM CURSOR (by hotspot) -> text");
-            } else if ((hotspot.x >= 5.0 && hotspot.x <= 10.0) && (hotspot.y >= 0.0 && hotspot.y <= 4.0)) {
-                // Pointing hand cursor typically has hotspot at finger tip
+                NSLog(@"🎯 DETECTED IBEAM CURSOR -> text");
+            }
+            else if (imageSize.width <= 20.0 && imageSize.height <= 25.0 &&
+                     hotspot.x <= 5.0 && hotspot.y <= 5.0) {
+                // Arrow cursor: small size, hotspot at top-left
+                cursorType = @"default";
+                NSLog(@"🎯 DETECTED ARROW CURSOR -> default");
+            }
+            else if (imageSize.width >= 15.0 && imageSize.width <= 25.0 &&
+                     imageSize.height >= 15.0 && imageSize.height <= 25.0 &&
+                     hotspot.x >= 5.0 && hotspot.x <= 10.0 && hotspot.y <= 8.0) {
+                // Hand cursor: squarish, hotspot at fingertip
                 cursorType = @"pointer";
-                NSLog(@"🎯 POINTING HAND CURSOR (by hotspot) -> pointer");
-            } else {
-                // Fallback to more detailed analysis
-                NSString *derivedType = cursorTypeFromNSCursor(currentCursor);
-                if (derivedType && ![derivedType isEqualToString:@"default"]) {
-                    cursorType = derivedType;
-                    NSLog(@"🎯 SYSTEM CURSOR TYPE (derived): %@", cursorType);
+                NSLog(@"🎯 DETECTED HAND CURSOR -> pointer");
+            }
+            else {
+                // Try to use a different approach - cursor name introspection
+                NSString *derived = cursorTypeFromNSCursor(currentCursor);
+                if (derived && ![derived isEqualToString:@"default"]) {
+                    cursorType = derived;
+                    NSLog(@"🎯 DERIVED FROM ANALYSIS: %@", cursorType);
                 } else {
-                    // Use accessibility detection if system cursor is generic
                     cursorType = @"default";
-                    NSLog(@"🎯 SYSTEM CURSOR TYPE -> default (will try AX)");
+                    NSLog(@"🎯 FALLBACK TO DEFAULT (will check AX)");
                 }
             }
         } else {
@@ -730,22 +738,32 @@ NSString* getCursorType() {
 
         NSString *finalType = @"default";
 
-        // System cursor has priority since it's more accurate for visual state
+        // Smart decision logic: AX for special cases, system for normal cases
         NSLog(@"🎯 CURSOR DECISION: system='%@', ax='%@'", systemCursorType ?: @"nil", axCursorType ?: @"nil");
 
-        // Use system cursor if available (it's more accurate for visual appearance)
-        if (systemCursorType && [systemCursorType length] > 0) {
+        // If system cursor detected something specific (not default), use it
+        if (systemCursorType && [systemCursorType length] > 0 && ![systemCursorType isEqualToString:@"default"]) {
+            finalType = systemCursorType;
+            NSLog(@"🎯 Using SYSTEM cursor (specific): %@", finalType);
+        }
+        // If AX detected something specific and system is default, use AX
+        else if (axCursorType && [axCursorType length] > 0 && ![axCursorType isEqualToString:@"default"] &&
+                 (!systemCursorType || [systemCursorType isEqualToString:@"default"])) {
+            finalType = axCursorType;
+            NSLog(@"🎯 Using AX cursor (specific over default): %@", finalType);
+        }
+        // Otherwise use system cursor (including default)
+        else if (systemCursorType && [systemCursorType length] > 0) {
             finalType = systemCursorType;
             NSLog(@"🎯 Using SYSTEM cursor: %@", finalType);
         }
-        // Fallback to AX cursor if system cursor is not available
+        // Final fallback to AX or default
         else if (axCursorType && [axCursorType length] > 0) {
             finalType = axCursorType;
-            NSLog(@"🎯 Using AX cursor (fallback): %@", finalType);
+            NSLog(@"🎯 Using AX cursor (final fallback): %@", finalType);
         }
-        // Final fallback
         else {
-            NSLog(@"🎯 Fallback to default cursor");
+            NSLog(@"🎯 Ultimate fallback to default");
         }
 
         NSLog(@"🎯 FINAL CURSOR TYPE: %@", finalType);
