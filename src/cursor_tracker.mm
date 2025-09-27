@@ -751,17 +751,16 @@ NSString* getCursorType() {
 
         NSString *finalType = @"default";
 
-        // SYSTEM CURSOR FIRST - more reliable for visual state
-        // Always trust system cursor first, only use AX for very specific cases
+
+        // SYSTEM CURSOR PRIORITY - trust visual state over accessibility
         if (systemCursorType && [systemCursorType length] > 0) {
-            // Only override system cursor with AX if system is "default" AND AX gives us text/resize
+            // ALWAYS use system cursor when available - it reflects visual state
+            finalType = systemCursorType;
+
+            // Special case: Only use AX for resize cursors that system can't detect
             if ([systemCursorType isEqualToString:@"default"] && axCursorType &&
-                ([axCursorType isEqualToString:@"text"] ||
-                 [axCursorType containsString:@"resize"] ||
-                 [axCursorType isEqualToString:@"crosshair"])) {
+                [axCursorType containsString:@"resize"]) {
                 finalType = axCursorType;
-            } else {
-                finalType = systemCursorType;
             }
         }
         // Only if system completely fails, use AX
