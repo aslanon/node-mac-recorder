@@ -656,6 +656,7 @@ static NSString* detectSystemCursorType(void) {
             CGFloat relativeHotspotY = hotspot.y / imageSize.height;
 
 
+
             // UPDATED with real cursor data:
             // Arrow: 17x23 ratio=0.74 hotspot=(0.24,0.17)
             // Text: 9x18 ratio=0.50 hotspot=(0.44,0.50)
