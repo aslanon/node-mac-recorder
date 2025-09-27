@@ -655,9 +655,6 @@ static NSString* detectSystemCursorType(void) {
             CGFloat relativeHotspotX = hotspot.x / imageSize.width;
             CGFloat relativeHotspotY = hotspot.y / imageSize.height;
 
-            // Debug: Show proportional analysis
-            NSLog(@"🔍 CURSOR: %.1fx%.1f ratio=%.2f hotspot=(%.2f,%.2f)",
-                  imageSize.width, imageSize.height, aspectRatio, relativeHotspotX, relativeHotspotY);
 
             // UPDATED with real cursor data:
             // Arrow: 17x23 ratio=0.74 hotspot=(0.24,0.17)
