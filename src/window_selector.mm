@@ -58,7 +58,10 @@ static NSInteger g_currentActiveScreenIndex = -1;
 
 // Record icon helpers
 static NSImage *CreateRecordIconImage(CGFloat size) {
-    NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(size, size)] autorelease];
+    const CGFloat leadingInset = 8.0;
+    const CGFloat trailingSpacing = 6.0;
+    CGFloat width = leadingInset + size + trailingSpacing;
+    NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, size)] autorelease];
     if (!image) {
         return nil;
     }
@@ -66,21 +69,22 @@ static NSImage *CreateRecordIconImage(CGFloat size) {
     [image lockFocus];
 
     [[NSColor clearColor] setFill];
-    NSRectFill(NSMakeRect(0, 0, size, size));
+    NSRectFill(NSMakeRect(0, 0, width, size));
 
     CGFloat strokeWidth = MAX(2.0, size * 0.12);
-    NSRect outerRect = NSMakeRect(strokeWidth / 2.0,
-                                  strokeWidth / 2.0,
-                                  size - strokeWidth,
-                                  size - strokeWidth);
+    NSRect iconRect = NSMakeRect(leadingInset,
+                                 (size - size) / 2.0,
+                                 size,
+                                 size);
+    NSRect outerRect = NSInsetRect(iconRect, strokeWidth / 2.0, strokeWidth / 2.0);
     NSBezierPath *outerPath = [NSBezierPath bezierPathWithOvalInRect:outerRect];
     [outerPath setLineWidth:strokeWidth];
     [[NSColor whiteColor] setStroke];
     [outerPath stroke];
 
     CGFloat innerDiameter = size * 0.45;
-    NSRect innerRect = NSMakeRect((size - innerDiameter) / 2.0,
-                                  (size - innerDiameter) / 2.0,
+    NSRect innerRect = NSMakeRect(NSMidX(iconRect) - innerDiameter / 2.0,
+                                  NSMidY(iconRect) - innerDiameter / 2.0,
                                   innerDiameter,
                                   innerDiameter);
     NSBezierPath *innerPath = [NSBezierPath bezierPathWithOvalInRect:innerRect];
@@ -114,6 +118,11 @@ static void ApplyStartRecordButtonIcon(NSButton *button) {
     [button setImage:icon];
     [button setImageScaling:NSImageScaleNone];
     [button setImagePosition:NSImageLeft];
+
+    if ([button respondsToSelector:@selector(setContentInsets:)]) {
+        NSEdgeInsets insets = NSEdgeInsetsMake(0, 12.0, 0, 12.0);
+        [button setContentInsets:insets];
+    }
 
     if ([button respondsToSelector:@selector(setContentTintColor:)]) {
         [button setContentTintColor:[NSColor whiteColor]];
