@@ -56,6 +56,70 @@ static id g_screenKeyEventMonitor = nil;
 static NSTimer *g_screenTrackingTimer = nil;
 static NSInteger g_currentActiveScreenIndex = -1;
 
+// Record icon helpers
+static NSImage *CreateRecordIconImage(CGFloat size) {
+    NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(size, size)] autorelease];
+    if (!image) {
+        return nil;
+    }
+
+    [image lockFocus];
+
+    [[NSColor clearColor] setFill];
+    NSRectFill(NSMakeRect(0, 0, size, size));
+
+    CGFloat strokeWidth = MAX(2.0, size * 0.12);
+    NSRect outerRect = NSMakeRect(strokeWidth / 2.0,
+                                  strokeWidth / 2.0,
+                                  size - strokeWidth,
+                                  size - strokeWidth);
+    NSBezierPath *outerPath = [NSBezierPath bezierPathWithOvalInRect:outerRect];
+    [outerPath setLineWidth:strokeWidth];
+    [[NSColor whiteColor] setStroke];
+    [outerPath stroke];
+
+    CGFloat innerDiameter = size * 0.45;
+    NSRect innerRect = NSMakeRect((size - innerDiameter) / 2.0,
+                                  (size - innerDiameter) / 2.0,
+                                  innerDiameter,
+                                  innerDiameter);
+    NSBezierPath *innerPath = [NSBezierPath bezierPathWithOvalInRect:innerRect];
+    [[NSColor whiteColor] setFill];
+    [innerPath fill];
+
+    [image unlockFocus];
+    [image setTemplate:NO];
+
+    return image;
+}
+
+static NSImage *GetStartRecordIcon(void) {
+    static NSImage *recordIcon = nil;
+    if (!recordIcon) {
+        recordIcon = [CreateRecordIconImage(18.0) retain];
+    }
+    return recordIcon;
+}
+
+static void ApplyStartRecordButtonIcon(NSButton *button) {
+    if (!button) {
+        return;
+    }
+
+    NSImage *icon = GetStartRecordIcon();
+    if (!icon) {
+        return;
+    }
+
+    [button setImage:icon];
+    [button setImageScaling:NSImageScaleNone];
+    [button setImagePosition:NSImageLeft];
+
+    if ([button respondsToSelector:@selector(setContentTintColor:)]) {
+        [button setContentTintColor:[NSColor whiteColor]];
+    }
+}
+
 // Forward declarations
 void cleanupWindowSelector();
 void updateOverlay();
@@ -1133,7 +1197,9 @@ void updateOverlay() {
                 [targetOverlay.contentView addSubview:targetSelectButton];
                 NSLog(@"🆕 Added new button to Screen %ld overlay - total subviews now: %lu", targetScreenIndex, [targetOverlay.contentView subviews].count);
             }
-            
+
+            ApplyStartRecordButtonIcon(targetSelectButton);
+
             // Position buttons - Start Record in center of selected window
             if (targetSelectButton) {
                 NSLog(@"🎯 Positioning button on Screen %ld - current frame: (%.0f,%.0f,%.0f,%.0f)", targetScreenIndex,
@@ -1736,9 +1802,11 @@ bool startScreenSelection() {
                                 value:[NSColor whiteColor] 
                                 range:NSMakeRange(0, [titleString length])];
             [selectButton setAttributedTitle:titleString];
-            
+
+            ApplyStartRecordButtonIcon(selectButton);
+
             // Clean button - no shadows or highlights
-            
+
             // Set button target and action (reuse global delegate)
             if (!g_delegate) {
                 g_delegate = [[WindowSelectorDelegate alloc] init];
@@ -2217,7 +2285,9 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
                             value:[NSColor whiteColor] 
                             range:NSMakeRange(0, [titleString length])];
         [g_selectButton setAttributedTitle:titleString];
-        
+
+        ApplyStartRecordButtonIcon(g_selectButton);
+
         // Create delegate for button action and timer
         g_delegate = [[WindowSelectorDelegate alloc] init];
         [g_selectButton setTarget:g_delegate];
@@ -2743,4 +2813,3 @@ extern "C" void showOverlays() {
         }
     });
 }
-
