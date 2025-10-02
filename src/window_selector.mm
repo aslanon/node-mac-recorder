@@ -58,7 +58,7 @@ static NSInteger g_currentActiveScreenIndex = -1;
 
 // Record icon helpers
 static NSImage *CreateRecordIconImage(CGFloat size) {
-    const CGFloat leadingInset = 8.0;
+    const CGFloat leadingInset = 24.0;
     const CGFloat trailingSpacing = 6.0;
     CGFloat width = leadingInset + size + trailingSpacing;
     NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, size)] autorelease];
