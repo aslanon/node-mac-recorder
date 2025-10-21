@@ -2,7 +2,7 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 // NO AVFoundation - Pure ScreenCaptureKit implementation
 
-API_AVAILABLE(macos(15.0))
+API_AVAILABLE(macos(12.3))
 @interface ScreenCaptureKitRecorder : NSObject
 
 + (BOOL)isScreenCaptureKitAvailable;

@@ -6,7 +6,8 @@
         "src/mac_recorder.mm",
         "src/screen_capture_kit.mm",
         "src/avfoundation_recorder.mm",
-        "src/audio_capture.mm",
+        "src/camera_recorder.mm",
+        "src/audio_recorder.mm",
         "src/cursor_tracker.mm",
         "src/window_selector.mm"
       ],

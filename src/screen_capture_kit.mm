@@ -1,13 +1,75 @@
 #import "screen_capture_kit.h"
 #import "logging.h"
+#import <AVFoundation/AVFoundation.h>
+#import <CoreVideo/CoreVideo.h>
+#import <CoreMedia/CoreMedia.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 // Pure ScreenCaptureKit implementation - NO AVFoundation
 static SCStream * API_AVAILABLE(macos(12.3)) g_stream = nil;
-static SCRecordingOutput * API_AVAILABLE(macos(15.0)) g_recordingOutput = nil;
 static id<SCStreamDelegate> API_AVAILABLE(macos(12.3)) g_streamDelegate = nil;
 static BOOL g_isRecording = NO;
 static BOOL g_isCleaningUp = NO;  // Prevent recursive cleanup
 static NSString *g_outputPath = nil;
+
+static dispatch_queue_t g_videoQueue = nil;
+static dispatch_queue_t g_audioQueue = nil;
+static id g_videoStreamOutput = nil;
+static id g_audioStreamOutput = nil;
+
+static AVAssetWriter *g_videoWriter = nil;
+static AVAssetWriterInput *g_videoInput = nil;
+static AVAssetWriterInputPixelBufferAdaptor *g_pixelBufferAdaptor = nil;
+static CMTime g_videoStartTime = kCMTimeInvalid;
+static BOOL g_videoWriterStarted = NO;
+
+static BOOL g_shouldCaptureAudio = NO;
+static NSString *g_audioOutputPath = nil;
+static AVAssetWriter *g_audioWriter = nil;
+static AVAssetWriterInput *g_audioInput = nil;
+static CMTime g_audioStartTime = kCMTimeInvalid;
+static BOOL g_audioWriterStarted = NO;
+
+static NSInteger g_configuredSampleRate = 48000;
+static NSInteger g_configuredChannelCount = 2;
+
+static void CleanupWriters(void);
+
+static void FinishWriter(AVAssetWriter *writer, AVAssetWriterInput *input) {
+    if (!writer) {
+        return;
+    }
+    
+    if (input) {
+        [input markAsFinished];
+    }
+    
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{
+        dispatch_semaphore_signal(semaphore);
+    }];
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
+    dispatch_semaphore_wait(semaphore, timeout);
+}
+
+static void CleanupWriters(void) {
+    if (g_videoWriter) {
+        FinishWriter(g_videoWriter, g_videoInput);
+        g_videoWriter = nil;
+        g_videoInput = nil;
+        g_pixelBufferAdaptor = nil;
+        g_videoWriterStarted = NO;
+        g_videoStartTime = kCMTimeInvalid;
+    }
+    
+    if (g_audioWriter) {
+        FinishWriter(g_audioWriter, g_audioInput);
+        g_audioWriter = nil;
+        g_audioInput = nil;
+        g_audioWriterStarted = NO;
+        g_audioStartTime = kCMTimeInvalid;
+    }
+}
 
 @interface PureScreenCaptureDelegate : NSObject <SCStreamDelegate>
 @end
@@ -39,7 +101,227 @@ static NSString *g_outputPath = nil;
 }
 @end
 
+@interface ScreenCaptureKitRecorder (Private)
++ (BOOL)prepareAudioWriterIfNeededWithSampleBuffer:(CMSampleBufferRef)sampleBuffer;
+@end
+
+@interface ScreenCaptureVideoOutput : NSObject <SCStreamOutput>
+@end
+
+@implementation ScreenCaptureVideoOutput
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)) {
+    if (!g_isRecording || type != SCStreamOutputTypeScreen) {
+        return;
+    }
+    
+    if (!CMSampleBufferDataIsReady(sampleBuffer)) {
+        return;
+    }
+    
+    if (!g_videoWriter || !g_videoInput) {
+        return;
+    }
+    
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    
+    if (!g_videoWriterStarted) {
+        if (![g_videoWriter startWriting]) {
+            NSLog(@"❌ ScreenCaptureKit video writer failed to start: %@", g_videoWriter.error);
+            return;
+        }
+        [g_videoWriter startSessionAtSourceTime:presentationTime];
+        g_videoStartTime = presentationTime;
+        g_videoWriterStarted = YES;
+        MRLog(@"🎞️ Video writer session started @ %.3f", CMTimeGetSeconds(presentationTime));
+    }
+    
+    if (!g_videoInput.readyForMoreMediaData) {
+        return;
+    }
+    
+    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (!pixelBuffer) {
+        return;
+    }
+    
+    if (!g_pixelBufferAdaptor) {
+        NSLog(@"❌ Pixel buffer adaptor is nil – cannot append video frames");
+        return;
+    }
+    
+    BOOL appended = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
+    if (!appended) {
+        NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
+    }
+}
+@end
+
+@interface ScreenCaptureAudioOutput : NSObject <SCStreamOutput>
+@end
+
+@implementation ScreenCaptureAudioOutput
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)) {
+    if (!g_isRecording || !g_shouldCaptureAudio) {
+        return;
+    }
+    
+    if (@available(macOS 13.0, *)) {
+        if (type != SCStreamOutputTypeAudio) {
+            return;
+        }
+    } else {
+        return;
+    }
+    
+    if (!CMSampleBufferDataIsReady(sampleBuffer)) {
+        return;
+    }
+    
+    if (![ScreenCaptureKitRecorder prepareAudioWriterIfNeededWithSampleBuffer:sampleBuffer]) {
+        return;
+    }
+    
+    if (!g_audioWriter || !g_audioInput) {
+        return;
+    }
+    
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    
+    if (!g_audioWriterStarted) {
+        if (![g_audioWriter startWriting]) {
+            NSLog(@"❌ Audio writer failed to start: %@", g_audioWriter.error);
+            return;
+        }
+        [g_audioWriter startSessionAtSourceTime:presentationTime];
+        g_audioStartTime = presentationTime;
+        g_audioWriterStarted = YES;
+        MRLog(@"🔊 Audio writer session started @ %.3f", CMTimeGetSeconds(presentationTime));
+    }
+    
+    if (!g_audioInput.readyForMoreMediaData) {
+        return;
+    }
+    
+    if (![g_audioInput appendSampleBuffer:sampleBuffer]) {
+        NSLog(@"⚠️ Failed appending audio sample buffer: %@", g_audioWriter.error);
+    }
+}
+@end
+
 @implementation ScreenCaptureKitRecorder
+
++ (BOOL)prepareVideoWriterWithWidth:(NSInteger)width height:(NSInteger)height error:(NSError **)error {
+    if (!g_outputPath) {
+        return NO;
+    }
+    
+    NSURL *outputURL = [NSURL fileURLWithPath:g_outputPath];
+    [[NSFileManager defaultManager] removeItemAtURL:outputURL error:nil];
+    
+    g_videoWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:error];
+    if (!g_videoWriter || (error && *error)) {
+        return NO;
+    }
+    
+    NSDictionary *compressionProps = @{
+        AVVideoAverageBitRateKey: @(width * height * 6),
+        AVVideoMaxKeyFrameIntervalKey: @30
+    };
+    
+    NSDictionary *videoSettings = @{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoCompressionPropertiesKey: compressionProps
+    };
+    
+    g_videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
+    g_videoInput.expectsMediaDataInRealTime = YES;
+    
+    g_pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_videoInput sourcePixelBufferAttributes:@{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferCGImageCompatibilityKey: @YES,
+        (NSString *)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
+    }];
+    
+    if (![g_videoWriter canAddInput:g_videoInput]) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-100 userInfo:@{NSLocalizedDescriptionKey: @"Cannot add video input to writer"}];
+        }
+        return NO;
+    }
+    
+    [g_videoWriter addInput:g_videoInput];
+    g_videoWriterStarted = NO;
+    g_videoStartTime = kCMTimeInvalid;
+    
+    return YES;
+}
+
++ (BOOL)prepareAudioWriterIfNeededWithSampleBuffer:(CMSampleBufferRef)sampleBuffer {
+    if (!g_shouldCaptureAudio || g_audioWriter || !g_audioOutputPath) {
+        return g_audioWriter != nil || !g_shouldCaptureAudio;
+    }
+    
+    CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if (!formatDescription) {
+        NSLog(@"⚠️ Missing audio format description");
+        return NO;
+    }
+    
+    const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription);
+    if (!asbd) {
+        NSLog(@"⚠️ Unsupported audio format description");
+        return NO;
+    }
+    
+    g_configuredSampleRate = (NSInteger)asbd->mSampleRate;
+    g_configuredChannelCount = asbd->mChannelsPerFrame;
+    
+    NSURL *audioURL = [NSURL fileURLWithPath:g_audioOutputPath];
+    [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
+    
+    NSError *writerError = nil;
+    AVFileType fileType = AVFileTypeQuickTimeMovie;
+    if (@available(macOS 15.0, *)) {
+        fileType = @"public.webm";
+    }
+    
+    g_audioWriter = [[AVAssetWriter alloc] initWithURL:audioURL fileType:fileType error:&writerError];
+    if (!g_audioWriter || writerError) {
+        NSLog(@"❌ Failed to create audio writer: %@", writerError);
+        return NO;
+    }
+    
+    AudioChannelLayout stereoLayout = {
+        .mChannelLayoutTag = kAudioChannelLayoutTag_Stereo,
+        .mChannelBitmap = 0,
+        .mNumberChannelDescriptions = 0
+    };
+    
+    NSDictionary *audioSettings = @{
+        AVFormatIDKey: @(kAudioFormatMPEG4AAC),
+        AVSampleRateKey: @(g_configuredSampleRate),
+        AVNumberOfChannelsKey: @(MAX(1, g_configuredChannelCount)),
+        AVChannelLayoutKey: [NSData dataWithBytes:&stereoLayout length:sizeof(AudioChannelLayout)],
+        AVEncoderBitRateKey: @(192000)
+    };
+    
+    g_audioInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
+    g_audioInput.expectsMediaDataInRealTime = YES;
+    
+    if (![g_audioWriter canAddInput:g_audioInput]) {
+        NSLog(@"❌ Audio writer cannot add input");
+        return NO;
+    }
+    [g_audioWriter addInput:g_audioInput];
+    g_audioWriterStarted = NO;
+    g_audioStartTime = kCMTimeInvalid;
+    
+    return YES;
+}
 
 + (BOOL)isScreenCaptureKitAvailable {
     if (@available(macOS 15.0, *)) {
@@ -73,6 +355,9 @@ static NSString *g_outputPath = nil;
     NSNumber *captureCursor = config[@"captureCursor"];
     NSNumber *includeMicrophone = config[@"includeMicrophone"];
     NSNumber *includeSystemAudio = config[@"includeSystemAudio"];
+    NSString *microphoneDeviceId = config[@"microphoneDeviceId"];
+    NSString *audioOutputPath = config[@"audioOutputPath"];
+    NSNumber *sessionTimestampNumber = config[@"sessionTimestamp"];
     
     MRLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
     MRLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@ crop=%@", 
@@ -188,6 +473,29 @@ static NSString *g_outputPath = nil;
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
         streamConfig.scalesToFit = NO;
         
+        BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
+        BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
+        g_shouldCaptureAudio = shouldCaptureMic || shouldCaptureSystemAudio;
+        g_audioOutputPath = audioOutputPath;
+        if (g_shouldCaptureAudio && (!g_audioOutputPath || [g_audioOutputPath length] == 0)) {
+            NSLog(@"⚠️ Audio capture requested but no audio output path supplied – audio will be disabled");
+            g_shouldCaptureAudio = NO;
+        }
+        
+        if (@available(macos 13.0, *)) {
+            streamConfig.capturesAudio = g_shouldCaptureAudio;
+            streamConfig.sampleRate = g_configuredSampleRate;
+            streamConfig.channelCount = g_configuredChannelCount;
+            streamConfig.excludesCurrentProcessAudio = !shouldCaptureSystemAudio;
+        }
+        
+        if (@available(macos 15.0, *)) {
+            streamConfig.captureMicrophone = shouldCaptureMic;
+            if (microphoneDeviceId && microphoneDeviceId.length > 0) {
+                streamConfig.microphoneCaptureDeviceID = microphoneDeviceId;
+            }
+        }
+        
         // Apply crop area using sourceRect - CONVERT GLOBAL TO DISPLAY-RELATIVE COORDINATES
         if (captureRect && captureRect[@"x"] && captureRect[@"y"] && captureRect[@"width"] && captureRect[@"height"]) {
             CGFloat globalX = [captureRect[@"x"] doubleValue];
@@ -232,110 +540,63 @@ static NSString *g_outputPath = nil;
         MRLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
               recordingWidth, recordingHeight, shouldShowCursor);
         
-        // AUDIO SUPPORT - Enable both microphone and system audio
-        MRLog(@"🔍 AUDIO PROCESSING: includeMicrophone=%@ includeSystemAudio=%@", includeMicrophone, includeSystemAudio);
-        BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
-        BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
-        MRLog(@"🔍 AUDIO COMPUTED: shouldCaptureMic=%d shouldCaptureSystemAudio=%d", shouldCaptureMic, shouldCaptureSystemAudio);
+        NSError *writerError = nil;
+        if (![ScreenCaptureKitRecorder prepareVideoWriterWithWidth:recordingWidth height:recordingHeight error:&writerError]) {
+            NSLog(@"❌ Failed to prepare video writer: %@", writerError);
+            return;
+        }
         
-        // Enable audio if either microphone or system audio is requested
-        if (@available(macOS 13.0, *)) {
-            if (shouldCaptureMic || shouldCaptureSystemAudio) {
-                streamConfig.capturesAudio = YES;
-                streamConfig.sampleRate = 44100;
-                streamConfig.channelCount = 2;
-                
-                if (shouldCaptureMic && shouldCaptureSystemAudio) {
-                    MRLog(@"🎵 Both microphone and system audio enabled");
-                } else if (shouldCaptureMic) {
-                    MRLog(@"🎤 Microphone audio enabled");
-                } else {
-                    MRLog(@"🔊 System audio enabled");
-                }
-            } else {
-                streamConfig.capturesAudio = NO;
-                MRLog(@"🔇 Audio disabled");
-            }
+        g_videoQueue = dispatch_queue_create("screen_capture_video_queue", DISPATCH_QUEUE_SERIAL);
+        g_audioQueue = dispatch_queue_create("screen_capture_audio_queue", DISPATCH_QUEUE_SERIAL);
+        g_videoStreamOutput = [[ScreenCaptureVideoOutput alloc] init];
+        if (g_shouldCaptureAudio) {
+            g_audioStreamOutput = [[ScreenCaptureAudioOutput alloc] init];
         } else {
-            streamConfig.capturesAudio = NO;
-            MRLog(@"🔇 Audio disabled (macOS < 13.0)");
+            g_audioStreamOutput = nil;
         }
         
-        // Create pure ScreenCaptureKit recording output
-        // Use local copy to prevent race conditions
-        NSString *safeOutputPath = outputPath;  // Local variable from outer scope
-        if (!safeOutputPath || [safeOutputPath length] == 0) {
-            NSLog(@"❌ Output path is nil or empty");
-            return;
-        }
-        
-        NSURL *outputURL = [NSURL fileURLWithPath:safeOutputPath];
-        if (!outputURL) {
-            NSLog(@"❌ Failed to create output URL from path: %@", safeOutputPath);
-            return;
-        }
-        
-        if (@available(macOS 15.0, *)) {
-            // Create recording output configuration
-            SCRecordingOutputConfiguration *recordingConfig = [[SCRecordingOutputConfiguration alloc] init];
-            recordingConfig.outputURL = outputURL;
-            recordingConfig.videoCodecType = AVVideoCodecTypeH264;
-            
-            // Audio configuration - using available properties
-            // Note: Specific audio routing handled by ScreenCaptureKit automatically
-            
-            // Create recording output with correct initializer
-            g_recordingOutput = [[SCRecordingOutput alloc] initWithConfiguration:recordingConfig 
-                                                                        delegate:nil];
-            if (shouldCaptureMic && shouldCaptureSystemAudio) {
-                NSLog(@"🔧 Created SCRecordingOutput with microphone and system audio");
-            } else if (shouldCaptureMic) {
-                NSLog(@"🔧 Created SCRecordingOutput with microphone audio");
-            } else if (shouldCaptureSystemAudio) {
-                NSLog(@"🔧 Created SCRecordingOutput with system audio");
-            } else {
-                NSLog(@"🔧 Created SCRecordingOutput (audio disabled)");
-            }
-        }
-        
-        if (!g_recordingOutput) {
-            NSLog(@"❌ Failed to create SCRecordingOutput");
-            return;
-        }
-        
-        NSLog(@"✅ Pure ScreenCaptureKit recording output created");
-        
-        // Create delegate
         g_streamDelegate = [[PureScreenCaptureDelegate alloc] init];
-        
-        // Create and configure stream
         g_stream = [[SCStream alloc] initWithFilter:filter configuration:streamConfig delegate:g_streamDelegate];
         
         if (!g_stream) {
             NSLog(@"❌ Failed to create pure stream");
+            CleanupWriters();
             return;
         }
         
-        // Add recording output directly to stream
         NSError *outputError = nil;
-        BOOL outputAdded = NO;
-        
-        if (@available(macOS 15.0, *)) {
-            outputAdded = [g_stream addRecordingOutput:g_recordingOutput error:&outputError];
-        }
-        
-        if (!outputAdded || outputError) {
-            NSLog(@"❌ Failed to add recording output: %@", outputError);
+        BOOL videoOutputAdded = [g_stream addStreamOutput:g_videoStreamOutput type:SCStreamOutputTypeScreen sampleHandlerQueue:g_videoQueue error:&outputError];
+        if (!videoOutputAdded || outputError) {
+            NSLog(@"❌ Failed to add video output: %@", outputError);
+            CleanupWriters();
             return;
         }
         
-        MRLog(@"✅ Pure recording output added to stream");
+        if (g_shouldCaptureAudio) {
+            if (@available(macOS 13.0, *)) {
+                NSError *audioError = nil;
+                BOOL audioOutputAdded = [g_stream addStreamOutput:g_audioStreamOutput type:SCStreamOutputTypeAudio sampleHandlerQueue:g_audioQueue error:&audioError];
+                if (!audioOutputAdded || audioError) {
+                    NSLog(@"❌ Failed to add audio output: %@", audioError);
+                    CleanupWriters();
+                    return;
+                }
+            } else {
+                NSLog(@"⚠️ Audio capture requested but requires macOS 13.0+");
+                g_shouldCaptureAudio = NO;
+            }
+        }
         
-        // Start capture with recording
+        MRLog(@"✅ Stream outputs configured (audio=%d)", g_shouldCaptureAudio);
+        if (sessionTimestampNumber) {
+            MRLog(@"🕒 Session timestamp: %@", sessionTimestampNumber);
+        }
+        
         [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
             if (startError) {
                 NSLog(@"❌ Failed to start pure capture: %@", startError);
                 g_isRecording = NO;
+                CleanupWriters();
             } else {
                 MRLog(@"🎉 PURE ScreenCaptureKit recording started successfully!");
                 g_isRecording = YES;
@@ -368,6 +629,7 @@ static NSString *g_outputPath = nil;
         
         // Finalize on main queue to prevent threading issues
         dispatch_async(dispatch_get_main_queue(), ^{
+            CleanupWriters();
             [ScreenCaptureKitRecorder cleanupVideoWriter];
         });
     }];
@@ -390,11 +652,6 @@ static NSString *g_outputPath = nil;
         g_isCleaningUp = YES;
         g_isRecording = NO;
         
-        if (g_recordingOutput) {
-            // SCRecordingOutput finalizes automatically
-            MRLog(@"✅ Pure recording output finalized");
-        }
-        
         [ScreenCaptureKitRecorder cleanupVideoWriter];
     }
 }
@@ -414,15 +671,17 @@ static NSString *g_outputPath = nil;
             MRLog(@"✅ Stream reference cleared");
         }
         
-        if (g_recordingOutput) {
-            g_recordingOutput = nil;
-            MRLog(@"✅ Recording output reference cleared");
-        }
-        
         if (g_streamDelegate) {
             g_streamDelegate = nil;
             MRLog(@"✅ Stream delegate reference cleared");
         }
+        
+        g_videoStreamOutput = nil;
+        g_audioStreamOutput = nil;
+        g_videoQueue = nil;
+        g_audioQueue = nil;
+        g_audioOutputPath = nil;
+        g_shouldCaptureAudio = NO;
         
         g_isRecording = NO;
         g_isCleaningUp = NO;  // Reset cleanup flag

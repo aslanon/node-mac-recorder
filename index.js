@@ -34,6 +34,11 @@ class MacRecorder extends EventEmitter {
 		this.lastCapturedData = null;
 		this.cursorDisplayInfo = null;
 		this.recordingDisplayInfo = null;
+		this.cameraCaptureFile = null;
+		this.cameraCaptureActive = false;
+		this.sessionTimestamp = null;
+		this.audioCaptureFile = null;
+		this.audioCaptureActive = false;
 
 		this.options = {
 			includeMicrophone: false, // Default olarak mikrofon kapalı
@@ -45,6 +50,9 @@ class MacRecorder extends EventEmitter {
 			showClicks: false,
 			displayId: null, // Hangi ekranı kaydedeceği (null = ana ekran)
 			windowId: null, // Hangi pencereyi kaydedeceği (null = tam ekran)
+			captureCamera: false,
+			cameraDeviceId: null,
+			systemAudioDeviceId: null,
 		};
 
 		// Display cache için async initialization
@@ -63,11 +71,46 @@ class MacRecorder extends EventEmitter {
 			try {
 				const devices = nativeBinding.getAudioDevices();
 				const formattedDevices = devices.map((device) => ({
-					name: typeof device === "string" ? device : device.name || device,
-					id: typeof device === "object" ? device.id : device,
-					type: typeof device === "object" ? device.type : "Audio Device",
+					name: device?.name || "Unknown Audio Device",
+					id: device?.id || "",
+					manufacturer: device?.manufacturer || null,
+					isDefault: device?.isDefault === true,
+					transportType: device?.transportType ?? null,
 				}));
 				resolve(formattedDevices);
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	/**
+	 * macOS kamera cihazlarını listeler
+	 */
+	async getCameraDevices() {
+		return new Promise((resolve, reject) => {
+			try {
+				const devices = nativeBinding.getCameraDevices();
+				if (!Array.isArray(devices)) {
+					return resolve([]);
+				}
+
+				const formatted = devices.map((device) => ({
+					id: device?.id ?? "",
+					name: device?.name ?? "Unknown Camera",
+					model: device?.model ?? null,
+					manufacturer: device?.manufacturer ?? null,
+					position: device?.position ?? "unspecified",
+					transportType: device?.transportType ?? null,
+					isConnected: device?.isConnected ?? false,
+					hasFlash: device?.hasFlash ?? false,
+					supportsDepth: device?.supportsDepth ?? false,
+					deviceType: device?.deviceType ?? null,
+					requiresContinuityCameraPermission: device?.requiresContinuityCameraPermission ?? false,
+					maxResolution: device?.maxResolution ?? null,
+				}));
+
+				resolve(formatted);
 			} catch (error) {
 				reject(error);
 			}
@@ -118,6 +161,11 @@ class MacRecorder extends EventEmitter {
 			audioDeviceId: options.audioDeviceId || null, // null = default device
 			systemAudioDeviceId: options.systemAudioDeviceId || null, // null = auto-detect system audio device
 			captureArea: options.captureArea || null,
+			captureCamera: options.captureCamera === true,
+			cameraDeviceId:
+				typeof options.cameraDeviceId === "string" && options.cameraDeviceId.length > 0
+					? options.cameraDeviceId
+					: null,
 		};
 	}
 
@@ -129,12 +177,53 @@ class MacRecorder extends EventEmitter {
 		return this.options.includeMicrophone;
 	}
 
+	setAudioDevice(deviceId) {
+		if (typeof deviceId === "string" && deviceId.length > 0) {
+			this.options.audioDeviceId = deviceId;
+		} else {
+			this.options.audioDeviceId = null;
+		}
+		return this.options.audioDeviceId;
+	}
+
 	/**
 	 * Sistem sesi kaydını açar/kapatır
 	 */
 	setSystemAudioEnabled(enabled) {
 		this.options.includeSystemAudio = enabled === true;
 		return this.options.includeSystemAudio;
+	}
+
+	setSystemAudioDevice(deviceId) {
+		if (typeof deviceId === "string" && deviceId.length > 0) {
+			this.options.systemAudioDeviceId = deviceId;
+		} else {
+			this.options.systemAudioDeviceId = null;
+		}
+		return this.options.systemAudioDeviceId;
+	}
+
+	/**
+	 * Kamera kaydını açar/kapatır
+	 */
+	setCameraEnabled(enabled) {
+		this.options.captureCamera = enabled === true;
+		if (!this.options.captureCamera) {
+			this.cameraCaptureActive = false;
+		}
+		return this.options.captureCamera;
+	}
+
+	/**
+	 * Kamera cihazını seçer
+	 */
+	setCameraDevice(deviceId) {
+		if (typeof deviceId === "string" && deviceId.length > 0) {
+			this.options.cameraDeviceId = deviceId;
+		} else {
+			this.options.cameraDeviceId = null;
+		}
+		return this.options.cameraDeviceId;
 	}
 
 	/**
@@ -149,6 +238,13 @@ class MacRecorder extends EventEmitter {
 	 */
 	isSystemAudioEnabled() {
 		return this.options.includeSystemAudio === true;
+	}
+
+	/**
+	 * Kamera durumunu döndürür
+	 */
+	isCameraEnabled() {
+		return this.options.captureCamera === true;
 	}
 
 	/**
@@ -325,9 +421,34 @@ class MacRecorder extends EventEmitter {
 		return new Promise((resolve, reject) => {
 			try {
 				// Create cursor file path with timestamp in the same directory as video
-				const timestamp = Date.now();
+				const sessionTimestamp = Date.now();
+				this.sessionTimestamp = sessionTimestamp;
 				const outputDir = path.dirname(outputPath);
-				const cursorFilePath = path.join(outputDir, `temp_cursor_${timestamp}.json`);
+				const cursorFilePath = path.join(outputDir, `temp_cursor_${sessionTimestamp}.json`);
+				const cameraFilePath =
+					this.options.captureCamera === true
+						? path.join(outputDir, `temp_camera_${sessionTimestamp}.webm`)
+						: null;
+				const captureAudio = this.options.includeMicrophone === true || this.options.includeSystemAudio === true;
+				const audioFilePath = captureAudio
+					? path.join(outputDir, `temp_audio_${sessionTimestamp}.webm`)
+					: null;
+
+				if (this.options.captureCamera === true) {
+					this.cameraCaptureFile = cameraFilePath;
+					this.cameraCaptureActive = false;
+				} else {
+					this.cameraCaptureFile = null;
+					this.cameraCaptureActive = false;
+				}
+
+				if (captureAudio) {
+					this.audioCaptureFile = audioFilePath;
+					this.audioCaptureActive = false;
+				} else {
+					this.audioCaptureFile = null;
+					this.audioCaptureActive = false;
+				}
 
 				// Native kayıt başlat
 				const recordingOptions = {
@@ -338,7 +459,18 @@ class MacRecorder extends EventEmitter {
 					windowId: this.options.windowId || null, // null = tam ekran
 					audioDeviceId: this.options.audioDeviceId || null, // null = default device
 					systemAudioDeviceId: this.options.systemAudioDeviceId || null, // null = auto-detect system audio device
+					captureCamera: this.options.captureCamera === true,
+					cameraDeviceId: this.options.cameraDeviceId || null,
+					sessionTimestamp,
 				};
+
+				if (cameraFilePath) {
+					recordingOptions.cameraOutputPath = cameraFilePath;
+				}
+
+				if (audioFilePath) {
+					recordingOptions.audioOutputPath = audioFilePath;
+				}
 
 				// Manuel captureArea varsa onu kullan
 				if (this.options.captureArea) {
@@ -364,6 +496,29 @@ class MacRecorder extends EventEmitter {
 				if (success) {
 					this.isRecording = true;
 					this.recordingStartTime = Date.now();
+
+					if (this.options.captureCamera === true && cameraFilePath) {
+						this.cameraCaptureActive = true;
+						this.emit("cameraCaptureStarted", {
+							outputPath: cameraFilePath,
+							deviceId: this.options.cameraDeviceId || null,
+							timestamp: sessionTimestamp,
+							sessionTimestamp,
+						});
+					}
+
+					if (captureAudio && audioFilePath) {
+						this.audioCaptureActive = true;
+						this.emit("audioCaptureStarted", {
+							outputPath: audioFilePath,
+							deviceIds: {
+								microphone: this.options.audioDeviceId || null,
+								system: this.options.systemAudioDeviceId || null,
+							},
+							timestamp: sessionTimestamp,
+							sessionTimestamp,
+						});
+					}
 
 					// Start unified cursor tracking with video-relative coordinates
 					// This ensures cursor positions match exactly with video frames
@@ -398,24 +553,32 @@ class MacRecorder extends EventEmitter {
 								clearInterval(checkRecordingStatus);
 								
 								// Kayıt gerçekten başladığı anda event emit et
-								this.emit("recordingStarted", {
-									outputPath: this.outputPath,
-									timestamp: Date.now(), // Gerçek başlangıç zamanı
-									options: this.options,
-									nativeConfirmed: true
-								});
+						this.emit("recordingStarted", {
+							outputPath: this.outputPath,
+							timestamp: Date.now(), // Gerçek başlangıç zamanı
+							options: this.options,
+							nativeConfirmed: true,
+							cameraOutputPath: this.cameraCaptureFile || null,
+							audioOutputPath: this.audioCaptureFile || null,
+							cursorOutputPath: cursorFilePath,
+							sessionTimestamp: this.sessionTimestamp,
+						});
 							}
 						} catch (error) {
 							// Native status check error - fallback
 							if (!recordingStartedEmitted) {
 								recordingStartedEmitted = true;
 								clearInterval(checkRecordingStatus);
-								this.emit("recordingStarted", {
-									outputPath: this.outputPath,
-									timestamp: this.recordingStartTime,
-									options: this.options,
-									nativeConfirmed: false
-								});
+						this.emit("recordingStarted", {
+							outputPath: this.outputPath,
+							timestamp: this.recordingStartTime,
+							options: this.options,
+							nativeConfirmed: false,
+							cameraOutputPath: this.cameraCaptureFile || null,
+							audioOutputPath: this.audioCaptureFile || null,
+							cursorOutputPath: cursorFilePath,
+							sessionTimestamp: this.sessionTimestamp,
+						});
 							}
 						}
 					}, 50); // Her 50ms kontrol et
@@ -425,18 +588,48 @@ class MacRecorder extends EventEmitter {
 						if (!recordingStartedEmitted) {
 							recordingStartedEmitted = true;
 							clearInterval(checkRecordingStatus);
-							this.emit("recordingStarted", {
-								outputPath: this.outputPath,
-								timestamp: this.recordingStartTime,
-								options: this.options,
-								nativeConfirmed: false
-							});
+					this.emit("recordingStarted", {
+						outputPath: this.outputPath,
+						timestamp: this.recordingStartTime,
+						options: this.options,
+						nativeConfirmed: false,
+						cameraOutputPath: this.cameraCaptureFile || null,
+						audioOutputPath: this.audioCaptureFile || null,
+						cursorOutputPath: cursorFilePath,
+						sessionTimestamp: this.sessionTimestamp,
+					});
 						}
 					}, 5000);
 					
 					this.emit("started", this.outputPath);
 					resolve(this.outputPath);
 				} else {
+					this.cameraCaptureActive = false;
+					if (this.options.captureCamera === true) {
+						if (cameraFilePath && fs.existsSync(cameraFilePath)) {
+							try {
+								fs.unlinkSync(cameraFilePath);
+							} catch (cleanupError) {
+								console.warn("Camera temp file cleanup failed:", cleanupError.message);
+							}
+						}
+						this.cameraCaptureFile = null;
+					}
+
+					if (captureAudio) {
+						this.audioCaptureActive = false;
+						if (audioFilePath && fs.existsSync(audioFilePath)) {
+							try {
+								fs.unlinkSync(audioFilePath);
+							} catch (cleanupError) {
+								console.warn("Audio temp file cleanup failed:", cleanupError.message);
+							}
+						}
+						this.audioCaptureFile = null;
+					}
+
+					this.sessionTimestamp = null;
+
 					reject(
 						new Error(
 							"Recording failed to start. Check permissions, output path, and system compatibility."
@@ -444,6 +637,7 @@ class MacRecorder extends EventEmitter {
 					);
 				}
 			} catch (error) {
+				this.sessionTimestamp = null;
 				reject(error);
 			}
 		});
@@ -470,6 +664,24 @@ class MacRecorder extends EventEmitter {
 					success = true; // Assume success to avoid throwing
 				}
 
+				if (this.cameraCaptureActive) {
+					this.cameraCaptureActive = false;
+					this.emit("cameraCaptureStopped", {
+						outputPath: this.cameraCaptureFile || null,
+						success: success === true,
+						sessionTimestamp: this.sessionTimestamp,
+					});
+				}
+
+				if (this.audioCaptureActive) {
+					this.audioCaptureActive = false;
+					this.emit("audioCaptureStopped", {
+						outputPath: this.audioCaptureFile || null,
+						success: success === true,
+						sessionTimestamp: this.sessionTimestamp,
+					});
+				}
+
 				// Stop cursor tracking automatically
 				if (this.cursorCaptureInterval) {
 					this.stopCursorCapture().catch(cursorError => {
@@ -486,9 +698,13 @@ class MacRecorder extends EventEmitter {
 				this.isRecording = false;
 				this.recordingDisplayInfo = null;
 
+				const sessionId = this.sessionTimestamp;
 				const result = {
 					code: success ? 0 : 1,
 					outputPath: this.outputPath,
+					cameraOutputPath: this.cameraCaptureFile || null,
+					audioOutputPath: this.audioCaptureFile || null,
+					sessionTimestamp: sessionId,
 				};
 
 				this.emit("stopped", result);
@@ -502,10 +718,15 @@ class MacRecorder extends EventEmitter {
 					}, 1000);
 				}
 
+				this.sessionTimestamp = null;
 				resolve(result);
 			} catch (error) {
 				this.isRecording = false;
 				this.recordingDisplayInfo = null;
+				this.cameraCaptureActive = false;
+				this.audioCaptureActive = false;
+				this.audioCaptureFile = null;
+				this.sessionTimestamp = null;
 				if (this.recordingTimer) {
 					clearInterval(this.recordingTimer);
 					this.recordingTimer = null;
@@ -523,6 +744,11 @@ class MacRecorder extends EventEmitter {
 		return {
 			isRecording: this.isRecording && nativeStatus,
 			outputPath: this.outputPath,
+			cameraOutputPath: this.cameraCaptureFile || null,
+			audioOutputPath: this.audioCaptureFile || null,
+			cameraCapturing: this.cameraCaptureActive,
+			audioCapturing: this.audioCaptureActive,
+			sessionTimestamp: this.sessionTimestamp,
 			options: this.options,
 			recordingTime: this.recordingStartTime
 				? Math.floor((Date.now() - this.recordingStartTime) / 1000)
@@ -993,6 +1219,35 @@ class MacRecorder extends EventEmitter {
 	 */
 	getCurrentCursorPosition() {
 		return this.getCursorPosition();
+	}
+
+	/**
+	 * Kamera capture durumunu döndürür
+	 */
+	getCameraCaptureStatus() {
+		return {
+			isCapturing: this.cameraCaptureActive === true,
+			outputFile: this.cameraCaptureFile || null,
+			deviceId: this.options.cameraDeviceId || null,
+			sessionTimestamp: this.sessionTimestamp,
+		};
+	}
+
+	/**
+	 * Audio capture durumunu döndürür
+	 */
+	getAudioCaptureStatus() {
+		return {
+			isCapturing: this.audioCaptureActive === true,
+			outputFile: this.audioCaptureFile || null,
+			deviceIds: {
+				microphone: this.options.audioDeviceId || null,
+				system: this.options.systemAudioDeviceId || null,
+			},
+			includeMicrophone: this.options.includeMicrophone === true,
+			includeSystemAudio: this.options.includeSystemAudio === true,
+			sessionTimestamp: this.sessionTimestamp,
+		};
 	}
 
 	/**

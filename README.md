@@ -14,6 +14,8 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 🖱️ **Multi-Display Support** - Automatic display detection and selection
 - 🎨 **Cursor Control** - Toggle cursor visibility in recordings
 - 🖱️ **Cursor Tracking** - Track mouse position, cursor types, and click events
+- 📷 **Camera Recording** - Capture silent camera video alongside screen recordings
+- 🔊 **Audio Capture** - Record microphone/system audio into synchronized companion files
 - 🚫 **Automatic Overlay Exclusion** - Overlay windows automatically excluded from recordings
 - ⚡ **Electron Compatible** - Enhanced crash protection for Electron applications
 
@@ -38,6 +40,8 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 🎞️ **Frame Rate Control** - Custom frame rate settings
 - 📁 **Flexible Output** - Custom output paths and formats
 - 🔐 **Permission Management** - Built-in permission checking
+
+> **Note**: The screen recording container remains silent. Audio is saved separately as `temp_audio_<timestamp>.webm` so you can remix microphone and system sound in post-processing.
 
 ## ScreenCaptureKit Technology
 
@@ -126,6 +130,10 @@ await recorder.startRecording("./recording.mov", {
 	quality: "high", // 'low', 'medium', 'high'
 	frameRate: 30, // FPS (15, 30, 60)
 	captureCursor: false, // Show cursor (default: false)
+
+	// Camera Capture
+	captureCamera: true, // Enable simultaneous camera recording (video-only WebM)
+	cameraDeviceId: "built-in-camera-id", // Use specific camera (optional)
 });
 ```
 
@@ -136,7 +144,11 @@ Stops the current recording.
 ```javascript
 const result = await recorder.stopRecording();
 console.log("Recording saved to:", result.outputPath);
+console.log("Camera clip saved to:", result.cameraOutputPath);
+console.log("Audio clip saved to:", result.audioOutputPath);
+console.log("Shared session timestamp:", result.sessionTimestamp);
 ```
+The result object always contains `cameraOutputPath` and `audioOutputPath`. If either feature is disabled the corresponding value is `null`. The shared `sessionTimestamp` matches every automatically generated temp file name (`temp_cursor_*`, `temp_camera_*`, and `temp_audio_*`).
 
 #### `getWindows()`
 
@@ -184,14 +196,69 @@ const devices = await recorder.getAudioDevices();
 console.log(devices);
 // [
 //   {
-//     id: "device-id",
-//     name: "Built-in Microphone",
+//     id: "BuiltInMicDeviceID",
+//     name: "MacBook Pro Microphone",
 //     manufacturer: "Apple Inc.",
-//     isDefault: true
+//     isDefault: true,
+//     transportType: 0
 //   },
 //   ...
 // ]
 ```
+
+#### `getCameraDevices()`
+
+Lists available camera devices with resolution metadata.
+
+```javascript
+const cameras = await recorder.getCameraDevices();
+console.log(cameras);
+// [
+//   {
+//     id: "FaceTime HD Camera",
+//     name: "FaceTime HD Camera",
+//     position: "front",
+//     maxResolution: { width: 1920, height: 1080, maxFrameRate: 60 }
+//   },
+//   ...
+// ]
+```
+
+### Camera Capture Helpers
+
+- `setCameraEnabled(enabled)` – toggles simultaneous camera recording (video-only)
+- `setCameraDevice(deviceId)` – selects the camera by unique macOS identifier
+- `isCameraEnabled()` – returns current camera toggle state
+- `getCameraCaptureStatus()` – returns `{ isCapturing, outputFile, deviceId, sessionTimestamp }`
+
+A typical workflow looks like this:
+
+```javascript
+const cameras = await recorder.getCameraDevices();
+const selectedCamera = cameras.find((camera) => camera.position === "front") || cameras[0];
+
+recorder.setCameraDevice(selectedCamera?.id);
+recorder.setCameraEnabled(true);
+
+await recorder.startRecording("./output.mov");
+// ...
+const status = recorder.getCameraCaptureStatus();
+console.log("Camera stream:", status.outputFile); // temp_camera_<timestamp>.webm
+await recorder.stopRecording();
+```
+
+> The camera clip is saved alongside the screen recording as `temp_camera_<timestamp>.webm`. The file contains video frames only (no audio). Use the same device IDs in Electron to power live previews (`navigator.mediaDevices.getUserMedia({ video: { deviceId } })`). On macOS versions prior to 15, Apple does not expose a WebM encoder; the module falls back to a QuickTime container while keeping the same filename, so transcode or rename if an actual WebM container is required.
+
+See `CAMERA_CAPTURE.md` for a deeper walkthrough and Electron integration tips.
+
+### Audio Capture Helpers
+
+- `setAudioDevice(deviceId)` – select the microphone input
+- `setSystemAudioEnabled(enabled)` / `isSystemAudioEnabled()`
+- `setSystemAudioDevice(deviceId)` – prefer loopback devices when you need system audio only
+- `getAudioCaptureStatus()` – returns `{ isCapturing, outputFile, deviceIds, includeMicrophone, includeSystemAudio, sessionTimestamp }`
+
+See `AUDIO_CAPTURE.md` for a step-by-step guide on enumerating devices, enabling microphone/system capture, and consuming the audio companion files.
 
 #### `checkPermissions()`
 
@@ -217,6 +284,11 @@ console.log(status);
 // {
 //   isRecording: true,
 //   outputPath: "./recording.mov",
+//   cameraOutputPath: "./temp_camera_1720000000000.webm",
+//   audioOutputPath: "./temp_audio_1720000000000.webm",
+//   cameraCapturing: true,
+//   audioCapturing: true,
+//   sessionTimestamp: 1720000000000,
 //   options: { ... },
 //   recordingTime: 15
 // }
@@ -800,3 +872,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ---
 
 **Made for macOS** 🍎 | **Built with AVFoundation** 📹 | **Node.js Ready** 🚀
+> 🛡️ **Permissions:** Ensure your host application's `Info.plist` declares camera and microphone usage descriptions (see `MACOS_PERMISSIONS.md`).
