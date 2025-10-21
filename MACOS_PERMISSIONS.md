@@ -24,6 +24,8 @@ This project relies on system-level frameworks (ScreenCaptureKit, AVFoundation) 
 > `NSCameraUseContinuityCameraDeviceType` removes the runtime warning when Continuity Camera devices are detected. macOS 14+ expects this key whenever Continuity Camera APIs are used.
 > The `com.apple.security.*` entitlements are only required for sandboxed / hardened runtime builds. Omit them if your distribution does not use the macOS sandbox.
 
+During local development you can temporarily bypass the Continuity Camera check by running with `ALLOW_CONTINUITY_CAMERA=1`, but Apple still recommends setting the Info.plist key for shipping applications.
+
 ### Screen recording
 
 Screen recording permissions are granted by the user via the OS **Screen Recording** privacy panel. There is no `Info.plist` key to request it, but your app should guide the user to approve it.

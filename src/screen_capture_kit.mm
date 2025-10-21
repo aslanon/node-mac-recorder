@@ -19,7 +19,7 @@ static id g_audioStreamOutput = nil;
 
 static AVAssetWriter *g_videoWriter = nil;
 static AVAssetWriterInput *g_videoInput = nil;
-static AVAssetWriterInputPixelBufferAdaptor *g_pixelBufferAdaptor = nil;
+static CFTypeRef g_pixelBufferAdaptorRef = NULL;
 static CMTime g_videoStartTime = kCMTimeInvalid;
 static BOOL g_videoWriterStarted = NO;
 
@@ -34,6 +34,33 @@ static NSInteger g_configuredSampleRate = 48000;
 static NSInteger g_configuredChannelCount = 2;
 
 static void CleanupWriters(void);
+static AVAssetWriterInputPixelBufferAdaptor * _Nullable CurrentPixelBufferAdaptor(void) {
+    if (!g_pixelBufferAdaptorRef) {
+        return nil;
+    }
+    return (__bridge AVAssetWriterInputPixelBufferAdaptor *)g_pixelBufferAdaptorRef;
+}
+
+static NSString *MRNormalizePath(id value) {
+    if (!value || value == (id)kCFNull) {
+        return nil;
+    }
+    if ([value isKindOfClass:[NSString class]]) {
+        return (NSString *)value;
+    }
+    if ([value isKindOfClass:[NSURL class]]) {
+        return [(NSURL *)value path];
+    }
+    if ([value isKindOfClass:[NSArray class]]) {
+        for (id entry in (NSArray *)value) {
+            NSString *candidate = MRNormalizePath(entry);
+            if (candidate.length > 0) {
+                return candidate;
+            }
+        }
+    }
+    return nil;
+}
 
 static void FinishWriter(AVAssetWriter *writer, AVAssetWriterInput *input) {
     if (!writer) {
@@ -57,7 +84,10 @@ static void CleanupWriters(void) {
         FinishWriter(g_videoWriter, g_videoInput);
         g_videoWriter = nil;
         g_videoInput = nil;
-        g_pixelBufferAdaptor = nil;
+        if (g_pixelBufferAdaptorRef) {
+            CFRelease(g_pixelBufferAdaptorRef);
+            g_pixelBufferAdaptorRef = NULL;
+        }
         g_videoWriterStarted = NO;
         g_videoStartTime = kCMTimeInvalid;
     }
@@ -73,6 +103,20 @@ static void CleanupWriters(void) {
 
 @interface PureScreenCaptureDelegate : NSObject <SCStreamDelegate>
 @end
+
+extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
+    if (!g_audioOutputPath) {
+        return nil;
+    }
+    if ([g_audioOutputPath isKindOfClass:[NSArray class]]) {
+        id first = [(NSArray *)g_audioOutputPath firstObject];
+        if ([first isKindOfClass:[NSString class]]) {
+            return first;
+        }
+        return nil;
+    }
+    return g_audioOutputPath;
+}
 
 @implementation PureScreenCaptureDelegate
 - (void)stream:(SCStream * API_AVAILABLE(macos(12.3)))stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
@@ -144,12 +188,27 @@ static void CleanupWriters(void) {
         return;
     }
     
-    if (!g_pixelBufferAdaptor) {
+    AVAssetWriterInputPixelBufferAdaptor *adaptorCandidate = CurrentPixelBufferAdaptor();
+    if ([adaptorCandidate isKindOfClass:[NSArray class]]) {
+        id first = [(NSArray *)adaptorCandidate firstObject];
+        if ([first isKindOfClass:[AVAssetWriterInputPixelBufferAdaptor class]]) {
+            adaptorCandidate = first;
+            if (g_pixelBufferAdaptorRef) {
+                CFRelease(g_pixelBufferAdaptorRef);
+            }
+            g_pixelBufferAdaptorRef = CFBridgingRetain(adaptorCandidate);
+        }
+    }
+    if (![adaptorCandidate isKindOfClass:[AVAssetWriterInputPixelBufferAdaptor class]]) {
+        if (adaptorCandidate) {
+            MRLog(@"⚠️ Pixel buffer adaptor invalid (%@) – skipping frame", NSStringFromClass([adaptorCandidate class]));
+        }
         NSLog(@"❌ Pixel buffer adaptor is nil – cannot append video frames");
         return;
     }
     
-    BOOL appended = [g_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
+    AVAssetWriterInputPixelBufferAdaptor *adaptor = adaptorCandidate;
+    BOOL appended = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
     if (!appended) {
         NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
     }
@@ -211,7 +270,13 @@ static void CleanupWriters(void) {
 @implementation ScreenCaptureKitRecorder
 
 + (BOOL)prepareVideoWriterWithWidth:(NSInteger)width height:(NSInteger)height error:(NSError **)error {
+    MRLog(@"🎬 Preparing video writer %ldx%ld", (long)width, (long)height);
     if (!g_outputPath) {
+        MRLog(@"❌ Video writer failed: missing output path");
+        return NO;
+    }
+    if (width <= 0 || height <= 0) {
+        MRLog(@"❌ Video writer invalid dimensions %ldx%ld", (long)width, (long)height);
         return NO;
     }
     
@@ -220,6 +285,7 @@ static void CleanupWriters(void) {
     
     g_videoWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:AVFileTypeQuickTimeMovie error:error];
     if (!g_videoWriter || (error && *error)) {
+        MRLog(@"❌ Failed creating video writer: %@", error && *error ? (*error).localizedDescription : @"unknown");
         return NO;
     }
     
@@ -238,15 +304,16 @@ static void CleanupWriters(void) {
     g_videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
     g_videoInput.expectsMediaDataInRealTime = YES;
     
-    g_pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_videoInput sourcePixelBufferAttributes:@{
+    AVAssetWriterInputPixelBufferAdaptor *pixelAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_videoInput sourcePixelBufferAttributes:@{
         (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
         (NSString *)kCVPixelBufferWidthKey: @(width),
         (NSString *)kCVPixelBufferHeightKey: @(height),
         (NSString *)kCVPixelBufferCGImageCompatibilityKey: @YES,
         (NSString *)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
     }];
-    
+
     if (![g_videoWriter canAddInput:g_videoInput]) {
+        MRLog(@"❌ Cannot add video input to writer");
         if (error) {
             *error = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-100 userInfo:@{NSLocalizedDescriptionKey: @"Cannot add video input to writer"}];
         }
@@ -254,9 +321,17 @@ static void CleanupWriters(void) {
     }
     
     [g_videoWriter addInput:g_videoInput];
+    if (g_pixelBufferAdaptorRef) {
+        CFRelease(g_pixelBufferAdaptorRef);
+        g_pixelBufferAdaptorRef = NULL;
+    }
+    if (pixelAdaptor) {
+        g_pixelBufferAdaptorRef = CFBridgingRetain(pixelAdaptor);
+    }
     g_videoWriterStarted = NO;
     g_videoStartTime = kCMTimeInvalid;
-    
+    MRLog(@"✅ Video writer ready %ldx%ld", (long)width, (long)height);
+
     return YES;
 }
 
@@ -280,34 +355,76 @@ static void CleanupWriters(void) {
     g_configuredSampleRate = (NSInteger)asbd->mSampleRate;
     g_configuredChannelCount = asbd->mChannelsPerFrame;
     
-    NSURL *audioURL = [NSURL fileURLWithPath:g_audioOutputPath];
+    NSString *originalPath = g_audioOutputPath ?: @"";
+    NSURL *audioURL = [NSURL fileURLWithPath:originalPath];
     [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
     
     NSError *writerError = nil;
-    AVFileType fileType = AVFileTypeQuickTimeMovie;
+    AVFileType requestedFileType = AVFileTypeQuickTimeMovie;
+    BOOL requestedWebM = NO;
     if (@available(macOS 15.0, *)) {
-        fileType = @"public.webm";
+        requestedFileType = @"public.webm";
+        requestedWebM = YES;
     }
     
-    g_audioWriter = [[AVAssetWriter alloc] initWithURL:audioURL fileType:fileType error:&writerError];
+    @try {
+        g_audioWriter = [[AVAssetWriter alloc] initWithURL:audioURL fileType:requestedFileType error:&writerError];
+    } @catch (NSException *exception) {
+        NSDictionary *info = @{
+            NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize audio writer"
+        };
+        writerError = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-201 userInfo:info];
+        g_audioWriter = nil;
+    }
+    
+    if ((!g_audioWriter || writerError) && requestedWebM) {
+        MRLog(@"⚠️ ScreenCaptureKit audio writer unavailable (%@) – falling back to QuickTime container", writerError.localizedDescription);
+        NSString *fallbackPath = [[originalPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+        if (!fallbackPath || [fallbackPath length] == 0) {
+            fallbackPath = [originalPath stringByAppendingString:@".mov"];
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:fallbackPath error:nil];
+        NSURL *fallbackURL = [NSURL fileURLWithPath:fallbackPath];
+        g_audioOutputPath = fallbackPath;
+        writerError = nil;
+        @try {
+            g_audioWriter = [[AVAssetWriter alloc] initWithURL:fallbackURL fileType:AVFileTypeQuickTimeMovie error:&writerError];
+        } @catch (NSException *exception) {
+            NSDictionary *info = @{
+                NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize audio writer"
+            };
+            writerError = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-202 userInfo:info];
+            g_audioWriter = nil;
+        }
+        audioURL = fallbackURL;
+    }
+    
     if (!g_audioWriter || writerError) {
         NSLog(@"❌ Failed to create audio writer: %@", writerError);
         return NO;
     }
     
-    AudioChannelLayout stereoLayout = {
-        .mChannelLayoutTag = kAudioChannelLayoutTag_Stereo,
-        .mChannelBitmap = 0,
-        .mNumberChannelDescriptions = 0
-    };
-    
-    NSDictionary *audioSettings = @{
+    NSInteger channelCount = MAX(1, g_configuredChannelCount);
+    AudioChannelLayout layout = {0};
+    size_t layoutSize = 0;
+    if (channelCount == 1) {
+        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Mono;
+        layoutSize = sizeof(AudioChannelLayout);
+    } else if (channelCount == 2) {
+        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
+        layoutSize = sizeof(AudioChannelLayout);
+    }
+
+    NSMutableDictionary *audioSettings = [@{
         AVFormatIDKey: @(kAudioFormatMPEG4AAC),
         AVSampleRateKey: @(g_configuredSampleRate),
-        AVNumberOfChannelsKey: @(MAX(1, g_configuredChannelCount)),
-        AVChannelLayoutKey: [NSData dataWithBytes:&stereoLayout length:sizeof(AudioChannelLayout)],
+        AVNumberOfChannelsKey: @(channelCount),
         AVEncoderBitRateKey: @(192000)
-    };
+    } mutableCopy];
+
+    if (layoutSize > 0) {
+        audioSettings[AVChannelLayoutKey] = [NSData dataWithBytes:&layout length:layoutSize];
+    }
     
     g_audioInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
     g_audioInput.expectsMediaDataInRealTime = YES;
@@ -356,7 +473,7 @@ static void CleanupWriters(void) {
     NSNumber *includeMicrophone = config[@"includeMicrophone"];
     NSNumber *includeSystemAudio = config[@"includeSystemAudio"];
     NSString *microphoneDeviceId = config[@"microphoneDeviceId"];
-    NSString *audioOutputPath = config[@"audioOutputPath"];
+    NSString *audioOutputPath = MRNormalizePath(config[@"audioOutputPath"]);
     NSNumber *sessionTimestampNumber = config[@"sessionTimestamp"];
     
     MRLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
@@ -680,6 +797,10 @@ static void CleanupWriters(void) {
         g_audioStreamOutput = nil;
         g_videoQueue = nil;
         g_audioQueue = nil;
+        if (g_pixelBufferAdaptorRef) {
+            CFRelease(g_pixelBufferAdaptorRef);
+            g_pixelBufferAdaptorRef = NULL;
+        }
         g_audioOutputPath = nil;
         g_shouldCaptureAudio = NO;
         

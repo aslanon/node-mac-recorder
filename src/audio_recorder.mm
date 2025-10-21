@@ -55,13 +55,49 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     NSURL *outputURL = [NSURL fileURLWithPath:self.outputPath];
     [[NSFileManager defaultManager] removeItemAtURL:outputURL error:nil];
     
-    AVFileType fileType = AVFileTypeQuickTimeMovie;
+    NSError *writerError = nil;
+    AVFileType requestedFileType = AVFileTypeQuickTimeMovie;
+    BOOL requestedWebM = NO;
     if (@available(macOS 15.0, *)) {
-        fileType = @"public.webm";
+        requestedFileType = @"public.webm";
+        requestedWebM = YES;
     }
     
-    self.writer = [[AVAssetWriter alloc] initWithURL:outputURL fileType:fileType error:error];
-    if (!self.writer || (*error)) {
+    @try {
+        self.writer = [[AVAssetWriter alloc] initWithURL:outputURL fileType:requestedFileType error:&writerError];
+    } @catch (NSException *exception) {
+        NSDictionary *info = @{
+            NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize audio writer"
+        };
+        writerError = [NSError errorWithDomain:@"NativeAudioRecorder" code:-30 userInfo:info];
+        self.writer = nil;
+    }
+    
+    if ((!self.writer || writerError) && requestedWebM) {
+        NSString *fallbackPath = [[self.outputPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+        if (!fallbackPath || [fallbackPath length] == 0) {
+            fallbackPath = [self.outputPath stringByAppendingString:@".mov"];
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:fallbackPath error:nil];
+        NSURL *fallbackURL = [NSURL fileURLWithPath:fallbackPath];
+        self.outputPath = fallbackPath;
+        writerError = nil;
+        @try {
+            self.writer = [[AVAssetWriter alloc] initWithURL:fallbackURL fileType:AVFileTypeQuickTimeMovie error:&writerError];
+        } @catch (NSException *exception) {
+            NSDictionary *info = @{
+                NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize audio writer"
+            };
+            writerError = [NSError errorWithDomain:@"NativeAudioRecorder" code:-31 userInfo:info];
+            self.writer = nil;
+        }
+        outputURL = fallbackURL;
+    }
+    
+    if (!self.writer || writerError) {
+        if (error) {
+            *error = writerError;
+        }
         return NO;
     }
     
@@ -70,20 +106,28 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     
     double sampleRate = asbd ? asbd->mSampleRate : 44100.0;
     NSUInteger channels = asbd ? asbd->mChannelsPerFrame : 2;
-    
-    AudioChannelLayout stereoLayout = {
-        .mChannelLayoutTag = kAudioChannelLayoutTag_Stereo,
-        .mChannelBitmap = 0,
-        .mNumberChannelDescriptions = 0
-    };
-    
-    NSDictionary *audioSettings = @{
+    channels = MAX((NSUInteger)1, channels);
+
+    AudioChannelLayout layout = {0};
+    size_t layoutSize = 0;
+    if (channels == 1) {
+        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Mono;
+        layoutSize = sizeof(AudioChannelLayout);
+    } else if (channels == 2) {
+        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
+        layoutSize = sizeof(AudioChannelLayout);
+    }
+
+    NSMutableDictionary *audioSettings = [@{
         AVFormatIDKey: @(kAudioFormatMPEG4AAC),
         AVSampleRateKey: @(sampleRate),
-        AVNumberOfChannelsKey: @(MAX((NSUInteger)1, channels)),
-        AVChannelLayoutKey: [NSData dataWithBytes:&stereoLayout length:sizeof(AudioChannelLayout)],
+        AVNumberOfChannelsKey: @(channels),
         AVEncoderBitRateKey: @(192000)
-    };
+    } mutableCopy];
+
+    if (layoutSize > 0) {
+        audioSettings[AVChannelLayoutKey] = [NSData dataWithBytes:&layout length:layoutSize];
+    }
     
     self.writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
     self.writerInput.expectsMediaDataInRealTime = YES;
@@ -316,6 +360,13 @@ bool hasAudioPermission() {
 
 void requestAudioPermission(void (^completion)(BOOL granted)) {
     [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:completion];
+}
+
+NSString *currentStandaloneAudioRecordingPath() {
+    if (!g_audioRecorder) {
+        return nil;
+    }
+    return g_audioRecorder.outputPath;
 }
 
 }

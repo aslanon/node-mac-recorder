@@ -425,12 +425,12 @@ class MacRecorder extends EventEmitter {
 				this.sessionTimestamp = sessionTimestamp;
 				const outputDir = path.dirname(outputPath);
 				const cursorFilePath = path.join(outputDir, `temp_cursor_${sessionTimestamp}.json`);
-				const cameraFilePath =
+				let cameraFilePath =
 					this.options.captureCamera === true
 						? path.join(outputDir, `temp_camera_${sessionTimestamp}.webm`)
 						: null;
 				const captureAudio = this.options.includeMicrophone === true || this.options.includeSystemAudio === true;
-				const audioFilePath = captureAudio
+				let audioFilePath = captureAudio
 					? path.join(outputDir, `temp_audio_${sessionTimestamp}.webm`)
 					: null;
 
@@ -451,11 +451,11 @@ class MacRecorder extends EventEmitter {
 				}
 
 				// Native kayıt başlat
-				const recordingOptions = {
-					includeMicrophone: this.options.includeMicrophone === true, // Only if explicitly enabled
-					includeSystemAudio: this.options.includeSystemAudio === true, // Only if explicitly enabled
-					captureCursor: this.options.captureCursor || false,
-					displayId: this.options.displayId || null, // null = ana ekran
+					let recordingOptions = {
+						includeMicrophone: this.options.includeMicrophone === true, // Only if explicitly enabled
+						includeSystemAudio: this.options.includeSystemAudio === true, // Only if explicitly enabled
+						captureCursor: this.options.captureCursor || false,
+						displayId: this.options.displayId || null, // null = ana ekran
 					windowId: this.options.windowId || null, // null = tam ekran
 					audioDeviceId: this.options.audioDeviceId || null, // null = default device
 					systemAudioDeviceId: this.options.systemAudioDeviceId || null, // null = auto-detect system audio device
@@ -464,12 +464,18 @@ class MacRecorder extends EventEmitter {
 					sessionTimestamp,
 				};
 
-				if (cameraFilePath) {
-					recordingOptions.cameraOutputPath = cameraFilePath;
-				}
+					if (cameraFilePath) {
+						recordingOptions = {
+							...recordingOptions,
+							cameraOutputPath: cameraFilePath,
+						};
+					}
 
-				if (audioFilePath) {
-					recordingOptions.audioOutputPath = audioFilePath;
+					if (audioFilePath) {
+						recordingOptions = {
+							...recordingOptions,
+							audioOutputPath: audioFilePath,
+						};
 				}
 
 				// Manuel captureArea varsa onu kullan
@@ -494,6 +500,32 @@ class MacRecorder extends EventEmitter {
 				}
 
 				if (success) {
+					if (this.options.captureCamera === true) {
+						try {
+							const nativeCameraPath = nativeBinding.getCameraRecordingPath
+								? nativeBinding.getCameraRecordingPath()
+								: null;
+							if (typeof nativeCameraPath === "string" && nativeCameraPath.length > 0) {
+								this.cameraCaptureFile = nativeCameraPath;
+								cameraFilePath = nativeCameraPath;
+							}
+						} catch (pathError) {
+							console.warn("Camera output path sync failed:", pathError.message);
+						}
+					}
+					if (captureAudio) {
+						try {
+							const nativeAudioPath = nativeBinding.getAudioRecordingPath
+								? nativeBinding.getAudioRecordingPath()
+								: null;
+							if (typeof nativeAudioPath === "string" && nativeAudioPath.length > 0) {
+								this.audioCaptureFile = nativeAudioPath;
+								audioFilePath = nativeAudioPath;
+							}
+						} catch (pathError) {
+							console.warn("Audio output path sync failed:", pathError.message);
+						}
+					}
 					this.isRecording = true;
 					this.recordingStartTime = Date.now();
 
@@ -662,6 +694,33 @@ class MacRecorder extends EventEmitter {
 				} catch (nativeError) {
 					// console.log('Native stop failed:', nativeError.message);
 					success = true; // Assume success to avoid throwing
+				}
+
+				if (this.options.captureCamera === true) {
+					try {
+						const nativeCameraPath = nativeBinding.getCameraRecordingPath
+							? nativeBinding.getCameraRecordingPath()
+							: null;
+						if (typeof nativeCameraPath === "string" && nativeCameraPath.length > 0) {
+							this.cameraCaptureFile = nativeCameraPath;
+						}
+					} catch (pathError) {
+						console.warn("Camera output path sync failed:", pathError.message);
+					}
+				}
+
+				const captureAudio = this.options.includeMicrophone === true || this.options.includeSystemAudio === true;
+				if (captureAudio) {
+					try {
+						const nativeAudioPath = nativeBinding.getAudioRecordingPath
+							? nativeBinding.getAudioRecordingPath()
+							: null;
+						if (typeof nativeAudioPath === "string" && nativeAudioPath.length > 0) {
+							this.audioCaptureFile = nativeAudioPath;
+						}
+					} catch (pathError) {
+						console.warn("Audio output path sync failed:", pathError.message);
+					}
 				}
 
 				if (this.cameraCaptureActive) {

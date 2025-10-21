@@ -1088,43 +1088,13 @@ NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
 
             // Check if point is within this display
             if (isInBounds) {
-                // Get physical dimensions
-                CGImageRef testImage = CGDisplayCreateImage(displayID);
-                CGSize imageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
-                CGImageRelease(testImage);
-
-                CGSize actualPhysicalSize = imageSize;
-                CFArrayRef displayModes = CGDisplayCopyAllDisplayModes(displayID, NULL);
-                if (displayModes) {
-                    CFIndex modeCount = CFArrayGetCount(displayModes);
-                    CGSize maxResolution = CGSizeMake(0, 0);
-
-                    for (CFIndex i = 0; i < modeCount; i++) {
-                        CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(displayModes, i);
-                        CGSize modeSize = CGSizeMake(CGDisplayModeGetWidth(mode), CGDisplayModeGetHeight(mode));
-
-                        if (modeSize.width > maxResolution.width ||
-                            (modeSize.width == maxResolution.width && modeSize.height > maxResolution.height)) {
-                            maxResolution = modeSize;
-                        }
-                    }
-
-                    if (maxResolution.width > imageSize.width * 1.5 || maxResolution.height > imageSize.height * 1.5) {
-                        actualPhysicalSize = maxResolution;
-                    } else {
-                        actualPhysicalSize = imageSize;
-                    }
-
-                    CFRelease(displayModes);
-                } else {
-                    actualPhysicalSize = imageSize;
-                }
-
+                // Compute physical dimensions using pixel counts to avoid heavy APIs
                 CGSize logicalSize = displayBounds.size;
-                CGSize reportedPhysicalSize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
+                CGSize actualPhysicalSize = CGSizeMake(CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
+                CGSize reportedPhysicalSize = actualPhysicalSize;
 
-                CGFloat scaleX = actualPhysicalSize.width / logicalSize.width;
-                CGFloat scaleY = actualPhysicalSize.height / logicalSize.height;
+                CGFloat scaleX = logicalSize.width > 0 ? actualPhysicalSize.width / logicalSize.width : 1.0;
+                CGFloat scaleY = logicalSize.height > 0 ? actualPhysicalSize.height / logicalSize.height : 1.0;
                 CGFloat scaleFactor = MAX(scaleX, scaleY);
                 
                 return @{
@@ -1141,36 +1111,15 @@ NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
         CGDirectDisplayID mainDisplay = CGMainDisplayID();
         CGRect displayBounds = CGDisplayBounds(mainDisplay);
 
-        CGImageRef testImage = CGDisplayCreateImage(mainDisplay);
-        CGSize imageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
-        CGImageRelease(testImage);
-
-        CGSize actualPhysicalSize = imageSize;
-        CFArrayRef displayModes = CGDisplayCopyAllDisplayModes(mainDisplay, NULL);
-        if (displayModes) {
-            CFIndex modeCount = CFArrayGetCount(displayModes);
-            CGSize maxResolution = CGSizeMake(0, 0);
-
-            for (CFIndex i = 0; i < modeCount; i++) {
-                CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(displayModes, i);
-                CGSize modeSize = CGSizeMake(CGDisplayModeGetWidth(mode), CGDisplayModeGetHeight(mode));
-
-                if (modeSize.width > maxResolution.width ||
-                    (modeSize.width == maxResolution.width && modeSize.height > maxResolution.height)) {
-                    maxResolution = modeSize;
-                }
-            }
-
-            if (maxResolution.width > imageSize.width * 1.5 || maxResolution.height > imageSize.height * 1.5) {
-                actualPhysicalSize = maxResolution;
-            }
-
-            CFRelease(displayModes);
+        CGSize logicalSize = displayBounds.size;
+        CGSize actualPhysicalSize = CGSizeMake(CGDisplayPixelsWide(mainDisplay), CGDisplayPixelsHigh(mainDisplay));
+        CGFloat scaleFactor = 1.0;
+        if (logicalSize.width > 0 && logicalSize.height > 0) {
+            CGFloat scaleX = actualPhysicalSize.width / logicalSize.width;
+            CGFloat scaleY = actualPhysicalSize.height / logicalSize.height;
+            scaleFactor = MAX(scaleX, scaleY);
         }
 
-        CGSize logicalSize = displayBounds.size;
-        CGFloat scaleFactor = MAX(actualPhysicalSize.width / logicalSize.width, actualPhysicalSize.height / logicalSize.height);
-        
         return @{
             @"displayID": @(mainDisplay),
             @"logicalSize": [NSValue valueWithSize:NSMakeSize(logicalSize.width, logicalSize.height)],

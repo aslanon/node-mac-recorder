@@ -8,6 +8,21 @@
 static AVVideoCodecType const AVVideoCodecTypeVP9 = @"vp09";
 #endif
 
+static BOOL MRAllowContinuityCamera() {
+    static dispatch_once_t onceToken;
+    static BOOL allowContinuity = NO;
+    dispatch_once(&onceToken, ^{
+        id continuityKey = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"NSCameraUseContinuityCameraDeviceType"];
+        if ([continuityKey respondsToSelector:@selector(boolValue)] && [continuityKey boolValue]) {
+            allowContinuity = YES;
+        }
+        if (!allowContinuity && getenv("ALLOW_CONTINUITY_CAMERA")) {
+            allowContinuity = YES;
+        }
+    });
+    return allowContinuity;
+}
+
 static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     if (!device) {
         return NO;
@@ -27,14 +42,26 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     BOOL nameMentionsContinuity = [localizedName rangeOfString:@"Continuity" options:NSCaseInsensitiveSearch].location != NSNotFound ||
                                   [modelId rangeOfString:@"Continuity" options:NSCaseInsensitiveSearch].location != NSNotFound;
     
-    if ([deviceType isEqualToString:AVCaptureDeviceTypeExternal] && nameMentionsContinuity) {
+    if (@available(macOS 14.0, *)) {
+        if ([deviceType isEqualToString:AVCaptureDeviceTypeExternal] && nameMentionsContinuity) {
+            return YES;
+        }
+    }
+    
+    if ([deviceType isEqualToString:AVCaptureDeviceTypeExternalUnknown] && nameMentionsContinuity) {
         return YES;
     }
     
-    if ([deviceType isEqualToString:AVCaptureDeviceTypeExternal] &&
-        [manufacturer rangeOfString:@"Apple" options:NSCaseInsensitiveSearch].location != NSNotFound &&
-        nameMentionsContinuity) {
-        return YES;
+    BOOL isApple = [manufacturer rangeOfString:@"Apple" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    if (isApple && nameMentionsContinuity) {
+        if (@available(macOS 14.0, *)) {
+            if ([deviceType isEqualToString:AVCaptureDeviceTypeExternal]) {
+                return YES;
+            }
+        }
+        if ([deviceType isEqualToString:AVCaptureDeviceTypeExternalUnknown]) {
+            return YES;
+        }
     }
     
     return NO;
@@ -80,14 +107,21 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     NSMutableArray<NSDictionary *> *devicesInfo = [NSMutableArray array];
     
     NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray array];
-    [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
+    BOOL allowContinuity = MRAllowContinuityCamera();
+    
     if (@available(macOS 10.15, *)) {
         [deviceTypes addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
-        if (@available(macOS 14.0, *)) {
-            [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
-        }
     } else {
         [deviceTypes addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+    }
+    
+    if (allowContinuity) {
+        if (@available(macOS 14.0, *)) {
+            [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
+            [deviceTypes addObject:AVCaptureDeviceTypeExternal];
+        } else {
+            [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
+        }
     }
     
     AVCaptureDeviceDiscoverySession *discoverySession =
@@ -97,6 +131,10 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     
     for (AVCaptureDevice *device in discoverySession.devices) {
         BOOL continuityCamera = MRIsContinuityCamera(device);
+        if (continuityCamera && !allowContinuity) {
+            // Skip Continuity cameras when entitlement/env flag is missing
+            continue;
+        }
         
         // Determine the best (maximum) resolution format for this device
         CMVideoDimensions bestDimensions = {0, 0};
@@ -264,12 +302,25 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             }
         }
         
-        if (bestRange) {
-            double clampedRate = MIN(bestRange.maxFrameRate, MAX(bestRange.minFrameRate, targetFrameRate));
-            CMTime frameDuration = CMTimeMake(1, (int32_t)round(clampedRate));
-            device.activeVideoMinFrameDuration = frameDuration;
-            device.activeVideoMaxFrameDuration = frameDuration;
+    if (bestRange) {
+        double clampedRate = MIN(bestRange.maxFrameRate, MAX(bestRange.minFrameRate, targetFrameRate));
+        double durationSeconds = clampedRate > 0.0 ? (1.0 / clampedRate) : CMTimeGetSeconds(bestRange.maxFrameDuration);
+        int32_t preferredTimescale = bestRange.minFrameDuration.timescale > 0 ? bestRange.minFrameDuration.timescale : 600;
+        CMTime desiredDuration = CMTimeMakeWithSeconds(durationSeconds, preferredTimescale);
+        
+        if (!CMTIME_IS_NUMERIC(desiredDuration)) {
+            desiredDuration = bestRange.maxFrameDuration;
         }
+        
+        if (CMTimeCompare(desiredDuration, bestRange.minFrameDuration) < 0) {
+            desiredDuration = bestRange.minFrameDuration;
+        } else if (CMTimeCompare(desiredDuration, bestRange.maxFrameDuration) > 0) {
+            desiredDuration = bestRange.maxFrameDuration;
+        }
+        
+        device.activeVideoMinFrameDuration = desiredDuration;
+        device.activeVideoMaxFrameDuration = desiredDuration;
+    }
     } @catch (NSException *exception) {
         if (error) {
             NSDictionary *userInfo = @{
@@ -298,6 +349,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     
     NSString *extension = outputURL.pathExtension.lowercaseString;
     BOOL wantsWebM = [extension isEqualToString:@"webm"];
+    NSString *originalPath = outputURL.path ?: @"";
     
     NSString *codec = AVVideoCodecTypeH264;
     AVFileType fileType = AVFileTypeQuickTimeMovie;
@@ -315,7 +367,42 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     }
     
     NSError *writerError = nil;
-    self.assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:fileType error:&writerError];
+    @try {
+        self.assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL fileType:fileType error:&writerError];
+    } @catch (NSException *exception) {
+        NSDictionary *info = @{
+            NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize asset writer"
+        };
+        writerError = [NSError errorWithDomain:@"CameraRecorder" code:-100 userInfo:info];
+        self.assetWriter = nil;
+    }
+    
+    if ((!self.assetWriter || writerError) && wantsWebM) {
+        MRLog(@"⚠️ CameraRecorder: WebM writer unavailable (%@) – falling back to QuickTime container", writerError.localizedDescription);
+        codec = AVVideoCodecTypeH264;
+        fileType = AVFileTypeQuickTimeMovie;
+        webMSupported = NO;
+        writerError = nil;
+        NSString *fallbackPath = [[originalPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+        if (!fallbackPath || [fallbackPath length] == 0) {
+            fallbackPath = [originalPath stringByAppendingString:@".mov"];
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:fallbackPath error:nil];
+        NSURL *fallbackURL = [NSURL fileURLWithPath:fallbackPath];
+        self.outputPath = fallbackPath;
+        @try {
+            self.assetWriter = [[AVAssetWriter alloc] initWithURL:fallbackURL fileType:fileType error:&writerError];
+        } @catch (NSException *exception) {
+            NSDictionary *info = @{
+                NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize asset writer"
+            };
+            writerError = [NSError errorWithDomain:@"CameraRecorder" code:-100 userInfo:info];
+            self.assetWriter = nil;
+        }
+        outputURL = fallbackURL;
+    } else {
+        self.outputPath = originalPath;
+    }
     
     if (!self.assetWriter || writerError) {
         if (error) {
@@ -324,7 +411,6 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return NO;
     }
     
-    // On fallback, if WebM was requested but not supported, log and switch extension to .mov
     if (wantsWebM && !webMSupported) {
         MRLog(@"ℹ️ CameraRecorder: WebM unavailable, storing data in QuickTime container");
     }
@@ -349,7 +435,6 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         AVVideoCompressionPropertiesKey: compressionProps
     };
     
-    // Video-only writer input (camera recordings remain silent by design)
     self.assetWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
                                                                outputSettings:videoSettings];
     self.assetWriterInput.expectsMediaDataInRealTime = YES;
@@ -444,26 +529,15 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return NO;
     }
 
-    BOOL isContinuityCamera = MRIsContinuityCamera(device);
-    if (isContinuityCamera) {
-        id continuityKey = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"NSCameraUseContinuityCameraDeviceType"];
-        BOOL allowContinuity = NO;
-        if ([continuityKey respondsToSelector:@selector(boolValue)]) {
-            allowContinuity = [continuityKey boolValue];
+    if (MRIsContinuityCamera(device) && !MRAllowContinuityCamera()) {
+        if (error) {
+            NSDictionary *userInfo = @{
+                NSLocalizedDescriptionKey: @"Continuity Camera requires NSCameraUseContinuityCameraDeviceType=true in Info.plist"
+            };
+            *error = [NSError errorWithDomain:@"CameraRecorder" code:-5 userInfo:userInfo];
         }
-        if (!allowContinuity && getenv("ALLOW_CONTINUITY_CAMERA")) {
-            allowContinuity = YES;
-        }
-        if (!allowContinuity) {
-            if (error) {
-                NSDictionary *userInfo = @{
-                    NSLocalizedDescriptionKey: @"Continuity Camera requires NSCameraUseContinuityCameraDeviceType=true in Info.plist"
-                };
-                *error = [NSError errorWithDomain:@"CameraRecorder" code:-5 userInfo:userInfo];
-            }
-            MRLog(@"⚠️ Continuity Camera access denied - missing Info.plist entitlement");
-            return NO;
-        }
+        MRLog(@"⚠️ Continuity Camera access denied - missing Info.plist entitlement");
+        return NO;
     }
     
     int32_t width = 0;
@@ -521,9 +595,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     AVCaptureConnection *connection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
     if (connection) {
         if (connection.isVideoOrientationSupported) {
-            connection.videoOrientation = AVCaptureVideoOrientationLandscapeRight;
+            connection.videoOrientation = AVCaptureVideoOrientationPortrait;
         }
         if (connection.isVideoMirroringSupported && device.position == AVCaptureDevicePositionFront) {
+            if ([connection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
+                connection.automaticallyAdjustsVideoMirroring = NO;
+            }
             connection.videoMirrored = YES;
         }
     }
@@ -651,17 +728,13 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 extern "C" {
 
 NSArray<NSDictionary *> *listCameraDevices() {
-    @autoreleasepool {
-        return [CameraRecorder availableCameraDevices];
-    }
+    return [CameraRecorder availableCameraDevices];
 }
 
 bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error) {
-    @autoreleasepool {
-        return [[CameraRecorder sharedRecorder] startRecordingWithDeviceId:deviceId
-                                                                outputPath:outputPath
-                                                                     error:error];
-    }
+    return [[CameraRecorder sharedRecorder] startRecordingWithDeviceId:deviceId
+                                                            outputPath:outputPath
+                                                                 error:error];
 }
 
 bool stopCameraRecording() {
@@ -672,6 +745,10 @@ bool stopCameraRecording() {
 
 bool isCameraRecording() {
     return [CameraRecorder sharedRecorder].isRecording;
+}
+
+NSString *currentCameraRecordingPath() {
+    return [CameraRecorder sharedRecorder].outputPath;
 }
 
 }

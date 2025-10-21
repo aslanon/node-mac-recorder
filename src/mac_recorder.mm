@@ -26,12 +26,16 @@ extern "C" {
     bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error);
     bool stopCameraRecording();
     bool isCameraRecording();
+    NSString *currentCameraRecordingPath();
+    NSString *currentStandaloneAudioRecordingPath();
 
     NSArray<NSDictionary *> *listAudioCaptureDevices();
     bool startStandaloneAudioRecording(NSString *outputPath, NSString *preferredDeviceId, NSError **error);
     bool stopStandaloneAudioRecording();
     bool isStandaloneAudioRecording();
     bool hasAudioPermission();
+
+    NSString *ScreenCaptureKitCurrentAudioPath(void);
 }
 
 // Cursor tracker function declarations
@@ -56,7 +60,7 @@ static bool g_isRecording = false;
 static bool g_usingStandaloneAudio = false;
 
 static bool startCameraIfRequested(bool captureCamera,
-                                   NSString *cameraOutputPath,
+                                   NSString **cameraOutputPathRef,
                                    NSString *cameraDeviceId,
                                    const std::string &screenOutputPath,
                                    int64_t sessionTimestampMs) {
@@ -64,7 +68,7 @@ static bool startCameraIfRequested(bool captureCamera,
         return true;
     }
     
-    NSString *resolvedOutputPath = cameraOutputPath;
+    NSString *resolvedOutputPath = cameraOutputPathRef ? *cameraOutputPathRef : nil;
     if (!resolvedOutputPath || [resolvedOutputPath length] == 0) {
         NSString *screenPath = [NSString stringWithUTF8String:screenOutputPath.c_str()];
         NSString *directory = nil;
@@ -90,6 +94,13 @@ static bool startCameraIfRequested(bool captureCamera,
             NSLog(@"❌ Failed to start camera recording: Unknown error");
         }
         return false;
+    }
+    NSString *actualPath = currentCameraRecordingPath();
+    if (actualPath && [actualPath length] > 0) {
+        resolvedOutputPath = actualPath;
+        if (cameraOutputPathRef) {
+            *cameraOutputPathRef = actualPath;
+        }
     }
     
     MRLog(@"🎥 Camera recording started (output: %@)", resolvedOutputPath);
@@ -396,7 +407,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                             MRLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
                             MRLog(@"✅ ScreenCaptureKit recording started successfully");
                             
-                            if (!startCameraIfRequested(captureCamera, cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
+                            if (!startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
                                 MRLog(@"❌ Camera start failed - stopping ScreenCaptureKit session");
                                 [ScreenCaptureKitRecorder stopRecording];
                                 g_isRecording = false;
@@ -474,7 +485,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 MRLog(@"🎥 RECORDING METHOD: AVFoundation");
                 MRLog(@"✅ AVFoundation recording started successfully");
                 
-                if (!startCameraIfRequested(captureCamera, cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
+                if (!startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
                     MRLog(@"❌ Camera start failed - stopping AVFoundation session");
                     stopAVFoundationRecording();
                     g_isRecording = false;
@@ -724,98 +735,137 @@ Napi::Value GetCameraDevices(const Napi::CallbackInfo& info) {
     Napi::Array result = Napi::Array::New(env);
     
     @try {
-        NSArray<NSDictionary *> *devices = listCameraDevices();
-        if (!devices) {
-            return result;
-        }
-        
-        NSUInteger index = 0;
-        for (id entry in devices) {
-            if (![entry isKindOfClass:[NSDictionary class]]) {
-                continue;
+        @autoreleasepool {
+            NSArray<NSDictionary *> *devices = listCameraDevices();
+            if (!devices) {
+                return result;
             }
             
-            NSDictionary *camera = (NSDictionary *)entry;
-            Napi::Object cameraObj = Napi::Object::New(env);
-            
-            NSString *identifier = camera[@"id"];
-            NSString *name = camera[@"name"];
-            NSString *model = camera[@"model"];
-            NSString *manufacturer = camera[@"manufacturer"];
-            NSString *position = camera[@"position"];
-            NSNumber *transportType = camera[@"transportType"];
-            NSNumber *isConnected = camera[@"isConnected"];
-            NSNumber *hasFlash = camera[@"hasFlash"];
-            NSNumber *supportsDepth = camera[@"supportsDepth"];
-            
-            if (identifier && [identifier isKindOfClass:[NSString class]]) {
-                cameraObj.Set("id", Napi::String::New(env, [identifier UTF8String]));
-            } else {
-                cameraObj.Set("id", Napi::String::New(env, ""));
-            }
-            
-            if (name && [name isKindOfClass:[NSString class]]) {
-                cameraObj.Set("name", Napi::String::New(env, [name UTF8String]));
-            } else {
-                cameraObj.Set("name", Napi::String::New(env, "Unknown Camera"));
-            }
-            
-            if (model && [model isKindOfClass:[NSString class]]) {
-                cameraObj.Set("model", Napi::String::New(env, [model UTF8String]));
-            }
-            
-            if (manufacturer && [manufacturer isKindOfClass:[NSString class]]) {
-                cameraObj.Set("manufacturer", Napi::String::New(env, [manufacturer UTF8String]));
-            }
-            
-            if (position && [position isKindOfClass:[NSString class]]) {
-                cameraObj.Set("position", Napi::String::New(env, [position UTF8String]));
-            }
-            
-            if (transportType && [transportType isKindOfClass:[NSNumber class]]) {
-                cameraObj.Set("transportType", Napi::Number::New(env, [transportType integerValue]));
-            }
-            
-            if (isConnected && [isConnected isKindOfClass:[NSNumber class]]) {
-                cameraObj.Set("isConnected", Napi::Boolean::New(env, [isConnected boolValue]));
-            }
-            
-            if (hasFlash && [hasFlash isKindOfClass:[NSNumber class]]) {
-                cameraObj.Set("hasFlash", Napi::Boolean::New(env, [hasFlash boolValue]));
-            }
-            
-            if (supportsDepth && [supportsDepth isKindOfClass:[NSNumber class]]) {
-                cameraObj.Set("supportsDepth", Napi::Boolean::New(env, [supportsDepth boolValue]));
-            }
-            
-            NSDictionary *maxResolution = camera[@"maxResolution"];
-            if (maxResolution && [maxResolution isKindOfClass:[NSDictionary class]]) {
-                Napi::Object maxResObj = Napi::Object::New(env);
-                
-                NSNumber *width = maxResolution[@"width"];
-                NSNumber *height = maxResolution[@"height"];
-                NSNumber *frameRate = maxResolution[@"maxFrameRate"];
-                
-                if (width && [width isKindOfClass:[NSNumber class]]) {
-                    maxResObj.Set("width", Napi::Number::New(env, [width integerValue]));
-                }
-                if (height && [height isKindOfClass:[NSNumber class]]) {
-                    maxResObj.Set("height", Napi::Number::New(env, [height integerValue]));
-                }
-                if (frameRate && [frameRate isKindOfClass:[NSNumber class]]) {
-                    maxResObj.Set("maxFrameRate", Napi::Number::New(env, [frameRate doubleValue]));
+            NSUInteger index = 0;
+            for (id entry in devices) {
+                if (![entry isKindOfClass:[NSDictionary class]]) {
+                    continue;
                 }
                 
-                cameraObj.Set("maxResolution", maxResObj);
+                NSDictionary *camera = (NSDictionary *)entry;
+                Napi::Object cameraObj = Napi::Object::New(env);
+                
+                NSString *identifier = camera[@"id"];
+                NSString *name = camera[@"name"];
+                NSString *model = camera[@"model"];
+                NSString *manufacturer = camera[@"manufacturer"];
+                NSString *position = camera[@"position"];
+                NSNumber *transportType = camera[@"transportType"];
+                NSNumber *isConnected = camera[@"isConnected"];
+                NSNumber *hasFlash = camera[@"hasFlash"];
+                NSNumber *supportsDepth = camera[@"supportsDepth"];
+                
+                if (identifier && [identifier isKindOfClass:[NSString class]]) {
+                    cameraObj.Set("id", Napi::String::New(env, [identifier UTF8String]));
+                } else {
+                    cameraObj.Set("id", Napi::String::New(env, ""));
+                }
+                
+                if (name && [name isKindOfClass:[NSString class]]) {
+                    cameraObj.Set("name", Napi::String::New(env, [name UTF8String]));
+                } else {
+                    cameraObj.Set("name", Napi::String::New(env, "Unknown Camera"));
+                }
+                
+                if (model && [model isKindOfClass:[NSString class]]) {
+                    cameraObj.Set("model", Napi::String::New(env, [model UTF8String]));
+                }
+                
+                if (manufacturer && [manufacturer isKindOfClass:[NSString class]]) {
+                    cameraObj.Set("manufacturer", Napi::String::New(env, [manufacturer UTF8String]));
+                }
+                
+                if (position && [position isKindOfClass:[NSString class]]) {
+                    cameraObj.Set("position", Napi::String::New(env, [position UTF8String]));
+                }
+                
+                if (transportType && [transportType isKindOfClass:[NSNumber class]]) {
+                    cameraObj.Set("transportType", Napi::Number::New(env, [transportType integerValue]));
+                }
+                
+                if (isConnected && [isConnected isKindOfClass:[NSNumber class]]) {
+                    cameraObj.Set("isConnected", Napi::Boolean::New(env, [isConnected boolValue]));
+                }
+                
+                if (hasFlash && [hasFlash isKindOfClass:[NSNumber class]]) {
+                    cameraObj.Set("hasFlash", Napi::Boolean::New(env, [hasFlash boolValue]));
+                }
+                
+                if (supportsDepth && [supportsDepth isKindOfClass:[NSNumber class]]) {
+                    cameraObj.Set("supportsDepth", Napi::Boolean::New(env, [supportsDepth boolValue]));
+                }
+                
+                NSDictionary *maxResolution = camera[@"maxResolution"];
+                if (maxResolution && [maxResolution isKindOfClass:[NSDictionary class]]) {
+                    Napi::Object maxResObj = Napi::Object::New(env);
+                    
+                    NSNumber *width = maxResolution[@"width"];
+                    NSNumber *height = maxResolution[@"height"];
+                    NSNumber *frameRate = maxResolution[@"maxFrameRate"];
+                    
+                    if (width && [width isKindOfClass:[NSNumber class]]) {
+                        maxResObj.Set("width", Napi::Number::New(env, [width integerValue]));
+                    }
+                    if (height && [height isKindOfClass:[NSNumber class]]) {
+                        maxResObj.Set("height", Napi::Number::New(env, [height integerValue]));
+                    }
+                    if (frameRate && [frameRate isKindOfClass:[NSNumber class]]) {
+                        maxResObj.Set("maxFrameRate", Napi::Number::New(env, [frameRate doubleValue]));
+                    }
+                    
+                    cameraObj.Set("maxResolution", maxResObj);
+                }
+                
+                result[index++] = cameraObj;
             }
-            
-            result[index++] = cameraObj;
         }
         
         return result;
     } @catch (NSException *exception) {
         NSLog(@"❌ Exception while listing camera devices: %@", exception.reason);
         return result;
+    }
+}
+
+Napi::Value GetCameraRecordingPath(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    @try {
+        NSString *path = currentCameraRecordingPath();
+        if (!path || [path length] == 0) {
+            return env.Null();
+        }
+        return Napi::String::New(env, [path UTF8String]);
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception while reading camera output path: %@", exception.reason);
+        return env.Null();
+    }
+}
+
+Napi::Value GetAudioRecordingPath(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    @try {
+        NSString *path = nil;
+        if (@available(macOS 12.3, *)) {
+            path = ScreenCaptureKitCurrentAudioPath();
+        }
+        if ([path isKindOfClass:[NSArray class]]) {
+            path = [(NSArray *)path firstObject];
+        }
+        if (!path || [path length] == 0) {
+            path = currentStandaloneAudioRecordingPath();
+        }
+        if (!path || [path length] == 0) {
+            return env.Null();
+        }
+        return Napi::String::New(env, [path UTF8String]);
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception while reading audio output path: %@", exception.reason);
+        return env.Null();
     }
 }
 
@@ -1222,6 +1272,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     exports.Set(Napi::String::New(env, "getAudioDevices"), Napi::Function::New(env, GetAudioDevices));
     exports.Set(Napi::String::New(env, "getCameraDevices"), Napi::Function::New(env, GetCameraDevices));
+    exports.Set(Napi::String::New(env, "getCameraRecordingPath"), Napi::Function::New(env, GetCameraRecordingPath));
+    exports.Set(Napi::String::New(env, "getAudioRecordingPath"), Napi::Function::New(env, GetAudioRecordingPath));
     exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
     exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
     exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
