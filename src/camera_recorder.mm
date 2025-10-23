@@ -82,6 +82,10 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 @property (atomic, assign) BOOL writerStarted;
 @property (atomic, assign) BOOL isShuttingDown;
 @property (nonatomic, assign) CMTime firstSampleTime;
+@property (nonatomic, assign) int32_t expectedWidth;
+@property (nonatomic, assign) int32_t expectedHeight;
+@property (nonatomic, assign) double expectedFrameRate;
+@property (atomic, assign) BOOL needsReconfiguration;
 
 + (instancetype)sharedRecorder;
 + (NSArray<NSDictionary *> *)availableCameraDevices;
@@ -242,23 +246,28 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     AVCaptureDeviceFormat *bestFormat = nil;
     int64_t bestResolutionScore = 0;
     double bestFrameRate = 0.0;
-    
+
+    MRLog(@"🔍 Scanning formats for device: %@", device.localizedName);
+
     for (AVCaptureDeviceFormat *format in device.formats) {
         CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
         if (dims.width <= 0 || dims.height <= 0) {
             continue;
         }
-        
+
+        // No filtering - use whatever the device supports
+        // The device knows best what it can capture
+
         int64_t score = (int64_t)dims.width * (int64_t)dims.height;
-        
+
         double maxFrameRate = 0.0;
         for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
             maxFrameRate = MAX(maxFrameRate, range.maxFrameRate);
         }
-        
+
         BOOL usesBetterResolution = score > bestResolutionScore;
         BOOL sameResolutionHigherFps = (score == bestResolutionScore) && (maxFrameRate > bestFrameRate);
-        
+
         if (!bestFormat || usesBetterResolution || sameResolutionHigherFps) {
             bestFormat = format;
             bestResolutionScore = score;
@@ -266,9 +275,17 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             if (widthOut) *widthOut = dims.width;
             if (heightOut) *heightOut = dims.height;
             if (frameRateOut) *frameRateOut = bestFrameRate;
+            MRLog(@"   ✅ New best: %dx%d @ %.0ffps (score=%lld)",
+                  dims.width, dims.height, maxFrameRate, score);
         }
     }
-    
+
+    if (bestFormat) {
+        MRLog(@"📹 Selected format: %dx%d @ %.0ffps", *widthOut, *heightOut, *frameRateOut);
+    } else {
+        MRLog(@"❌ No suitable format found");
+    }
+
     return bestFormat;
 }
 
@@ -415,17 +432,28 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         MRLog(@"ℹ️ CameraRecorder: WebM unavailable, storing data in QuickTime container");
     }
     
-    NSInteger bitrate = (NSInteger)(width * height * 6); // Empirical bitrate multiplier
-    bitrate = MAX(bitrate, 5 * 1000 * 1000); // Minimum 5 Mbps
+    // Calculate bitrate based on resolution for high quality
+    // Use higher multiplier for better quality (10 instead of 6)
+    NSInteger bitrate = (NSInteger)(width * height * 10);
+    bitrate = MAX(bitrate, 8 * 1000 * 1000); // Minimum 8 Mbps for quality
+    bitrate = MIN(bitrate, 50 * 1000 * 1000); // Maximum 50 Mbps to avoid excessive file size
+
+    MRLog(@"🎬 Camera encoder settings: %dx%d @ %.2ffps, bitrate=%.2fMbps",
+          width, height, frameRate, bitrate / (1000.0 * 1000.0));
     
     NSMutableDictionary *compressionProps = [@{
         AVVideoAverageBitRateKey: @(bitrate),
         AVVideoMaxKeyFrameIntervalKey: @(MAX(1, (int)round(frameRate))),
-        AVVideoAllowFrameReorderingKey: @YES
+        AVVideoAllowFrameReorderingKey: @YES,
+        AVVideoExpectedSourceFrameRateKey: @(frameRate),
+        // Add quality hint for better encoding
+        AVVideoQualityKey: @(0.9) // 0.0-1.0, higher is better quality
     } mutableCopy];
-    
+
     if ([codec isEqualToString:AVVideoCodecTypeH264]) {
         compressionProps[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel;
+        // Use Main profile for better quality
+        compressionProps[AVVideoH264EntropyModeKey] = AVVideoH264EntropyModeCABAC;
     }
     
     NSDictionary *videoSettings = @{
@@ -440,9 +468,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     self.assetWriterInput.expectsMediaDataInRealTime = YES;
     
     NSDictionary *pixelBufferAttributes = @{
-        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (NSString *)kCVPixelBufferWidthKey: @(width),
-        (NSString *)kCVPixelBufferHeightKey: @(height)
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        // Preserve aspect ratio and use high quality scaling
+        (NSString *)kCVPixelBufferCGImageCompatibilityKey: @YES,
+        (NSString *)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
     };
     
     self.pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:self.assetWriterInput
@@ -572,8 +603,10 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     
     self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
     self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
+    // Use video range (not full range) for better compatibility and quality
+    // YpCbCr 4:2:0 biplanar is the native format for most cameras
     self.videoOutput.videoSettings = @{
-        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     };
     
     self.captureQueue = dispatch_queue_create("node_mac_recorder.camera.queue", DISPATCH_QUEUE_SERIAL);
@@ -594,31 +627,39 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     
     AVCaptureConnection *connection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
     if (connection) {
-        if (connection.isVideoOrientationSupported) {
-            connection.videoOrientation = AVCaptureVideoOrientationPortrait;
-        }
+        // DON'T set orientation - let the camera use its natural orientation
+        // The device knows best (portrait for phones, landscape for webcams)
+        // We just capture whatever comes through
+
+        // Mirror front cameras for natural preview
         if (connection.isVideoMirroringSupported && device.position == AVCaptureDevicePositionFront) {
             if ([connection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
                 connection.automaticallyAdjustsVideoMirroring = NO;
             }
             connection.videoMirrored = YES;
         }
+
+        // Log actual connection properties for debugging
+        MRLog(@"📐 Camera connection: orientation=%ld (native), mirrored=%d, format=%dx%d",
+              (long)connection.videoOrientation,
+              connection.isVideoMirrored,
+              width, height);
     }
     
-    NSURL *outputURL = [NSURL fileURLWithPath:outputPath];
-    if (![self setupWriterWithURL:outputURL width:width height:height frameRate:frameRate error:error]) {
-        [self.session stopRunning];
-        [self resetState];
-        return NO;
-    }
-    
+    // DON'T setup writer yet - wait for first frame to get actual dimensions
+    // Store configuration for lazy initialization
     self.outputPath = outputPath;
     self.isRecording = YES;
     self.isShuttingDown = NO;
-    
+    self.expectedWidth = width;
+    self.expectedHeight = height;
+    self.expectedFrameRate = frameRate;
+    self.needsReconfiguration = NO;
+
     [self.session startRunning];
-    
-    MRLog(@"🎥 CameraRecorder started: %@ (%dx%d @ %.2ffps)", device.localizedName, width, height, frameRate);
+
+    MRLog(@"🎥 CameraRecorder started: %@ (will use actual frame dimensions)", device.localizedName);
+    MRLog(@"   Format reports: %dx%d @ %.2ffps", width, height, frameRate);
     return YES;
 }
 
@@ -674,18 +715,54 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     if (!self.isRecording || self.isShuttingDown) {
         return;
     }
-    
+
     if (!sampleBuffer) {
         return;
     }
-    
+
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+
+    // Lazy initialization - setup writer with actual frame dimensions
+    if (!self.assetWriter) {
+        CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (!pixelBuffer) {
+            MRLog(@"❌ No pixel buffer in first frame");
+            return;
+        }
+
+        size_t actualWidth = CVPixelBufferGetWidth(pixelBuffer);
+        size_t actualHeight = CVPixelBufferGetHeight(pixelBuffer);
+
+        MRLog(@"🎬 First frame received: %zux%zu (format said %dx%d)",
+              actualWidth, actualHeight, self.expectedWidth, self.expectedHeight);
+
+        // Use ACTUAL dimensions from the frame, not format dimensions
+        NSURL *outputURL = [NSURL fileURLWithPath:self.outputPath];
+        NSError *setupError = nil;
+
+        // Use frame rate from device configuration
+        double frameRate = self.expectedFrameRate > 0 ? self.expectedFrameRate : 30.0;
+
+        if (![self setupWriterWithURL:outputURL
+                                width:(int32_t)actualWidth
+                               height:(int32_t)actualHeight
+                            frameRate:frameRate
+                                error:&setupError]) {
+            MRLog(@"❌ Failed to setup writer with actual dimensions: %@", setupError);
+            self.isRecording = NO;
+            return;
+        }
+
+        MRLog(@"✅ Writer configured with ACTUAL dimensions: %zux%zu", actualWidth, actualHeight);
+    }
+
     if (!self.writerStarted) {
         if (self.assetWriter.status == AVAssetWriterStatusUnknown) {
             if ([self.assetWriter startWriting]) {
                 [self.assetWriter startSessionAtSourceTime:timestamp];
                 self.writerStarted = YES;
                 self.firstSampleTime = timestamp;
+                MRLog(@"✅ Camera writer started");
             } else {
                 MRLog(@"❌ CameraRecorder: Failed to start asset writer: %@", self.assetWriter.error);
                 self.isRecording = NO;

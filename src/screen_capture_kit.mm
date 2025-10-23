@@ -493,10 +493,9 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     MRLog(@"🔍 AUDIO DEBUG: includeMicrophone type=%@ value=%d", [includeMicrophone class], [includeMicrophone boolValue]);
     MRLog(@"🔍 AUDIO DEBUG: includeSystemAudio type=%@ value=%d", [includeSystemAudio class], [includeSystemAudio boolValue]);
 
-    // ELECTRON FIX: Get shareable content asynchronously without blocking
-    // This prevents deadlocks in Electron's event loop
+    // ELECTRON FIX: Get shareable content FULLY ASYNCHRONOUSLY
+    // NO semaphores, NO blocking - pure async to prevent Electron crashes
     [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
-        // This block runs asynchronously - safe for Electron
         @autoreleasepool {
         if (contentError) {
             NSLog(@"❌ Content error: %@", contentError);
@@ -742,7 +741,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             MRLog(@"🕒 Session timestamp: %@", sessionTimestampNumber);
         }
 
-        // ELECTRON FIX: Start capture asynchronously
+        // ELECTRON FIX: Start capture FULLY ASYNCHRONOUSLY - NO blocking
         [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
             if (startError) {
                 NSLog(@"❌ Failed to start pure capture: %@", startError);
@@ -773,22 +772,24 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     // Store stream reference to prevent it from being deallocated
     SCStream *streamToStop = g_stream;
 
-    // ELECTRON FIX: Stop asynchronously without blocking
+    // ELECTRON FIX: Stop FULLY ASYNCHRONOUSLY - NO blocking, NO semaphores
     [streamToStop stopCaptureWithCompletionHandler:^(NSError *stopError) {
-        if (stopError) {
-            NSLog(@"❌ Stop error: %@", stopError);
-        } else {
-            MRLog(@"✅ Pure stream stopped");
-        }
+        @autoreleasepool {
+            if (stopError) {
+                NSLog(@"❌ Stop error: %@", stopError);
+            } else {
+                MRLog(@"✅ Pure stream stopped");
+            }
 
-        // Reset recording state to allow new recordings
-        @synchronized([ScreenCaptureKitRecorder class]) {
-            g_isRecording = NO;
-        }
+            // Reset recording state to allow new recordings
+            @synchronized([ScreenCaptureKitRecorder class]) {
+                g_isRecording = NO;
+            }
 
-        // Cleanup after stop completes
-        CleanupWriters();
-        [ScreenCaptureKitRecorder cleanupVideoWriter];
+            // Cleanup after stop completes
+            CleanupWriters();
+            [ScreenCaptureKitRecorder cleanupVideoWriter];
+        }
     }];
 }
 
