@@ -328,29 +328,29 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                          (NSBundle.mainBundle.bundlePath && 
                           [NSBundle.mainBundle.bundlePath containsString:@"Electron"]);
         
-        if (isElectron) {
-            MRLog(@"⚡ Electron environment detected - continuing with ScreenCaptureKit");
-            MRLog(@"⚠️ Warning: ScreenCaptureKit in Electron may require additional stability measures");
-        }
-        
         // Check macOS version for ScreenCaptureKit compatibility
         NSOperatingSystemVersion osVersion = [[NSProcessInfo processInfo] operatingSystemVersion];
         BOOL isM15Plus = (osVersion.majorVersion >= 15);
         BOOL isM14Plus = (osVersion.majorVersion >= 14);
         BOOL isM13Plus = (osVersion.majorVersion >= 13);
-        
-        MRLog(@"🖥️ macOS Version: %ld.%ld.%ld", 
+
+        MRLog(@"🖥️ macOS Version: %ld.%ld.%ld",
               (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
-        
-        // Force AVFoundation for debugging/testing
-        BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL);
-        if (forceAVFoundation) {
-            MRLog(@"🔧 FORCE_AVFOUNDATION environment variable detected - skipping ScreenCaptureKit");
+
+        if (isElectron) {
+            MRLog(@"⚡ Electron environment detected");
+            MRLog(@"🔧 CRITICAL FIX: Forcing AVFoundation for Electron stability");
+            MRLog(@"   Reason: ScreenCaptureKit has thread safety issues in Electron (SIGTRAP crashes)");
         }
-        
-        // Electron-first priority: This application is built for Electron.js
-        // macOS 15+ → ScreenCaptureKit (including Electron)
-        // macOS 14/13 → AVFoundation (including Electron)
+
+        // Force AVFoundation for debugging/testing OR Electron
+        BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL) || isElectron;
+        if (getenv("FORCE_AVFOUNDATION") != NULL) {
+            MRLog(@"🔧 FORCE_AVFOUNDATION environment variable detected");
+        }
+
+        // Electron-first priority: ALWAYS use AVFoundation in Electron for stability
+        // ScreenCaptureKit has severe thread safety issues in Electron causing SIGTRAP crashes
         if (isM15Plus && !forceAVFoundation) {
             if (isElectron) {
                 MRLog(@"⚡ ELECTRON PRIORITY: macOS 15+ Electron → ScreenCaptureKit with full support");

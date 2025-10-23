@@ -127,11 +127,9 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
     }
 
-    // Only add Continuity Camera type if allowed
-    if (allowContinuity) {
-        if (@available(macOS 14.0, *)) {
-            [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
-        }
+    // ALWAYS add Continuity Camera type - filtering happens later
+    if (@available(macOS 14.0, *)) {
+        [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
     }
 
     AVCaptureDeviceDiscoverySession *discoverySession =

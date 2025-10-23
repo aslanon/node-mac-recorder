@@ -608,7 +608,15 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
         BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
         g_shouldCaptureAudio = shouldCaptureMic || shouldCaptureSystemAudio;
-        g_audioOutputPath = audioOutputPath;
+
+        // SAFETY: Ensure audioOutputPath is NSString, not NSURL or other type
+        if (audioOutputPath && ![audioOutputPath isKindOfClass:[NSString class]]) {
+            MRLog(@"⚠️ audioOutputPath type mismatch: %@, converting...", NSStringFromClass([audioOutputPath class]));
+            g_audioOutputPath = nil;
+        } else {
+            g_audioOutputPath = audioOutputPath;
+        }
+
         if (g_shouldCaptureAudio && (!g_audioOutputPath || [g_audioOutputPath length] == 0)) {
             NSLog(@"⚠️ Audio capture requested but no audio output path supplied – audio will be disabled");
             g_shouldCaptureAudio = NO;
