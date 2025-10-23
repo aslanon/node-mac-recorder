@@ -9,14 +9,17 @@ static AVVideoCodecType const AVVideoCodecTypeVP9 = @"vp09";
 #endif
 
 static BOOL MRAllowContinuityCamera() {
+    // Check environment variable first (allows runtime override)
+    if (getenv("ALLOW_CONTINUITY_CAMERA")) {
+        return YES;
+    }
+
+    // Check Info.plist
     static dispatch_once_t onceToken;
     static BOOL allowContinuity = NO;
     dispatch_once(&onceToken, ^{
         id continuityKey = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"NSCameraUseContinuityCameraDeviceType"];
         if ([continuityKey respondsToSelector:@selector(boolValue)] && [continuityKey boolValue]) {
-            allowContinuity = YES;
-        }
-        if (!allowContinuity && getenv("ALLOW_CONTINUITY_CAMERA")) {
             allowContinuity = YES;
         }
     });
@@ -127,9 +130,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
     }
 
-    // ALWAYS add Continuity Camera type - filtering happens later
-    if (@available(macOS 14.0, *)) {
-        [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
+    // Add Continuity Camera ONLY if permission is available (to avoid system warning)
+    // But we still want to show external devices that happen to be Continuity cameras
+    if (allowContinuity) {
+        if (@available(macOS 14.0, *)) {
+            [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
+        }
     }
 
     AVCaptureDeviceDiscoverySession *discoverySession =
@@ -139,12 +145,10 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 
     for (AVCaptureDevice *device in discoverySession.devices) {
         BOOL continuityCamera = MRIsContinuityCamera(device);
-        // ONLY skip Continuity cameras when permission is missing
-        // Regular USB/external cameras should ALWAYS be listed
-        if (continuityCamera && !allowContinuity) {
-            MRLog(@"⏭️ Skipping Continuity Camera (permission required): %@", device.localizedName);
-            continue;
-        }
+
+        // NOTE: We list ALL cameras including Continuity Camera
+        // The permission check happens at RECORDING time, not listing time
+        // This allows users to see the device even if permission is missing
         
         // Determine the best (maximum) resolution format for this device
         CMVideoDimensions bestDimensions = {0, 0};

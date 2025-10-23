@@ -122,7 +122,8 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
         AVFormatIDKey: @(kAudioFormatMPEG4AAC),
         AVSampleRateKey: @(sampleRate),
         AVNumberOfChannelsKey: @(channels),
-        AVEncoderBitRateKey: @(192000)
+        AVEncoderBitRateKey: @(256000),  // Increased from 192k to 256k for better quality
+        AVEncoderAudioQualityKey: @(AVAudioQualityHigh)
     } mutableCopy];
 
     if (layoutSize > 0) {
