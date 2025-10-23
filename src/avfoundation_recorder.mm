@@ -212,21 +212,25 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             MRLog(@"🎤 Starting audio capture (mic=%d, system=%d)", includeMicrophone, includeSystemAudio);
 
             // Use provided audio output path or generate one
+            NSString *audioPath = nil;
             if (audioOutputPath && [audioOutputPath length] > 0) {
-                g_avAudioOutputPath = audioOutputPath;
-                MRLog(@"🎤 Using provided audio path: %@", g_avAudioOutputPath);
+                audioPath = audioOutputPath;
+                MRLog(@"🎤 Using provided audio path: %@", audioPath);
             } else {
                 NSString *videoDir = [outputPathStr stringByDeletingLastPathComponent];
                 NSString *audioFilename = [NSString stringWithFormat:@"avf_audio_%ld.mov", (long)[[NSDate date] timeIntervalSince1970]];
-                g_avAudioOutputPath = [videoDir stringByAppendingPathComponent:audioFilename];
-                MRLog(@"🎤 Generated audio path: %@", g_avAudioOutputPath);
+                audioPath = [videoDir stringByAppendingPathComponent:audioFilename];
+                MRLog(@"🎤 Generated audio path: %@", audioPath);
             }
 
             // Ensure .mov extension
-            if (![g_avAudioOutputPath.pathExtension.lowercaseString isEqualToString:@"mov"]) {
-                g_avAudioOutputPath = [[g_avAudioOutputPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
-                MRLog(@"🔧 Fixed audio extension to .mov: %@", g_avAudioOutputPath);
+            if (![audioPath.pathExtension.lowercaseString isEqualToString:@"mov"]) {
+                audioPath = [[audioPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+                MRLog(@"🔧 Fixed audio extension to .mov: %@", audioPath);
             }
+
+            // Copy to retain the string (ARC will manage it)
+            g_avAudioOutputPath = [audioPath copy];
 
             // Create audio recorder
             g_avAudioRecorder = createNativeAudioRecorder();
@@ -404,9 +408,14 @@ extern "C" bool stopAVFoundationRecording() {
     // Stop audio recording if active
     if (g_avAudioRecorder) {
         MRLog(@"🛑 Stopping audio recording");
-        stopNativeAudioRecording(g_avAudioRecorder);
-        destroyNativeAudioRecorder(g_avAudioRecorder);
+        @try {
+            stopNativeAudioRecording(g_avAudioRecorder);
+            destroyNativeAudioRecorder(g_avAudioRecorder);
+        } @catch (NSException *exception) {
+            NSLog(@"⚠️ Exception while stopping audio: %@", exception.reason);
+        }
         g_avAudioRecorder = nil;
+        g_avAudioOutputPath = nil;
         MRLog(@"✅ Audio recording stopped");
     }
 
