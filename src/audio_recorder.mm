@@ -103,10 +103,12 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     
     CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer);
     const AudioStreamBasicDescription *asbd = formatDescription ? CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) : NULL;
-    
-    double sampleRate = asbd ? asbd->mSampleRate : 44100.0;
-    NSUInteger channels = asbd ? asbd->mChannelsPerFrame : 2;
+
+    double sampleRate = asbd ? asbd->mSampleRate : 48000.0;  // Default to 48kHz (not 44.1kHz)
+    NSUInteger channels = asbd ? asbd->mChannelsPerFrame : 1;  // Default to mono
     channels = MAX((NSUInteger)1, channels);
+
+    MRLog(@"🎤 Audio format: %.0f Hz, %lu channel(s)", sampleRate, (unsigned long)channels);
 
     AudioChannelLayout layout = {0};
     size_t layoutSize = 0;
@@ -192,7 +194,17 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
         }
         return NO;
     }
-    
+
+    // Configure audio output settings to ensure proper PCM format
+    NSDictionary *audioOutputSettings = @{
+        AVFormatIDKey: @(kAudioFormatLinearPCM),
+        AVLinearPCMBitDepthKey: @(16),
+        AVLinearPCMIsFloatKey: @(NO),
+        AVLinearPCMIsBigEndianKey: @(NO),
+        AVLinearPCMIsNonInterleaved: @(NO)
+    };
+    [self.audioOutput setAudioSettings:audioOutputSettings];
+
     if (!g_audioCaptureQueue) {
         g_audioCaptureQueue = dispatch_queue_create("native_audio_recorder.queue", DISPATCH_QUEUE_SERIAL);
     }
