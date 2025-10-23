@@ -152,21 +152,40 @@ class MacRecorder extends EventEmitter {
 	 * Kayıt seçeneklerini ayarlar
 	 */
 	setOptions(options = {}) {
-		this.options = {
-			includeMicrophone: options.includeMicrophone === true, // Explicit true required, default false
-			includeSystemAudio: options.includeSystemAudio === true, // Explicit true required, default false  
-			captureCursor: options.captureCursor || false,
-			displayId: options.displayId || null, // null = ana ekran
-			windowId: options.windowId || null, // null = tam ekran
-			audioDeviceId: options.audioDeviceId || null, // null = default device
-			systemAudioDeviceId: options.systemAudioDeviceId || null, // null = auto-detect system audio device
-			captureArea: options.captureArea || null,
-			captureCamera: options.captureCamera === true,
-			cameraDeviceId:
+		// Merge options instead of replacing to preserve previously set values
+		if (options.includeMicrophone !== undefined) {
+			this.options.includeMicrophone = options.includeMicrophone === true;
+		}
+		if (options.includeSystemAudio !== undefined) {
+			this.options.includeSystemAudio = options.includeSystemAudio === true;
+		}
+		if (options.captureCursor !== undefined) {
+			this.options.captureCursor = options.captureCursor || false;
+		}
+		if (options.displayId !== undefined) {
+			this.options.displayId = options.displayId || null;
+		}
+		if (options.windowId !== undefined) {
+			this.options.windowId = options.windowId || null;
+		}
+		if (options.audioDeviceId !== undefined) {
+			this.options.audioDeviceId = options.audioDeviceId || null;
+		}
+		if (options.systemAudioDeviceId !== undefined) {
+			this.options.systemAudioDeviceId = options.systemAudioDeviceId || null;
+		}
+		if (options.captureArea !== undefined) {
+			this.options.captureArea = options.captureArea || null;
+		}
+		if (options.captureCamera !== undefined) {
+			this.options.captureCamera = options.captureCamera === true;
+		}
+		if (options.cameraDeviceId !== undefined) {
+			this.options.cameraDeviceId =
 				typeof options.cameraDeviceId === "string" && options.cameraDeviceId.length > 0
 					? options.cameraDeviceId
-					: null,
-		};
+					: null;
+		}
 	}
 
 	/**

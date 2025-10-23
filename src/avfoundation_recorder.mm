@@ -26,23 +26,24 @@ static void* g_avAudioRecorder = nil;
 static NSString* g_avAudioOutputPath = nil;
 
 // AVFoundation screen recording implementation
-extern "C" bool startAVFoundationRecording(const std::string& outputPath, 
+extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                            CGDirectDisplayID displayID,
                                            uint32_t windowID,
                                            CGRect captureRect,
                                            bool captureCursor,
-                                           bool includeMicrophone, 
+                                           bool includeMicrophone,
                                            bool includeSystemAudio,
-                                           NSString* audioDeviceId) {
+                                           NSString* audioDeviceId,
+                                           NSString* audioOutputPath) {
     
     if (g_avIsRecording) {
         NSLog(@"❌ AVFoundation recording already in progress");
         return false;
     }
-    
+
     @try {
         MRLog(@"🎬 AVFoundation: Starting recording initialization");
-        
+
         // Create output URL
         NSString *outputPathStr = [NSString stringWithUTF8String:outputPath.c_str()];
         NSURL *outputURL = [NSURL fileURLWithPath:outputPathStr];
@@ -210,12 +211,22 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         if (includeMicrophone || includeSystemAudio) {
             MRLog(@"🎤 Starting audio capture (mic=%d, system=%d)", includeMicrophone, includeSystemAudio);
 
-            // Generate audio output path
-            NSString *videoDir = [outputPathStr stringByDeletingLastPathComponent];
-            NSString *audioFilename = [NSString stringWithFormat:@"avf_audio_%ld.mov", (long)[[NSDate date] timeIntervalSince1970]];
-            g_avAudioOutputPath = [videoDir stringByAppendingPathComponent:audioFilename];
+            // Use provided audio output path or generate one
+            if (audioOutputPath && [audioOutputPath length] > 0) {
+                g_avAudioOutputPath = audioOutputPath;
+                MRLog(@"🎤 Using provided audio path: %@", g_avAudioOutputPath);
+            } else {
+                NSString *videoDir = [outputPathStr stringByDeletingLastPathComponent];
+                NSString *audioFilename = [NSString stringWithFormat:@"avf_audio_%ld.mov", (long)[[NSDate date] timeIntervalSince1970]];
+                g_avAudioOutputPath = [videoDir stringByAppendingPathComponent:audioFilename];
+                MRLog(@"🎤 Generated audio path: %@", g_avAudioOutputPath);
+            }
 
-            MRLog(@"🎤 Audio output: %@", g_avAudioOutputPath);
+            // Ensure .mov extension
+            if (![g_avAudioOutputPath.pathExtension.lowercaseString isEqualToString:@"mov"]) {
+                g_avAudioOutputPath = [[g_avAudioOutputPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+                MRLog(@"🔧 Fixed audio extension to .mov: %@", g_avAudioOutputPath);
+            }
 
             // Create audio recorder
             g_avAudioRecorder = createNativeAudioRecorder();
@@ -225,7 +236,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                 const char* outputPathCStr = [g_avAudioOutputPath UTF8String];
 
                 if (startNativeAudioRecording(g_avAudioRecorder, deviceIdCStr, outputPathCStr)) {
-                    MRLog(@"✅ Audio recording started");
+                    MRLog(@"✅ Audio recording started to: %@", g_avAudioOutputPath);
                 } else {
                     NSLog(@"❌ Failed to start audio recording");
                     destroyNativeAudioRecorder(g_avAudioRecorder);
@@ -451,4 +462,8 @@ extern "C" bool stopAVFoundationRecording() {
 
 extern "C" bool isAVFoundationRecording() {
     return g_avIsRecording;
+}
+
+extern "C" NSString* getAVFoundationAudioPath() {
+    return g_avAudioOutputPath;
 }

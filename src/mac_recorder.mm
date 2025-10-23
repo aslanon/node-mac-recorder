@@ -11,16 +11,18 @@
 
 // AVFoundation fallback declarations
 extern "C" {
-    bool startAVFoundationRecording(const std::string& outputPath, 
+    bool startAVFoundationRecording(const std::string& outputPath,
                                    CGDirectDisplayID displayID,
                                    uint32_t windowID,
                                    CGRect captureRect,
                                    bool captureCursor,
-                                   bool includeMicrophone, 
+                                   bool includeMicrophone,
                                    bool includeSystemAudio,
-                                   NSString* audioDeviceId);
+                                   NSString* audioDeviceId,
+                                   NSString* audioOutputPath);
     bool stopAVFoundationRecording();
     bool isAVFoundationRecording();
+    NSString* getAVFoundationAudioPath();
 
     NSArray<NSDictionary *> *listCameraDevices();
     bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error);
@@ -196,7 +198,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
-        
+
         // Capture area
         if (options.Has("captureArea") && options.Get("captureArea").IsObject()) {
             Napi::Object rectObj = options.Get("captureArea").As<Napi::Object>();
@@ -217,15 +219,15 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         
         // Microphone
         if (options.Has("includeMicrophone")) {
-            includeMicrophone = options.Get("includeMicrophone").As<Napi::Boolean>();
+            includeMicrophone = options.Get("includeMicrophone").As<Napi::Boolean>().Value();
         }
-        
+
         // Audio device ID
         if (options.Has("audioDeviceId") && !options.Get("audioDeviceId").IsNull()) {
             std::string deviceId = options.Get("audioDeviceId").As<Napi::String>().Utf8Value();
             audioDeviceId = [NSString stringWithUTF8String:deviceId.c_str()];
         }
-        
+
         // System audio
         if (options.Has("includeSystemAudio")) {
             includeSystemAudio = options.Get("includeSystemAudio").As<Napi::Boolean>();
@@ -349,9 +351,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         BOOL forceAVFoundation = YES;
 
         MRLog(@"🔧 CRITICAL: ScreenCaptureKit disabled globally (segfault issue)");
-        MRLog(@"   Using AVFoundation for stability");
-        MRLog(@"   ⚠️  WARNING: Audio capture not available in AVFoundation mode");
-        MRLog(@"   Audio files will be created but will be empty");
+        MRLog(@"   Using AVFoundation for stability with integrated audio capture");
 
         if (isElectron) {
             MRLog(@"⚡ Electron environment detected - using stable AVFoundation");
@@ -474,20 +474,21 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         
         // AVFoundation recording (either fallback from ScreenCaptureKit or direct)
         MRLog(@"🎥 Starting AVFoundation recording...");
-        
+
         @try {
             // Import AVFoundation recording functions (if available)
-            extern bool startAVFoundationRecording(const std::string& outputPath, 
+            extern bool startAVFoundationRecording(const std::string& outputPath,
                                                    CGDirectDisplayID displayID,
                                                    uint32_t windowID,
                                                    CGRect captureRect,
                                                    bool captureCursor,
-                                                   bool includeMicrophone, 
+                                                   bool includeMicrophone,
                                                    bool includeSystemAudio,
-                                                   NSString* audioDeviceId);
-            
-            bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect, 
-                                                      captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId);
+                                                   NSString* audioDeviceId,
+                                                   NSString* audioOutputPath);
+
+            bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect,
+                                                      captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId, audioOutputPath);
             
             if (avResult) {
                 MRLog(@"🎥 RECORDING METHOD: AVFoundation");
@@ -554,6 +555,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     // Try AVFoundation fallback (supports both Node.js and Electron)
     extern bool isAVFoundationRecording();
     extern bool stopAVFoundationRecording();
+    extern NSString* getAVFoundationAudioPath();
     
     @try {
         if (isAVFoundationRecording()) {
@@ -866,6 +868,9 @@ Napi::Value GetAudioRecordingPath(const Napi::CallbackInfo& info) {
         }
         if (!path || [path length] == 0) {
             path = currentStandaloneAudioRecordingPath();
+        }
+        if (!path || [path length] == 0) {
+            path = getAVFoundationAudioPath();
         }
         if (!path || [path length] == 0) {
             return env.Null();
