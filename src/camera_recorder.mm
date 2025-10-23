@@ -109,34 +109,42 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 
 + (NSArray<NSDictionary *> *)availableCameraDevices {
     NSMutableArray<NSDictionary *> *devicesInfo = [NSMutableArray array];
-    
+
     NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray array];
     BOOL allowContinuity = MRAllowContinuityCamera();
-    
+
+    // Always include built-in and external cameras
     if (@available(macOS 10.15, *)) {
         [deviceTypes addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
     } else {
         [deviceTypes addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
     }
-    
+
+    // ALWAYS add external cameras - they should be available regardless of Continuity permission
+    if (@available(macOS 14.0, *)) {
+        [deviceTypes addObject:AVCaptureDeviceTypeExternal];
+    } else {
+        [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
+    }
+
+    // Only add Continuity Camera type if allowed
     if (allowContinuity) {
         if (@available(macOS 14.0, *)) {
             [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
-            [deviceTypes addObject:AVCaptureDeviceTypeExternal];
-        } else {
-            [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
         }
     }
-    
+
     AVCaptureDeviceDiscoverySession *discoverySession =
         [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:deviceTypes
                                                                mediaType:AVMediaTypeVideo
                                                                 position:AVCaptureDevicePositionUnspecified];
-    
+
     for (AVCaptureDevice *device in discoverySession.devices) {
         BOOL continuityCamera = MRIsContinuityCamera(device);
+        // ONLY skip Continuity cameras when permission is missing
+        // Regular USB/external cameras should ALWAYS be listed
         if (continuityCamera && !allowContinuity) {
-            // Skip Continuity cameras when entitlement/env flag is missing
+            MRLog(@"⏭️ Skipping Continuity Camera (permission required): %@", device.localizedName);
             continue;
         }
         

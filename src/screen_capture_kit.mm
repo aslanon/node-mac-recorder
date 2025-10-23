@@ -120,31 +120,33 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
 @implementation PureScreenCaptureDelegate
 - (void)stream:(SCStream * API_AVAILABLE(macos(12.3)))stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
-    MRLog(@"🛑 Pure ScreenCapture stream stopped");
+    // ELECTRON FIX: Run cleanup on background thread to avoid blocking Electron
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        MRLog(@"🛑 Pure ScreenCapture stream stopped");
 
-    // Prevent recursive calls during cleanup
-    if (g_isCleaningUp) {
-        MRLog(@"⚠️ Already cleaning up, ignoring delegate callback");
-        return;
-    }
-
-    @synchronized([ScreenCaptureKitRecorder class]) {
-        g_isRecording = NO;
-    }
-
-    if (error) {
-        NSLog(@"❌ Stream error: %@", error);
-    } else {
-        MRLog(@"✅ Stream stopped cleanly");
-    }
-
-    // ELECTRON FIX: Don't use dispatch_async to main queue - it can cause crashes
-    // Instead, finalize directly on current thread with synchronization
-    @synchronized([ScreenCaptureKitRecorder class]) {
-        if (!g_isCleaningUp) {
-            [ScreenCaptureKitRecorder finalizeRecording];
+        // Prevent recursive calls during cleanup
+        if (g_isCleaningUp) {
+            MRLog(@"⚠️ Already cleaning up, ignoring delegate callback");
+            return;
         }
-    }
+
+        @synchronized([ScreenCaptureKitRecorder class]) {
+            g_isRecording = NO;
+        }
+
+        if (error) {
+            NSLog(@"❌ Stream error: %@", error);
+        } else {
+            MRLog(@"✅ Stream stopped cleanly");
+        }
+
+        // Finalize on background thread with synchronization
+        @synchronized([ScreenCaptureKitRecorder class]) {
+            if (!g_isCleaningUp) {
+                [ScreenCaptureKitRecorder finalizeRecording];
+            }
+        }
+    });
 }
 @end
 
@@ -460,16 +462,13 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         // Reset any stale state
         g_isCleaningUp = NO;
 
-        // Set flag early to prevent race conditions in Electron
-        g_isRecording = YES;
+        // DON'T set g_isRecording here - wait for stream to actually start
+        // This prevents the "recording=1 stream=null" issue
     }
 
     NSString *outputPath = config[@"outputPath"];
     if (!outputPath || [outputPath length] == 0) {
         NSLog(@"❌ Invalid output path provided");
-        @synchronized([ScreenCaptureKitRecorder class]) {
-            g_isRecording = NO;
-        }
         return NO;
     }
     g_outputPath = outputPath;
@@ -495,15 +494,15 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
     // ELECTRON FIX: Get shareable content FULLY ASYNCHRONOUSLY
     // NO semaphores, NO blocking - pure async to prevent Electron crashes
-    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
-        @autoreleasepool {
-        if (contentError) {
-            NSLog(@"❌ Content error: %@", contentError);
-            @synchronized([ScreenCaptureKitRecorder class]) {
-                g_isRecording = NO;
+    // CRITICAL: Run on background queue to avoid blocking Electron's main thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
+            @autoreleasepool {
+            if (contentError) {
+                NSLog(@"❌ Content error: %@", contentError);
+                // No need to set g_isRecording=NO since it was never set to YES
+                return;  // Early return from completion handler block
             }
-            return;  // Early return from completion handler block
-        }
         
         MRLog(@"✅ Got %lu displays, %lu windows for pure recording", 
               content.displays.count, content.windows.count);
@@ -543,9 +542,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                 recordingHeight = (NSInteger)targetWindow.frame.size.height;
             } else {
                 NSLog(@"❌ Window ID %@ not found", windowId);
-                @synchronized([ScreenCaptureKitRecorder class]) {
-                    g_isRecording = NO;
-                }
+                // No need to set g_isRecording=NO since it was never set to YES
                 return;  // Early return from completion handler block
             }
         }
@@ -575,9 +572,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             
             if (!targetDisplay) {
                 NSLog(@"❌ Display not found");
-                @synchronized([ScreenCaptureKitRecorder class]) {
-                    g_isRecording = NO;
-                }
+                // No need to set g_isRecording=NO since it was never set to YES
                 return;  // Early return from completion handler block
             }
             
@@ -680,9 +675,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         NSError *writerError = nil;
         if (![ScreenCaptureKitRecorder prepareVideoWriterWithWidth:recordingWidth height:recordingHeight error:&writerError]) {
             NSLog(@"❌ Failed to prepare video writer: %@", writerError);
-            @synchronized([ScreenCaptureKitRecorder class]) {
-                g_isRecording = NO;
-            }
+            // No need to set g_isRecording=NO since it was never set to YES
             return;  // Early return from completion handler block
         }
         
@@ -695,29 +688,30 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             g_audioStreamOutput = nil;
         }
         
+        // Create stream outputs and delegate
         g_streamDelegate = [[PureScreenCaptureDelegate alloc] init];
         g_stream = [[SCStream alloc] initWithFilter:filter configuration:streamConfig delegate:g_streamDelegate];
-        
+
+        // Check if stream was created successfully
         if (!g_stream) {
             NSLog(@"❌ Failed to create pure stream");
             CleanupWriters();
-            @synchronized([ScreenCaptureKitRecorder class]) {
-                g_isRecording = NO;
-            }
             return;  // Early return from completion handler block
         }
-        
+
+        MRLog(@"✅ Stream created successfully");
+
         NSError *outputError = nil;
         BOOL videoOutputAdded = [g_stream addStreamOutput:g_videoStreamOutput type:SCStreamOutputTypeScreen sampleHandlerQueue:g_videoQueue error:&outputError];
         if (!videoOutputAdded || outputError) {
             NSLog(@"❌ Failed to add video output: %@", outputError);
             CleanupWriters();
             @synchronized([ScreenCaptureKitRecorder class]) {
-                g_isRecording = NO;
+                g_stream = nil;
             }
             return;  // Early return from completion handler block
         }
-        
+
         if (g_shouldCaptureAudio) {
             if (@available(macOS 13.0, *)) {
                 NSError *audioError = nil;
@@ -726,7 +720,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                     NSLog(@"❌ Failed to add audio output: %@", audioError);
                     CleanupWriters();
                     @synchronized([ScreenCaptureKitRecorder class]) {
-                        g_isRecording = NO;
+                        g_stream = nil;
                     }
                     return;  // Early return from completion handler block
                 }
@@ -735,27 +729,32 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                 g_shouldCaptureAudio = NO;
             }
         }
-        
+
         MRLog(@"✅ Stream outputs configured (audio=%d)", g_shouldCaptureAudio);
         if (sessionTimestampNumber) {
             MRLog(@"🕒 Session timestamp: %@", sessionTimestampNumber);
         }
 
-        // ELECTRON FIX: Start capture FULLY ASYNCHRONOUSLY - NO blocking
+        // Start capture - can be async
         [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
             if (startError) {
                 NSLog(@"❌ Failed to start pure capture: %@", startError);
                 CleanupWriters();
                 @synchronized([ScreenCaptureKitRecorder class]) {
                     g_isRecording = NO;
+                    g_stream = nil;
                 }
             } else {
                 MRLog(@"🎉 PURE ScreenCaptureKit recording started successfully!");
-                // g_isRecording already set to YES at the beginning
+                // NOW set recording flag - stream is actually running
+                @synchronized([ScreenCaptureKitRecorder class]) {
+                    g_isRecording = YES;
+                }
             }
-        }];
+        }];  // End of startCaptureWithCompletionHandler
         }  // End of autoreleasepool
-    }];  // End of getShareableContentWithCompletionHandler
+        }];  // End of getShareableContentWithCompletionHandler
+    });  // End of dispatch_async
 
     // Return immediately - async completion will handle success/failure
     return YES;
