@@ -369,4 +369,37 @@ NSString *currentStandaloneAudioRecordingPath() {
     return g_audioRecorder.outputPath;
 }
 
+// C API for AVFoundation integration
+void* createNativeAudioRecorder() {
+    return (__bridge_retained void*)[[NativeAudioRecorder alloc] init];
+}
+
+bool startNativeAudioRecording(void* recorder, const char* deviceId, const char* outputPath) {
+    if (!recorder || !outputPath) {
+        return false;
+    }
+
+    NativeAudioRecorder* audioRecorder = (__bridge NativeAudioRecorder*)recorder;
+    NSString* deviceIdStr = deviceId ? [NSString stringWithUTF8String:deviceId] : nil;
+    NSString* outputPathStr = [NSString stringWithUTF8String:outputPath];
+
+    NSError* error = nil;
+    return [audioRecorder startRecordingWithDeviceId:deviceIdStr outputPath:outputPathStr error:&error];
+}
+
+bool stopNativeAudioRecording(void* recorder) {
+    if (!recorder) {
+        return false;
+    }
+
+    NativeAudioRecorder* audioRecorder = (__bridge NativeAudioRecorder*)recorder;
+    return [audioRecorder stopRecording];
+}
+
+void destroyNativeAudioRecorder(void* recorder) {
+    if (recorder) {
+        CFRelease(recorder);
+    }
+}
+
 }

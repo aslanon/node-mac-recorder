@@ -7,6 +7,12 @@
 #include <string>
 #import "logging.h"
 
+// Import audio recorder
+extern "C" void* createNativeAudioRecorder(void);
+extern "C" bool startNativeAudioRecording(void* recorder, const char* deviceId, const char* outputPath);
+extern "C" bool stopNativeAudioRecording(void* recorder);
+extern "C" void destroyNativeAudioRecorder(void* recorder);
+
 static AVAssetWriter *g_avWriter = nil;
 static AVAssetWriterInput *g_avVideoInput = nil;
 static AVAssetWriterInputPixelBufferAdaptor *g_avPixelBufferAdaptor = nil;
@@ -16,6 +22,8 @@ static CGRect g_avCaptureRect = CGRectZero;
 static bool g_avIsRecording = false;
 static int64_t g_avFrameNumber = 0;
 static CMTime g_avStartTime;
+static void* g_avAudioRecorder = nil;
+static NSString* g_avAudioOutputPath = nil;
 
 // AVFoundation screen recording implementation
 extern "C" bool startAVFoundationRecording(const std::string& outputPath, 
@@ -197,7 +205,38 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         }
         
         g_avFrameNumber = 0;
-        
+
+        // Start audio recording if requested
+        if (includeMicrophone || includeSystemAudio) {
+            MRLog(@"🎤 Starting audio capture (mic=%d, system=%d)", includeMicrophone, includeSystemAudio);
+
+            // Generate audio output path
+            NSString *videoDir = [outputPathStr stringByDeletingLastPathComponent];
+            NSString *audioFilename = [NSString stringWithFormat:@"avf_audio_%ld.mov", (long)[[NSDate date] timeIntervalSince1970]];
+            g_avAudioOutputPath = [videoDir stringByAppendingPathComponent:audioFilename];
+
+            MRLog(@"🎤 Audio output: %@", g_avAudioOutputPath);
+
+            // Create audio recorder
+            g_avAudioRecorder = createNativeAudioRecorder();
+
+            if (g_avAudioRecorder) {
+                const char* deviceIdCStr = audioDeviceId ? [audioDeviceId UTF8String] : NULL;
+                const char* outputPathCStr = [g_avAudioOutputPath UTF8String];
+
+                if (startNativeAudioRecording(g_avAudioRecorder, deviceIdCStr, outputPathCStr)) {
+                    MRLog(@"✅ Audio recording started");
+                } else {
+                    NSLog(@"❌ Failed to start audio recording");
+                    destroyNativeAudioRecorder(g_avAudioRecorder);
+                    g_avAudioRecorder = nil;
+                    g_avAudioOutputPath = nil;
+                }
+            } else {
+                NSLog(@"❌ Failed to create audio recorder");
+            }
+        }
+
         // Start capture timer (10 FPS for Electron compatibility)
         dispatch_queue_t captureQueue = dispatch_queue_create("AVFoundationCaptureQueue", DISPATCH_QUEUE_SERIAL);
         g_avTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, captureQueue);
@@ -348,9 +387,18 @@ extern "C" bool stopAVFoundationRecording() {
     if (!g_avIsRecording) {
         return true;
     }
-    
+
     g_avIsRecording = false;
-    
+
+    // Stop audio recording if active
+    if (g_avAudioRecorder) {
+        MRLog(@"🛑 Stopping audio recording");
+        stopNativeAudioRecording(g_avAudioRecorder);
+        destroyNativeAudioRecorder(g_avAudioRecorder);
+        g_avAudioRecorder = nil;
+        MRLog(@"✅ Audio recording stopped");
+    }
+
     @try {
         // Stop timer with Electron-safe cleanup
         if (g_avTimer) {

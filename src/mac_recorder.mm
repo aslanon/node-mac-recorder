@@ -343,18 +343,18 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             MRLog(@"   Reason: ScreenCaptureKit has thread safety issues in Electron (SIGTRAP crashes)");
         }
 
-        // Force AVFoundation for debugging/testing OR Electron
-        BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL) || isElectron;
-        if (getenv("FORCE_AVFOUNDATION") != NULL) {
-            MRLog(@"🔧 FORCE_AVFOUNDATION environment variable detected");
-        }
+        // CRITICAL FIX: ScreenCaptureKit causes segmentation faults
+        // Forcing AVFoundation for ALL environments until issue is resolved
+        // TODO: Implement audio capture in AVFoundation
+        BOOL forceAVFoundation = YES;
 
-        // CRITICAL: ScreenCaptureKit causes segmentation faults in both Node.js and Electron
-        // FORCE AVFoundation for ALL environments until Apple fixes stability issues
-        forceAVFoundation = YES;
-        if (forceAVFoundation) {
-            MRLog(@"🔧 CRITICAL: ScreenCaptureKit disabled due to segmentation faults");
-            MRLog(@"   Using AVFoundation for stability in ALL environments");
+        MRLog(@"🔧 CRITICAL: ScreenCaptureKit disabled globally (segfault issue)");
+        MRLog(@"   Using AVFoundation for stability");
+        MRLog(@"   ⚠️  WARNING: Audio capture not available in AVFoundation mode");
+        MRLog(@"   Audio files will be created but will be empty");
+
+        if (isElectron) {
+            MRLog(@"⚡ Electron environment detected - using stable AVFoundation");
         }
 
         // Electron-first priority: ALWAYS use AVFoundation in Electron for stability
