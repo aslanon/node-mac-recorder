@@ -349,6 +349,14 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             MRLog(@"🔧 FORCE_AVFOUNDATION environment variable detected");
         }
 
+        // CRITICAL: ScreenCaptureKit causes segmentation faults in both Node.js and Electron
+        // FORCE AVFoundation for ALL environments until Apple fixes stability issues
+        forceAVFoundation = YES;
+        if (forceAVFoundation) {
+            MRLog(@"🔧 CRITICAL: ScreenCaptureKit disabled due to segmentation faults");
+            MRLog(@"   Using AVFoundation for stability in ALL environments");
+        }
+
         // Electron-first priority: ALWAYS use AVFoundation in Electron for stability
         // ScreenCaptureKit has severe thread safety issues in Electron causing SIGTRAP crashes
         if (isM15Plus && !forceAVFoundation) {
