@@ -225,10 +225,15 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
 @implementation ScreenCaptureAudioOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        MRLog(@"🎤 First audio sample callback received from ScreenCaptureKit");
+    });
+
     if (!g_isRecording || !g_shouldCaptureAudio) {
         return;
     }
-    
+
     if (@available(macOS 13.0, *)) {
         if (type != SCStreamOutputTypeAudio) {
             return;
@@ -236,8 +241,9 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     } else {
         return;
     }
-    
+
     if (!CMSampleBufferDataIsReady(sampleBuffer)) {
+        MRLog(@"⚠️ Audio sample buffer data not ready");
         return;
     }
     
@@ -263,11 +269,21 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     if (!g_audioInput.readyForMoreMediaData) {
+        static int notReadyCount = 0;
+        if (notReadyCount++ % 100 == 0) {
+            MRLog(@"⚠️ Audio input not ready for data (count: %d)", notReadyCount);
+        }
         return;
     }
-    
-    if (![g_audioInput appendSampleBuffer:sampleBuffer]) {
+
+    BOOL success = [g_audioInput appendSampleBuffer:sampleBuffer];
+    if (!success) {
         NSLog(@"⚠️ Failed appending audio sample buffer: %@", g_audioWriter.error);
+    } else {
+        static int appendCount = 0;
+        if (appendCount++ % 100 == 0) {
+            MRLog(@"✅ Audio sample appended successfully (count: %d)", appendCount);
+        }
     }
 }
 @end
@@ -365,13 +381,20 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
     
     NSError *writerError = nil;
+    // CRITICAL FIX: AVAssetWriter does NOT support WebM for audio
+    // Always use QuickTime Movie format (.mov) for audio files
     AVFileType requestedFileType = AVFileTypeQuickTimeMovie;
-    BOOL requestedWebM = NO;
-    if (@available(macOS 15.0, *)) {
-        requestedFileType = @"public.webm";
-        requestedWebM = YES;
+
+    // Ensure path has .mov extension for audio
+    NSString *audioPath = originalPath;
+    if (![audioPath.pathExtension.lowercaseString isEqualToString:@"mov"]) {
+        MRLog(@"⚠️ Audio path has wrong extension '%@', changing to .mov", audioPath.pathExtension);
+        audioPath = [[audioPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+        g_audioOutputPath = audioPath;
     }
-    
+    audioURL = [NSURL fileURLWithPath:audioPath];
+    [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
+
     @try {
         g_audioWriter = [[AVAssetWriter alloc] initWithURL:audioURL fileType:requestedFileType error:&writerError];
     } @catch (NSException *exception) {
@@ -380,28 +403,6 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         };
         writerError = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-201 userInfo:info];
         g_audioWriter = nil;
-    }
-    
-    if ((!g_audioWriter || writerError) && requestedWebM) {
-        MRLog(@"⚠️ ScreenCaptureKit audio writer unavailable (%@) – falling back to QuickTime container", writerError.localizedDescription);
-        NSString *fallbackPath = [[originalPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
-        if (!fallbackPath || [fallbackPath length] == 0) {
-            fallbackPath = [originalPath stringByAppendingString:@".mov"];
-        }
-        [[NSFileManager defaultManager] removeItemAtPath:fallbackPath error:nil];
-        NSURL *fallbackURL = [NSURL fileURLWithPath:fallbackPath];
-        g_audioOutputPath = fallbackPath;
-        writerError = nil;
-        @try {
-            g_audioWriter = [[AVAssetWriter alloc] initWithURL:fallbackURL fileType:AVFileTypeQuickTimeMovie error:&writerError];
-        } @catch (NSException *exception) {
-            NSDictionary *info = @{
-                NSLocalizedDescriptionKey: exception.reason ?: @"Failed to initialize audio writer"
-            };
-            writerError = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-202 userInfo:info];
-            g_audioWriter = nil;
-        }
-        audioURL = fallbackURL;
     }
     
     if (!g_audioWriter || writerError) {
@@ -433,7 +434,10 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     
     g_audioInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
     g_audioInput.expectsMediaDataInRealTime = YES;
-    
+
+    MRLog(@"🎙️ Audio input created: sampleRate=%ld, channels=%ld, bitrate=192k",
+          (long)g_configuredSampleRate, (long)channelCount);
+
     if (![g_audioWriter canAddInput:g_audioInput]) {
         NSLog(@"❌ Audio writer cannot add input");
         return NO;
@@ -441,7 +445,8 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     [g_audioWriter addInput:g_audioInput];
     g_audioWriterStarted = NO;
     g_audioStartTime = kCMTimeInvalid;
-    
+
+    MRLog(@"✅ Audio writer prepared successfully (path: %@)", g_audioOutputPath);
     return YES;
 }
 
@@ -623,17 +628,28 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         }
         
         if (@available(macos 13.0, *)) {
+            // capturesAudio enables audio capture (both mic and system audio)
             streamConfig.capturesAudio = g_shouldCaptureAudio;
-            streamConfig.sampleRate = g_configuredSampleRate;
-            streamConfig.channelCount = g_configuredChannelCount;
+            streamConfig.sampleRate = g_configuredSampleRate ?: 48000;
+            streamConfig.channelCount = g_configuredChannelCount ?: 2;
+
+            // excludesCurrentProcessAudio = YES means ONLY microphone
+            // excludesCurrentProcessAudio = NO means system audio + mic
             streamConfig.excludesCurrentProcessAudio = !shouldCaptureSystemAudio;
+
+            MRLog(@"🎤 Audio config (macOS 13+): capturesAudio=%d, excludeProcess=%d (mic=%d sys=%d)",
+                  g_shouldCaptureAudio, streamConfig.excludesCurrentProcessAudio,
+                  shouldCaptureMic, shouldCaptureSystemAudio);
         }
-        
+
         if (@available(macos 15.0, *)) {
+            // macOS 15+ has explicit microphone control
             streamConfig.captureMicrophone = shouldCaptureMic;
             if (microphoneDeviceId && microphoneDeviceId.length > 0) {
                 streamConfig.microphoneCaptureDeviceID = microphoneDeviceId;
             }
+            MRLog(@"🎤 Microphone (macOS 15+): enabled=%d, deviceID=%@",
+                  shouldCaptureMic, microphoneDeviceId ?: @"default");
         }
         
         // Apply crop area using sourceRect - CONVERT GLOBAL TO DISPLAY-RELATIVE COORDINATES
