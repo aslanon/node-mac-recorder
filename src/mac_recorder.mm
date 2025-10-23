@@ -501,16 +501,9 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     return Napi::Boolean::New(env, false);
                 }
 
-                if (!startAudioIfRequested(captureAnyAudio, audioOutputPath, preferredAudioDeviceId)) {
-                    MRLog(@"❌ Audio start failed - stopping AVFoundation session");
-                    if (captureCamera) {
-                        stopCameraRecording();
-                    }
-                    stopAVFoundationRecording();
-                    g_isRecording = false;
-                    return Napi::Boolean::New(env, false);
-                }
-                
+                // NOTE: Audio is handled internally by AVFoundation, no need for standalone audio
+                // AVFoundation integrates audio recording directly
+
                 g_isRecording = true;
                 return Napi::Boolean::New(env, true);
             } else {
