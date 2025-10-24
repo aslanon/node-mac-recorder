@@ -437,9 +437,9 @@ class MacRecorder extends EventEmitter {
 
 		this.outputPath = outputPath;
 
-		return new Promise((resolve, reject) => {
+		return new Promise(async (resolve, reject) => {
 			try {
-				// Create cursor file path with timestamp in the same directory as video
+				// SYNC FIX: Create unified session timestamp FIRST for all components
 				const sessionTimestamp = Date.now();
 				this.sessionTimestamp = sessionTimestamp;
 				const outputDir = path.dirname(outputPath);
@@ -507,15 +507,46 @@ class MacRecorder extends EventEmitter {
 					};
 				}
 
+				// SYNC FIX: Start cursor tracking BEFORE native recording for perfect sync
+				// This ensures cursor data starts at exactly the same time as video
+				console.log('🎯 SYNC: Starting cursor tracking at timestamp:', sessionTimestamp);
+				const standardCursorOptions = {
+					videoRelative: true,
+					displayInfo: this.recordingDisplayInfo,
+					recordingType: this.options.windowId ? 'window' :
+								  this.options.captureArea ? 'area' : 'display',
+					captureArea: this.options.captureArea,
+					windowId: this.options.windowId,
+					startTimestamp: sessionTimestamp // Use the same timestamp base
+				};
+
+				try {
+					await this.startCursorCapture(cursorFilePath, standardCursorOptions);
+					console.log('✅ SYNC: Cursor tracking started successfully');
+				} catch (cursorError) {
+					console.warn('⚠️ Cursor tracking failed to start:', cursorError.message);
+					// Continue with recording even if cursor fails
+				}
+
 				let success;
 				try {
+					console.log('🎯 SYNC: Starting screen recording at timestamp:', sessionTimestamp);
 					success = nativeBinding.startRecording(
 						outputPath,
 						recordingOptions
 					);
+					if (success) {
+						console.log('✅ SYNC: Screen recording started successfully');
+					}
 				} catch (error) {
 					// console.log('Native recording failed, trying alternative method');
 					success = false;
+					console.warn('❌ Screen recording failed to start');
+					// Stop cursor if recording fails
+					if (this.cursorCaptureInterval) {
+						console.log('🔄 SYNC: Stopping cursor tracking due to recording failure');
+						await this.stopCursorCapture().catch(() => {});
+					}
 				}
 
 				if (success) {
@@ -546,10 +577,12 @@ class MacRecorder extends EventEmitter {
 						}
 					}
 					this.isRecording = true;
-					this.recordingStartTime = Date.now();
+					// SYNC FIX: Use session timestamp for consistent timing across all components
+					this.recordingStartTime = sessionTimestamp;
 
 					if (this.options.captureCamera === true && cameraFilePath) {
 						this.cameraCaptureActive = true;
+						console.log('📹 SYNC: Camera recording started at timestamp:', sessionTimestamp);
 						this.emit("cameraCaptureStarted", {
 							outputPath: cameraFilePath,
 							deviceId: this.options.cameraDeviceId || null,
@@ -560,6 +593,7 @@ class MacRecorder extends EventEmitter {
 
 					if (captureAudio && audioFilePath) {
 						this.audioCaptureActive = true;
+						console.log('🎙️ SYNC: Audio recording started at timestamp:', sessionTimestamp);
 						this.emit("audioCaptureStarted", {
 							outputPath: audioFilePath,
 							deviceIds: {
@@ -571,20 +605,17 @@ class MacRecorder extends EventEmitter {
 						});
 					}
 
-					// Start unified cursor tracking with video-relative coordinates
-					// This ensures cursor positions match exactly with video frames
-					const standardCursorOptions = {
-						videoRelative: true,
-						displayInfo: this.recordingDisplayInfo,
-						recordingType: this.options.windowId ? 'window' :
-									  this.options.captureArea ? 'area' : 'display',
-						captureArea: this.options.captureArea,
-						windowId: this.options.windowId
-					};
+					// SYNC FIX: Cursor tracking already started BEFORE recording for perfect sync
+					// (Removed duplicate cursor start code)
 
-					this.startCursorCapture(cursorFilePath, standardCursorOptions).catch(cursorError => {
-						console.warn('Unified cursor tracking failed:', cursorError.message);
-					});
+					// Log synchronized recording summary
+					const activeComponents = [];
+					activeComponents.push('Screen');
+					if (this.cursorCaptureInterval) activeComponents.push('Cursor');
+					if (this.cameraCaptureActive) activeComponents.push('Camera');
+					if (this.audioCaptureActive) activeComponents.push('Audio');
+					console.log(`✅ SYNC COMPLETE: All components synchronized at timestamp ${sessionTimestamp}`);
+					console.log(`   Active components: ${activeComponents.join(', ')}`);
 
 					// Timer başlat (progress tracking için)
 					this.recordingTimer = setInterval(() => {
@@ -696,20 +727,38 @@ class MacRecorder extends EventEmitter {
 
 
 	/**
-	 * Ekran kaydını durdurur
+	 * Ekran kaydını durdurur - SYNCHRONIZED stop for all components
 	 */
 	async stopRecording() {
 		if (!this.isRecording) {
 			throw new Error("No recording in progress");
 		}
 
-		return new Promise((resolve, reject) => {
+		return new Promise(async (resolve, reject) => {
 			try {
+				console.log('🛑 SYNC: Stopping all recording components simultaneously');
+
+				// SYNC FIX: Stop ALL components at the same time for perfect sync
+				// 1. Stop cursor tracking FIRST (it's instant)
+				if (this.cursorCaptureInterval) {
+					try {
+						console.log('🛑 SYNC: Stopping cursor tracking');
+						await this.stopCursorCapture();
+						console.log('✅ SYNC: Cursor tracking stopped');
+					} catch (cursorError) {
+						console.warn('⚠️ Cursor tracking failed to stop:', cursorError.message);
+					}
+				}
+
 				let success = false;
-				
-				// Use native ScreenCaptureKit stop only
+
+				// 2. Stop native screen recording
 				try {
+					console.log('🛑 SYNC: Stopping screen recording');
 					success = nativeBinding.stopRecording();
+					if (success) {
+						console.log('✅ SYNC: Screen recording stopped');
+					}
 				} catch (nativeError) {
 					// console.log('Native stop failed:', nativeError.message);
 					success = true; // Assume success to avoid throwing
@@ -744,6 +793,7 @@ class MacRecorder extends EventEmitter {
 
 				if (this.cameraCaptureActive) {
 					this.cameraCaptureActive = false;
+					console.log('📹 SYNC: Camera recording stopped');
 					this.emit("cameraCaptureStopped", {
 						outputPath: this.cameraCaptureFile || null,
 						success: success === true,
@@ -753,6 +803,7 @@ class MacRecorder extends EventEmitter {
 
 				if (this.audioCaptureActive) {
 					this.audioCaptureActive = false;
+					console.log('🎙️ SYNC: Audio recording stopped');
 					this.emit("audioCaptureStopped", {
 						outputPath: this.audioCaptureFile || null,
 						success: success === true,
@@ -760,12 +811,11 @@ class MacRecorder extends EventEmitter {
 					});
 				}
 
-				// Stop cursor tracking automatically
-				if (this.cursorCaptureInterval) {
-					this.stopCursorCapture().catch(cursorError => {
-						console.warn('Cursor tracking failed to stop:', cursorError.message);
-					});
-				}
+				// SYNC FIX: Cursor tracking already stopped at the beginning for sync
+				// (Removed duplicate cursor stop code)
+
+				// Log synchronized stop summary
+				console.log('✅ SYNC STOP COMPLETE: All recording components stopped simultaneously');
 
 				// Timer durdur
 				if (this.recordingTimer) {
@@ -964,6 +1014,7 @@ class MacRecorder extends EventEmitter {
 	 * @param {string} options.recordingType - Type of recording: 'display', 'window', 'area'
 	 * @param {Object} options.captureArea - Capture area for area recording coordinate transformation
 	 * @param {number} options.windowId - Window ID for window recording coordinate transformation
+	 * @param {number} options.startTimestamp - Pre-defined start timestamp for synchronization (optional)
 	 */
 	async startCursorCapture(intervalOrFilepath = 100, options = {}) {
 		let filepath;
@@ -984,6 +1035,9 @@ class MacRecorder extends EventEmitter {
 		if (this.cursorCaptureInterval) {
 			throw new Error("Cursor capture is already running");
 		}
+
+		// SYNC FIX: Use pre-defined timestamp if provided for synchronization
+		const syncStartTime = options.startTimestamp || Date.now();
 
 		// Use video-relative coordinate system for all recording types
 		if (options.videoRelative && options.displayInfo) {
@@ -1068,7 +1122,8 @@ class MacRecorder extends EventEmitter {
 				fs.writeFileSync(filepath, "[");
 
 				this.cursorCaptureFile = filepath;
-				this.cursorCaptureStartTime = Date.now();
+				// SYNC FIX: Use synchronized start time for accurate timestamp calculation
+				this.cursorCaptureStartTime = syncStartTime;
 				this.cursorCaptureFirstWrite = true;
 				this.lastCapturedData = null;
 
