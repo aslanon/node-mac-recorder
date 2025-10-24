@@ -223,27 +223,47 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     if (!self.session) {
         return YES;
     }
-    
+
     [self.session stopRunning];
     self.session = nil;
     self.audioOutput = nil;
-    
+
+    // CRITICAL FIX: Check if writer exists before trying to finish it
     if (self.writer) {
-        [self.writerInput markAsFinished];
+        // Only mark as finished if writerInput exists
+        if (self.writerInput) {
+            [self.writerInput markAsFinished];
+        }
+
+        __block BOOL finished = NO;
         dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+
         [self.writer finishWritingWithCompletionHandler:^{
+            finished = YES;
             dispatch_semaphore_signal(semaphore);
         }];
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
+
+        // Reduced timeout to 2 seconds for faster response
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
         dispatch_semaphore_wait(semaphore, timeout);
+
+        if (!finished) {
+            MRLog(@"⚠️ AudioRecorder: Timed out waiting for writer to finish");
+            // Force cancel if timeout
+            [self.writer cancelWriting];
+        } else {
+            MRLog(@"✅ AudioRecorder stopped successfully");
+        }
+    } else {
+        MRLog(@"⚠️ AudioRecorder: No writer to finish (no audio captured)");
     }
-    
+
     self.writer = nil;
     self.writerInput = nil;
     self.writerStarted = NO;
     self.startTime = kCMTimeInvalid;
     self.outputPath = nil;
-    
+
     return YES;
 }
 

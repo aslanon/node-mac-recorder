@@ -677,44 +677,55 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     if (!self.isRecording) {
         return YES;
     }
-    
+
     self.isShuttingDown = YES;
     self.isRecording = NO;
-    
+
     @try {
         [self.session stopRunning];
     } @catch (NSException *exception) {
         MRLog(@"⚠️ CameraRecorder: Exception while stopping session: %@", exception.reason);
     }
-    
+
     [self.videoOutput setSampleBufferDelegate:nil queue:nil];
-    
+
+    // CRITICAL FIX: Check if assetWriter exists before trying to finish it
+    // If no frames were captured, assetWriter will be nil
+    if (!self.assetWriter) {
+        MRLog(@"⚠️ CameraRecorder: No writer to finish (no frames captured)");
+        [self resetState];
+        return YES; // Success - nothing to finish
+    }
+
     if (self.assetWriterInput) {
         [self.assetWriterInput markAsFinished];
     }
-    
+
     __block BOOL finished = NO;
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    
+
     [self.assetWriter finishWritingWithCompletionHandler:^{
         finished = YES;
         dispatch_semaphore_signal(semaphore);
     }];
-    
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
+
+    // Reduced timeout to 2 seconds for faster response
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
     dispatch_semaphore_wait(semaphore, timeout);
-    
+
     if (!finished) {
         MRLog(@"⚠️ CameraRecorder: Timed out waiting for writer to finish");
+        // Force cancel if timeout
+        [self.assetWriter cancelWriting];
     }
-    
+
     BOOL success = (self.assetWriter.status == AVAssetWriterStatusCompleted);
     if (!success) {
         MRLog(@"⚠️ CameraRecorder: Writer finished with status %ld error %@", (long)self.assetWriter.status, self.assetWriter.error);
     } else {
         MRLog(@"✅ CameraRecorder stopped successfully");
     }
-    
+
     [self resetState];
     return success;
 }
