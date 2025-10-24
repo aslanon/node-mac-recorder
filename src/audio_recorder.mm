@@ -110,16 +110,7 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
 
     MRLog(@"🎤 Audio format: %.0f Hz, %lu channel(s)", sampleRate, (unsigned long)channels);
 
-    AudioChannelLayout layout = {0};
-    size_t layoutSize = 0;
-    if (channels == 1) {
-        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Mono;
-        layoutSize = sizeof(AudioChannelLayout);
-    } else if (channels == 2) {
-        layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
-        layoutSize = sizeof(AudioChannelLayout);
-    }
-
+    // Create audio settings
     NSMutableDictionary *audioSettings = [@{
         AVFormatIDKey: @(kAudioFormatMPEG4AAC),
         AVSampleRateKey: @(sampleRate),
@@ -128,9 +119,17 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
         AVEncoderAudioQualityKey: @(AVAudioQualityHigh)
     } mutableCopy];
 
-    if (layoutSize > 0) {
-        audioSettings[AVChannelLayoutKey] = [NSData dataWithBytes:&layout length:layoutSize];
-    }
+    // CRITICAL FIX: AVChannelLayoutKey is REQUIRED for ALL channel counts
+    // Force to stereo or mono for AAC compatibility
+    NSUInteger validChannels = (channels <= 1) ? 1 : 2; // Force to mono or stereo
+    audioSettings[AVNumberOfChannelsKey] = @(validChannels); // Update settings
+
+    AudioChannelLayout layout = {0};
+    layout.mChannelLayoutTag = (validChannels == 1) ? kAudioChannelLayoutTag_Mono : kAudioChannelLayoutTag_Stereo;
+    size_t layoutSize = sizeof(AudioChannelLayout);
+    audioSettings[AVChannelLayoutKey] = [NSData dataWithBytes:&layout length:layoutSize];
+
+    MRLog(@"🎤 Using %lu channel(s) for AAC encoding (original: %lu)", (unsigned long)validChannels, (unsigned long)channels);
     
     self.writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:audioSettings];
     self.writerInput.expectsMediaDataInRealTime = YES;
