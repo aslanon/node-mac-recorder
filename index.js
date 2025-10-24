@@ -507,45 +507,44 @@ class MacRecorder extends EventEmitter {
 					};
 				}
 
-				// SYNC FIX: Start cursor tracking BEFORE native recording for perfect sync
-				// This ensures cursor data starts at exactly the same time as video
-				console.log('🎯 SYNC: Starting cursor tracking at timestamp:', sessionTimestamp);
-				const standardCursorOptions = {
-					videoRelative: true,
-					displayInfo: this.recordingDisplayInfo,
-					recordingType: this.options.windowId ? 'window' :
-								  this.options.captureArea ? 'area' : 'display',
-					captureArea: this.options.captureArea,
-					windowId: this.options.windowId,
-					startTimestamp: sessionTimestamp // Use the same timestamp base
-				};
-
-				try {
-					await this.startCursorCapture(cursorFilePath, standardCursorOptions);
-					console.log('✅ SYNC: Cursor tracking started successfully');
-				} catch (cursorError) {
-					console.warn('⚠️ Cursor tracking failed to start:', cursorError.message);
-					// Continue with recording even if cursor fails
-				}
+				// CRITICAL SYNC FIX: Start native recording FIRST (video/audio/camera)
+				// Then IMMEDIATELY start cursor tracking with the SAME timestamp
+				// This ensures ALL components capture their first frame at the same time
 
 				let success;
 				try {
-					console.log('🎯 SYNC: Starting screen recording at timestamp:', sessionTimestamp);
+					console.log('🎯 SYNC: Starting native recording (screen/audio/camera) at timestamp:', sessionTimestamp);
 					success = nativeBinding.startRecording(
 						outputPath,
 						recordingOptions
 					);
 					if (success) {
-						console.log('✅ SYNC: Screen recording started successfully');
+						console.log('✅ SYNC: Native recording started successfully');
 					}
 				} catch (error) {
-					// console.log('Native recording failed, trying alternative method');
 					success = false;
-					console.warn('❌ Screen recording failed to start');
-					// Stop cursor if recording fails
-					if (this.cursorCaptureInterval) {
-						console.log('🔄 SYNC: Stopping cursor tracking due to recording failure');
-						await this.stopCursorCapture().catch(() => {});
+					console.warn('❌ Native recording failed to start:', error.message);
+				}
+
+				// Only start cursor if native recording started successfully
+				if (success) {
+					const standardCursorOptions = {
+						videoRelative: true,
+						displayInfo: this.recordingDisplayInfo,
+						recordingType: this.options.windowId ? 'window' :
+									  this.options.captureArea ? 'area' : 'display',
+						captureArea: this.options.captureArea,
+						windowId: this.options.windowId,
+						startTimestamp: sessionTimestamp // Use the same timestamp base
+					};
+
+					try {
+						console.log('🎯 SYNC: Starting cursor tracking at timestamp:', sessionTimestamp);
+						await this.startCursorCapture(cursorFilePath, standardCursorOptions);
+						console.log('✅ SYNC: Cursor tracking started successfully');
+					} catch (cursorError) {
+						console.warn('⚠️ Cursor tracking failed to start:', cursorError.message);
+						// Continue with recording even if cursor fails - don't stop native recording
 					}
 				}
 
