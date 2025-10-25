@@ -449,8 +449,8 @@ class MacRecorder extends EventEmitter {
 				const originalBaseName = path.basename(outputPath, path.extname(outputPath));
 				const extension = path.extname(outputPath);
 
-				// Remove any existing timestamp from filename (pattern: -1234567890)
-				const cleanBaseName = originalBaseName.replace(/-\d{13}$/, '');
+				// Remove any existing timestamp from filename (pattern: -1234567890 or _1234567890)
+				const cleanBaseName = originalBaseName.replace(/[-_]\d{13}$/, '');
 
 				// Reconstruct path with sessionTimestamp
 				outputPath = path.join(outputDir, `${cleanBaseName}-${sessionTimestamp}${extension}`);
