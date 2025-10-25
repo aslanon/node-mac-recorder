@@ -827,6 +827,7 @@ Napi::Value GetCameraDevices(const Napi::CallbackInfo& info) {
                 NSString *position = camera[@"position"];
                 NSNumber *transportType = camera[@"transportType"];
                 NSNumber *isConnected = camera[@"isConnected"];
+                NSNumber *isDefault = camera[@"isDefault"];
                 NSNumber *hasFlash = camera[@"hasFlash"];
                 NSNumber *supportsDepth = camera[@"supportsDepth"];
                 
@@ -861,7 +862,11 @@ Napi::Value GetCameraDevices(const Napi::CallbackInfo& info) {
                 if (isConnected && [isConnected isKindOfClass:[NSNumber class]]) {
                     cameraObj.Set("isConnected", Napi::Boolean::New(env, [isConnected boolValue]));
                 }
-                
+
+                if (isDefault && [isDefault isKindOfClass:[NSNumber class]]) {
+                    cameraObj.Set("isDefault", Napi::Boolean::New(env, [isDefault boolValue]));
+                }
+
                 if (hasFlash && [hasFlash isKindOfClass:[NSNumber class]]) {
                     cameraObj.Set("hasFlash", Napi::Boolean::New(env, [hasFlash boolValue]));
                 }

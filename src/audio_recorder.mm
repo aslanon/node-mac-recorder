@@ -224,9 +224,29 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
         return YES;
     }
 
-    [self.session stopRunning];
+    // CRITICAL FIX: For external devices (especially Continuity Microphone),
+    // stopRunning can hang if device is disconnected. Use async approach.
+    MRLog(@"🛑 AudioRecorder: Stopping session (external device safe)...");
+
+    // Stop session on background thread to avoid blocking
+    AVCaptureSession *sessionToStop = self.session;
+    AVCaptureAudioDataOutput *outputToStop = self.audioOutput;
+
+    // Clear references FIRST to prevent new samples
     self.session = nil;
     self.audioOutput = nil;
+
+    // Stop session asynchronously with timeout protection
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        @autoreleasepool {
+            if ([sessionToStop isRunning]) {
+                MRLog(@"🛑 Stopping AVCaptureSession...");
+                [sessionToStop stopRunning];
+                MRLog(@"✅ AVCaptureSession stopped");
+            }
+            // Release happens automatically when block completes
+        }
+    });
 
     // CRITICAL FIX: Check if writer exists before trying to finish it
     if (self.writer) {
@@ -243,16 +263,16 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
             dispatch_semaphore_signal(semaphore);
         }];
 
-        // Reduced timeout to 2 seconds for faster response
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
-        dispatch_semaphore_wait(semaphore, timeout);
+        // Reduced timeout to 1 second for external devices
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+        long result = dispatch_semaphore_wait(semaphore, timeout);
 
-        if (!finished) {
-            MRLog(@"⚠️ AudioRecorder: Timed out waiting for writer to finish");
+        if (result != 0 || !finished) {
+            MRLog(@"⚠️ AudioRecorder: Timed out waiting for writer (external device?) - forcing cancel");
             // Force cancel if timeout
             [self.writer cancelWriting];
         } else {
-            MRLog(@"✅ AudioRecorder stopped successfully");
+            MRLog(@"✅ AudioRecorder writer finished successfully");
         }
     } else {
         MRLog(@"⚠️ AudioRecorder: No writer to finish (no audio captured)");
@@ -264,6 +284,7 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     self.startTime = kCMTimeInvalid;
     self.outputPath = nil;
 
+    MRLog(@"✅ AudioRecorder stopped (safe for external devices)");
     return YES;
 }
 
@@ -334,11 +355,37 @@ NSArray<NSDictionary *> *listAudioCaptureDevices() {
                                position:AVCaptureDevicePositionUnspecified];
 
     for (AVCaptureDevice *device in session.devices) {
+        // PRIORITY FIX: MacBook built-in devices should be default, not external devices
+        // Check if this is a built-in device (MacBook's own microphone)
+        NSString *deviceName = device.localizedName ?: @"";
+        BOOL isBuiltIn = NO;
+
+        // Built-in detection: Check for "MacBook", "iMac", "Mac Studio", "Mac mini", "Mac Pro" in name
+        if ([deviceName rangeOfString:@"MacBook" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"iMac" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"Mac Studio" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"Mac mini" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"Mac Pro" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            isBuiltIn = YES;
+        }
+
+        // Also check for generic "Built-in" in name
+        if ([deviceName rangeOfString:@"Built-in" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            isBuiltIn = YES;
+        }
+
+        // External devices (Continuity, USB, etc.) should NOT be default
+        if ([deviceName rangeOfString:@"Continuity" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"iPhone" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"iPad" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            isBuiltIn = NO;
+        }
+
         NSDictionary *info = @{
             @"id": device.uniqueID ?: @"",
-            @"name": device.localizedName ?: @"Unknown Audio Device",
+            @"name": deviceName,
             @"manufacturer": device.manufacturer ?: @"",
-            @"isDefault": @(device.connected),
+            @"isDefault": @(isBuiltIn), // Only built-in devices are default
             @"transportType": @(device.transportType)
         };
         [devicesInfo addObject:info];

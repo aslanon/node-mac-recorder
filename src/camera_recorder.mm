@@ -189,18 +189,58 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
                 position = @"unspecified";
                 break;
         }
-        
+
+        // PRIORITY FIX: MacBook built-in cameras should be default, not external cameras
+        // Check if this is a built-in camera (MacBook's own camera)
+        NSString *deviceName = device.localizedName ?: @"";
+        NSString *deviceType = device.deviceType ?: @"";
+        BOOL isBuiltIn = NO;
+
+        // Built-in detection: Check for common built-in camera names
+        if ([deviceName rangeOfString:@"FaceTime" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"iSight" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"Built-in" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            isBuiltIn = YES;
+        }
+
+        // Check device type for built-in wide angle camera
+        if (@available(macOS 10.15, *)) {
+            if ([deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera]) {
+                isBuiltIn = YES;
+            }
+        }
+
+        // External devices (Continuity Camera, iPhone, iPad, USB) should NOT be default
+        if (continuityCamera ||
+            [deviceName rangeOfString:@"iPhone" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"iPad" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [deviceName rangeOfString:@"Continuity" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            isBuiltIn = NO;
+        }
+
+        // External device types should not be default
+        if (@available(macOS 14.0, *)) {
+            if ([deviceType isEqualToString:AVCaptureDeviceTypeExternal] ||
+                [deviceType isEqualToString:AVCaptureDeviceTypeContinuityCamera]) {
+                isBuiltIn = NO;
+            }
+        }
+        if ([deviceType isEqualToString:AVCaptureDeviceTypeExternalUnknown]) {
+            isBuiltIn = NO;
+        }
+
         NSDictionary *deviceInfo = @{
             @"id": device.uniqueID ?: @"",
-            @"name": device.localizedName ?: @"Unknown Camera",
+            @"name": deviceName,
             @"model": device.modelID ?: @"",
             @"manufacturer": device.manufacturer ?: @"",
             @"position": position ?: @"unspecified",
             @"transportType": @(device.transportType),
             @"isConnected": @(device.isConnected),
+            @"isDefault": @(isBuiltIn), // Only built-in cameras are default
             @"hasFlash": @(device.hasFlash),
             @"supportsDepth": @NO,
-            @"deviceType": device.deviceType ?: @"",
+            @"deviceType": deviceType,
             @"requiresContinuityCameraPermission": @(continuityCamera),
             @"maxResolution": @{
                 @"width": @(bestDimensions.width),
@@ -678,16 +718,32 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return YES;
     }
 
+    // CRITICAL FIX: For external cameras (especially Continuity Camera/iPhone),
+    // stopRunning can hang if device is disconnected. Use async approach.
+    MRLog(@"🛑 CameraRecorder: Stopping session (external device safe)...");
+
     self.isShuttingDown = YES;
     self.isRecording = NO;
 
-    @try {
-        [self.session stopRunning];
-    } @catch (NSException *exception) {
-        MRLog(@"⚠️ CameraRecorder: Exception while stopping session: %@", exception.reason);
-    }
-
+    // Stop delegate FIRST to prevent new frames
     [self.videoOutput setSampleBufferDelegate:nil queue:nil];
+
+    // Stop session on background thread to avoid blocking
+    AVCaptureSession *sessionToStop = self.session;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        @autoreleasepool {
+            @try {
+                if ([sessionToStop isRunning]) {
+                    MRLog(@"🛑 Stopping AVCaptureSession (camera)...");
+                    [sessionToStop stopRunning];
+                    MRLog(@"✅ AVCaptureSession stopped (camera)");
+                }
+            } @catch (NSException *exception) {
+                MRLog(@"⚠️ CameraRecorder: Exception while stopping session: %@", exception.reason);
+            }
+            // Release happens automatically when block completes
+        }
+    });
 
     // CRITICAL FIX: Check if assetWriter exists before trying to finish it
     // If no frames were captured, assetWriter will be nil
@@ -709,12 +765,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         dispatch_semaphore_signal(semaphore);
     }];
 
-    // Reduced timeout to 2 seconds for faster response
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
-    dispatch_semaphore_wait(semaphore, timeout);
+    // Reduced timeout to 1 second for external devices
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+    long result = dispatch_semaphore_wait(semaphore, timeout);
 
-    if (!finished) {
-        MRLog(@"⚠️ CameraRecorder: Timed out waiting for writer to finish");
+    if (result != 0 || !finished) {
+        MRLog(@"⚠️ CameraRecorder: Timed out waiting for writer (external device?) - forcing cancel");
         // Force cancel if timeout
         [self.assetWriter cancelWriting];
     }
@@ -723,10 +779,11 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     if (!success) {
         MRLog(@"⚠️ CameraRecorder: Writer finished with status %ld error %@", (long)self.assetWriter.status, self.assetWriter.error);
     } else {
-        MRLog(@"✅ CameraRecorder stopped successfully");
+        MRLog(@"✅ CameraRecorder writer finished successfully");
     }
 
     [self resetState];
+    MRLog(@"✅ CameraRecorder stopped (safe for external devices)");
     return success;
 }
 

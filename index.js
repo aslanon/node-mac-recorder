@@ -103,6 +103,7 @@ class MacRecorder extends EventEmitter {
 					position: device?.position ?? "unspecified",
 					transportType: device?.transportType ?? null,
 					isConnected: device?.isConnected ?? false,
+					isDefault: device?.isDefault === true,
 					hasFlash: device?.hasFlash ?? false,
 					supportsDepth: device?.supportsDepth ?? false,
 					deviceType: device?.deviceType ?? null,
