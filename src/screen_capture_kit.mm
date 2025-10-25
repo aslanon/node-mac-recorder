@@ -792,6 +792,12 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
     MRLog(@"🛑 Stopping pure ScreenCaptureKit recording");
 
+    // CRITICAL FIX: Set cleanup flag IMMEDIATELY to prevent race conditions
+    // This prevents startRecording from being called while stop is in progress
+    @synchronized([ScreenCaptureKitRecorder class]) {
+        g_isCleaningUp = YES;
+    }
+
     // Store stream reference to prevent it from being deallocated
     SCStream *streamToStop = g_stream;
 
@@ -807,6 +813,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             // Reset recording state to allow new recordings
             @synchronized([ScreenCaptureKitRecorder class]) {
                 g_isRecording = NO;
+                g_isCleaningUp = NO; // CRITICAL: Reset cleanup flag when done
             }
 
             // Cleanup after stop completes
@@ -819,6 +826,19 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 + (BOOL)isRecording {
     return g_isRecording;
 }
+
++ (BOOL)isCleaningUp {
+    return g_isCleaningUp;
+}
+
+@end
+
+// Export C function for checking cleanup state
+BOOL isScreenCaptureKitCleaningUp() API_AVAILABLE(macos(12.3)) {
+    return [ScreenCaptureKitRecorder isCleaningUp];
+}
+
+@implementation ScreenCaptureKitRecorder (Methods)
 
 + (BOOL)setupVideoWriter {
     // No setup needed - SCRecordingOutput handles everything

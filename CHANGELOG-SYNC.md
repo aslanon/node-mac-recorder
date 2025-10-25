@@ -149,6 +149,77 @@ const audioFilePath = path.join(outputDir, `temp_audio_${sessionTimestamp}.mov`)
 
 ---
 
+### 5. RACE CONDITION KORUMASI - Durdurma Sırasında Başlatma Engelleme
+
+**Önceki Durum:**
+- stopRecording() çağrıldıktan sonra yeni kayıt başlatılabiliyordu
+- ScreenCaptureKit async durdururken g_isRecording senkron değişiyordu
+- Kayıt durduktan sonra bile devam edebiliyordu
+- Kamera ve ses ekrandan SONRA duruyordu (yanlış sıralama)
+
+**Yeni Durum:**
+- Stop işlemi sırasında yeni kayıt başlatılamıyor
+- g_isCleaningUp flag ile async koruma
+- Hızlı start/stop döngüleri güvenli çalışıyor
+- Kamera ve ses ekrandan ÖNCE duruyor (doğru sıralama)
+
+**Kod Değişiklikleri:**
+```objc
+// screen_capture_kit.mm
++ (void)stopRecording {
+    // Set cleanup flag IMMEDIATELY to prevent race conditions
+    @synchronized([ScreenCaptureKitRecorder class]) {
+        g_isCleaningUp = YES;
+    }
+
+    [streamToStop stopCaptureWithCompletionHandler:^(NSError *stopError) {
+        @synchronized([ScreenCaptureKitRecorder class]) {
+            g_isRecording = NO;
+            g_isCleaningUp = NO; // Reset when done
+        }
+        CleanupWriters();
+    }];
+}
+
+// Export C function for checking cleanup state
+BOOL isScreenCaptureKitCleaningUp() API_AVAILABLE(macos(12.3)) {
+    return [ScreenCaptureKitRecorder isCleaningUp];
+}
+
+// mac_recorder.mm
+// Check if ScreenCaptureKit is still cleaning up
+if (@available(macOS 12.3, *)) {
+    if (isScreenCaptureKitCleaningUp()) {
+        MRLog(@"⚠️ ScreenCaptureKit is still stopping - please wait");
+        return Napi::Boolean::New(env, false);
+    }
+}
+
+// Stop camera FIRST (synchronous) before screen
+if (isCameraRecording()) {
+    MRLog(@"🛑 Stopping camera recording...");
+    stopCameraRecording();
+}
+```
+
+**Test Sonucu:**
+```
+📋 Test 1: Normal stop/start (1 saniye ara)
+   ✅ Test 1 BAŞARILI
+
+📋 Test 2: Hızlı stop/start (100ms ara)
+   ✅ Test 2 BAŞARILI
+
+📋 Test 3: Çok hızlı stop/start (0ms ara - RACE CONDITION)
+   ✅ Recording 6 başlatılamadı (BEKLENİYOR): Recording is already in progress
+   ✅ Test 3 BAŞARILI (race condition yakalandı)
+
+✅ TÜM TESTLER BAŞARILI
+   Stop işlemi güvenilir çalışıyor
+```
+
+---
+
 ## 🧪 Test Komutları
 
 ```bash
@@ -160,6 +231,9 @@ node test-stop.js
 
 # Timestamp tutarlılığı testi
 node test-timestamp.js
+
+# Race condition testi (hızlı start/stop döngüleri)
+node test-stop-race.js
 
 # Cihaz listesi
 node check-devices.js
@@ -176,6 +250,7 @@ node check-devices.js
 | iPhone görünürlük | Görünmüyor | **Görünüyor** ✅ |
 | Timestamp tutarlılığı | Farklı | **Aynı** ✅ |
 | Dosya uzantıları | .webm (yanlış) | **.mov** ✅ |
+| Race condition | Kayıt devam ediyor | **Korunuyor** ✅ |
 
 ---
 
@@ -183,7 +258,8 @@ node check-devices.js
 
 **Değiştirilen:**
 - `index.js`: Senkronizasyon, timestamp, dosya isimleri
-- `src/mac_recorder.mm`: Kamera önce başlatma, timestamp aktarma
+- `src/mac_recorder.mm`: Kamera önce başlatma, timestamp aktarma, race condition kontrolü
+- `src/screen_capture_kit.mm`: g_isCleaningUp flag, async stop koruma
 - `src/camera_recorder.mm`: Hızlı durdurma, Continuity Camera
 - `src/audio_recorder.mm`: Hızlı durdurma, Continuity Audio, AVChannelLayoutKey
 
@@ -191,6 +267,7 @@ node check-devices.js
 - `test-real-stop.js`: Gerçek kayıt testi
 - `test-stop.js`: Hızlı durdurma testi
 - `test-timestamp.js`: Timestamp tutarlılığı testi
+- `test-stop-race.js`: Race condition testi
 - `check-devices.js`: Cihaz listesi
 
 ---
@@ -204,3 +281,4 @@ Tüm kayıt bileşenleri (ekran, ses, kamera, cursor) artık:
 - ✅ Doğru dosya uzantıları (.mov)
 - ✅ iPhone/Continuity desteği
 - ✅ Ses ve görüntü perfect sync
+- ✅ Race condition koruması (async stop sırasında başlatma engelleniyor)

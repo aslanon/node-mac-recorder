@@ -172,10 +172,19 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     // This fixes the issue where macOS 14/13 users get "recording already in progress"
     MRLog(@"🧹 Cleaning up any previous recording state...");
     cleanupRecording();
-    
+
     if (g_isRecording) {
         MRLog(@"⚠️ Still recording after cleanup - forcing stop");
         return Napi::Boolean::New(env, false);
+    }
+
+    // CRITICAL FIX: Check if ScreenCaptureKit is still cleaning up (async stop in progress)
+    if (@available(macOS 12.3, *)) {
+        extern BOOL isScreenCaptureKitCleaningUp();
+        if (isScreenCaptureKitCleaningUp()) {
+            MRLog(@"⚠️ ScreenCaptureKit is still stopping previous recording - please wait");
+            return Napi::Boolean::New(env, false);
+        }
     }
     g_usingStandaloneAudio = false;
     
@@ -570,11 +579,25 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {
             MRLog(@"🛑 Stopping ScreenCaptureKit recording");
-            [ScreenCaptureKitRecorder stopRecording];
+
+            // CRITICAL FIX: Stop camera and audio FIRST (they are synchronous)
             if (isCameraRecording()) {
-                stopCameraRecording();
+                MRLog(@"🛑 Stopping camera recording...");
+                bool cameraStopped = stopCameraRecording();
+                if (cameraStopped) {
+                    MRLog(@"✅ Camera stopped successfully");
+                } else {
+                    MRLog(@"⚠️ Camera stop may have timed out");
+                }
             }
-            g_isRecording = false;
+
+            // Now stop ScreenCaptureKit (asynchronous)
+            // WARNING: [ScreenCaptureKitRecorder stopRecording] is ASYNC!
+            // It will set g_isRecording = NO in its completion handler
+            [ScreenCaptureKitRecorder stopRecording];
+
+            // DO NOT set g_isRecording here - let ScreenCaptureKit completion handler do it
+            // Otherwise we have a race condition where JS thinks recording stopped but it's still running
             g_usingStandaloneAudio = false;
             return Napi::Boolean::New(env, true);
         }
@@ -588,24 +611,32 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     @try {
         if (isAVFoundationRecording()) {
             MRLog(@"🛑 Stopping AVFoundation recording");
+
+            // CRITICAL FIX: Stop camera FIRST (synchronous)
+            if (isCameraRecording()) {
+                MRLog(@"🛑 Stopping camera recording...");
+                bool cameraStopped = stopCameraRecording();
+                if (cameraStopped) {
+                    MRLog(@"✅ Camera stopped successfully");
+                } else {
+                    MRLog(@"⚠️ Camera stop may have timed out");
+                }
+            }
+
+            // Stop standalone audio if used
+            if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
+                MRLog(@"🛑 Stopping standalone audio...");
+                stopStandaloneAudioRecording();
+            }
+
+            // Stop AVFoundation recording
             if (stopAVFoundationRecording()) {
-                if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
-                    stopStandaloneAudioRecording();
-                }
-                if (isCameraRecording()) {
-                    stopCameraRecording();
-                }
                 g_isRecording = false;
                 g_usingStandaloneAudio = false;
+                MRLog(@"✅ AVFoundation recording stopped");
                 return Napi::Boolean::New(env, true);
             } else {
                 NSLog(@"❌ Failed to stop AVFoundation recording");
-                if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
-                    stopStandaloneAudioRecording();
-                }
-                if (isCameraRecording()) {
-                    stopCameraRecording();
-                }
                 g_isRecording = false;
                 g_usingStandaloneAudio = false;
                 return Napi::Boolean::New(env, false);
@@ -614,6 +645,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     } @catch (NSException *exception) {
         NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
         g_isRecording = false;
+        g_usingStandaloneAudio = false;
         return Napi::Boolean::New(env, false);
     }
     
