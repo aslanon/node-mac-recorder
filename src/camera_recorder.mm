@@ -130,12 +130,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
     }
 
-    // Add Continuity Camera ONLY if permission is available (to avoid system warning)
-    // But we still want to show external devices that happen to be Continuity cameras
-    if (allowContinuity) {
-        if (@available(macOS 14.0, *)) {
-            [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
-        }
+    // CRITICAL FIX: ALWAYS add Continuity Camera so iPhone is visible
+    // Users should always see their devices, even if permission is missing
+    // Permission check happens at RECORDING time, not listing time
+    if (@available(macOS 14.0, *)) {
+        [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
+        MRLog(@"✅ Added Continuity Camera device type (iPhone will be visible)");
     }
 
     AVCaptureDeviceDiscoverySession *discoverySession =

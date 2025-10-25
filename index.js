@@ -442,15 +442,30 @@ class MacRecorder extends EventEmitter {
 				// SYNC FIX: Create unified session timestamp FIRST for all components
 				const sessionTimestamp = Date.now();
 				this.sessionTimestamp = sessionTimestamp;
+
+				// CRITICAL FIX: Ensure main video file also uses sessionTimestamp
+				// This guarantees ALL files have the exact same timestamp
 				const outputDir = path.dirname(outputPath);
+				const originalBaseName = path.basename(outputPath, path.extname(outputPath));
+				const extension = path.extname(outputPath);
+
+				// Remove any existing timestamp from filename (pattern: -1234567890)
+				const cleanBaseName = originalBaseName.replace(/-\d{13}$/, '');
+
+				// Reconstruct path with sessionTimestamp
+				outputPath = path.join(outputDir, `${cleanBaseName}-${sessionTimestamp}${extension}`);
+				this.outputPath = outputPath;
+
 				const cursorFilePath = path.join(outputDir, `temp_cursor_${sessionTimestamp}.json`);
+				// CRITICAL FIX: Use .mov extension for camera (native recorder uses .mov, not .webm)
 				let cameraFilePath =
 					this.options.captureCamera === true
-						? path.join(outputDir, `temp_camera_${sessionTimestamp}.webm`)
+						? path.join(outputDir, `temp_camera_${sessionTimestamp}.mov`)
 						: null;
 				const captureAudio = this.options.includeMicrophone === true || this.options.includeSystemAudio === true;
+				// CRITICAL FIX: Use .mov extension for audio (consistent with native recorder)
 				let audioFilePath = captureAudio
-					? path.join(outputDir, `temp_audio_${sessionTimestamp}.webm`)
+					? path.join(outputDir, `temp_audio_${sessionTimestamp}.mov`)
 					: null;
 
 				if (this.options.captureCamera === true) {
