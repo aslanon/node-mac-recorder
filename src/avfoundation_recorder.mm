@@ -120,16 +120,30 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             codecKey = AVVideoCodecH264;
         }
         
+        // QUALITY FIX: ULTRA HIGH quality screen recording
+        // ProMotion displays may capture at 10 FPS - use very high bitrate for perfect quality
+        NSInteger bitrate = (NSInteger)(recordingSize.width * recordingSize.height * 30);
+        bitrate = MAX(bitrate, 30 * 1000 * 1000);  // Minimum 30 Mbps
+        bitrate = MIN(bitrate, 120 * 1000 * 1000); // Maximum 120 Mbps
+
+        NSLog(@"🎬 ULTRA QUALITY AVFoundation: %dx%d, bitrate=%.2fMbps",
+              (int)recordingSize.width, (int)recordingSize.height, bitrate / (1000.0 * 1000.0));
+
         NSDictionary *videoSettings = @{
             AVVideoCodecKey: codecKey,
             AVVideoWidthKey: @((int)recordingSize.width),
             AVVideoHeightKey: @((int)recordingSize.height),
             AVVideoCompressionPropertiesKey: @{
-                AVVideoAverageBitRateKey: @(recordingSize.width * recordingSize.height * 8),
-                AVVideoMaxKeyFrameIntervalKey: @30
+                AVVideoAverageBitRateKey: @(bitrate),
+                AVVideoMaxKeyFrameIntervalKey: @30,
+                AVVideoAllowFrameReorderingKey: @YES,
+                AVVideoExpectedSourceFrameRateKey: @60,
+                AVVideoQualityKey: @(0.95),  // 0.0-1.0, higher is better
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
             }
         };
-        
+
         NSLog(@"🔧 Using codec: %@", codecKey);
         
         // Create video input

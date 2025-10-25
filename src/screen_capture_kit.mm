@@ -33,6 +33,10 @@ static BOOL g_audioWriterStarted = NO;
 static NSInteger g_configuredSampleRate = 48000;
 static NSInteger g_configuredChannelCount = 2;
 
+// Frame rate debugging
+static NSInteger g_frameCount = 0;
+static CFAbsoluteTime g_firstFrameTime = 0;
+
 static void CleanupWriters(void);
 static AVAssetWriterInputPixelBufferAdaptor * _Nullable CurrentPixelBufferAdaptor(void) {
     if (!g_pixelBufferAdaptorRef) {
@@ -90,6 +94,10 @@ static void CleanupWriters(void) {
         }
         g_videoWriterStarted = NO;
         g_videoStartTime = kCMTimeInvalid;
+
+        // Reset frame counting
+        g_frameCount = 0;
+        g_firstFrameTime = 0;
     }
     
     if (g_audioWriter) {
@@ -217,6 +225,17 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     if (!appended) {
         NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
     }
+
+    // Frame rate debugging
+    g_frameCount++;
+    if (g_firstFrameTime == 0) {
+        g_firstFrameTime = CFAbsoluteTimeGetCurrent();
+    }
+    if (g_frameCount % 60 == 0) {
+        CFAbsoluteTime elapsed = CFAbsoluteTimeGetCurrent() - g_firstFrameTime;
+        double actualFPS = g_frameCount / elapsed;
+        MRLog(@"📊 Frame stats: %ld frames in %.1fs = %.1f FPS", (long)g_frameCount, elapsed, actualFPS);
+    }
 }
 @end
 
@@ -310,11 +329,27 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         return NO;
     }
     
+    // QUALITY FIX: ULTRA HIGH quality for screen recording
+    // ProMotion displays may run at 10Hz (low power) = 10 FPS capture
+    // Solution: Use VERY HIGH bitrate so each frame is perfect quality
+    // Use 30x multiplier for ULTRA quality (was 6x - way too low!)
+    NSInteger bitrate = (NSInteger)(width * height * 30);
+    bitrate = MAX(bitrate, 30 * 1000 * 1000);  // Minimum 30 Mbps for crystal clear screen recording
+    bitrate = MIN(bitrate, 120 * 1000 * 1000); // Maximum 120 Mbps for ultra quality
+
+    MRLog(@"🎬 ULTRA QUALITY Screen encoder: %ldx%ld, bitrate=%.2fMbps",
+          (long)width, (long)height, bitrate / (1000.0 * 1000.0));
+
     NSDictionary *compressionProps = @{
-        AVVideoAverageBitRateKey: @(width * height * 6),
-        AVVideoMaxKeyFrameIntervalKey: @30
+        AVVideoAverageBitRateKey: @(bitrate),
+        AVVideoMaxKeyFrameIntervalKey: @30,
+        AVVideoAllowFrameReorderingKey: @YES,
+        AVVideoExpectedSourceFrameRateKey: @60,
+        AVVideoQualityKey: @(0.95),  // 0.0-1.0, higher is better (0.95 = excellent)
+        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+        AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
     };
-    
+
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @(width),
@@ -602,13 +637,20 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             }
         }
         
-        // Configure stream with extracted options
+        // Configure stream with HIGH QUALITY settings
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
         streamConfig.width = recordingWidth;
         streamConfig.height = recordingHeight;
-        streamConfig.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
+        streamConfig.minimumFrameInterval = CMTimeMake(1, 60); // 60 FPS for smooth recording
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
         streamConfig.scalesToFit = NO;
+
+        // QUALITY FIX: Set high quality encoding parameters
+        if (@available(macOS 13.0, *)) {
+            streamConfig.queueDepth = 8; // Larger queue for smoother capture
+        }
+
+        MRLog(@"🎬 ScreenCaptureKit config: %ldx%ld @ 60fps", (long)recordingWidth, (long)recordingHeight);
         
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
         BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
