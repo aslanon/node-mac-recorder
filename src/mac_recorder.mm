@@ -19,7 +19,8 @@ extern "C" {
                                    bool includeMicrophone,
                                    bool includeSystemAudio,
                                    NSString* audioDeviceId,
-                                   NSString* audioOutputPath);
+                                   NSString* audioOutputPath,
+                                   double frameRate);
     bool stopAVFoundationRecording();
     bool isAVFoundationRecording();
     NSString* getAVFoundationAudioPath();
@@ -204,6 +205,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     NSString *cameraOutputPath = nil;
     int64_t sessionTimestamp = 0;
     NSString *audioOutputPath = nil;
+    double frameRate = 60.0;
     
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
@@ -271,33 +273,57 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
         if (options.Has("sessionTimestamp") && options.Get("sessionTimestamp").IsNumber()) {
             sessionTimestamp = options.Get("sessionTimestamp").As<Napi::Number>().Int64Value();
         }
+
+        // Frame rate
+        if (options.Has("frameRate") && options.Get("frameRate").IsNumber()) {
+            double fps = options.Get("frameRate").As<Napi::Number>().DoubleValue();
+            if (fps > 0) {
+                // Clamp to reasonable range
+                if (fps < 1.0) fps = 1.0;
+                if (fps > 120.0) fps = 120.0;
+                frameRate = fps;
+            }
+        }
         
-        // Display ID
+        // Display ID (accepts either real CGDirectDisplayID or index [0-based or 1-based])
         if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
             double displayIdNum = options.Get("displayId").As<Napi::Number>().DoubleValue();
             
-            // Use the display ID directly (not as an index)
-            // The JavaScript layer passes the actual CGDirectDisplayID
-            displayID = (CGDirectDisplayID)displayIdNum;
+            // First, assume the provided value is a real CGDirectDisplayID
+            CGDirectDisplayID candidateID = (CGDirectDisplayID)displayIdNum;
             
-            // Verify that this display ID is valid
-            uint32_t displayCount;
+            // Verify against active displays
+            uint32_t displayCount = 0;
             CGGetActiveDisplayList(0, NULL, &displayCount);
             if (displayCount > 0) {
                 CGDirectDisplayID *displays = (CGDirectDisplayID*)malloc(displayCount * sizeof(CGDirectDisplayID));
                 CGGetActiveDisplayList(displayCount, displays, &displayCount);
                 
-                bool validDisplay = false;
+                bool matchedByID = false;
                 for (uint32_t i = 0; i < displayCount; i++) {
-                    if (displays[i] == displayID) {
-                        validDisplay = true;
+                    if (displays[i] == candidateID) {
+                        matchedByID = true;
+                        displayID = candidateID;
                         break;
                     }
                 }
                 
-                if (!validDisplay) {
-                    // Fallback to main display if invalid ID provided
-                    displayID = CGMainDisplayID();
+                if (!matchedByID) {
+                    // Tolerant mapping: allow passing index instead of CGDirectDisplayID
+                    // Try 0-based index
+                    int idx0 = (int)displayIdNum;
+                    if (idx0 >= 0 && idx0 < (int)displayCount) {
+                        displayID = displays[idx0];
+                    } else {
+                        // Try 1-based index (common in user examples)
+                        int idx1 = (int)displayIdNum - 1;
+                        if (idx1 >= 0 && idx1 < (int)displayCount) {
+                            displayID = displays[idx1];
+                        } else {
+                            // Fallback to main display
+                            displayID = CGMainDisplayID();
+                        }
+                    }
                 }
                 
                 free(displays);
@@ -400,6 +426,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 if (sessionTimestamp != 0) {
                     sckConfig[@"sessionTimestamp"] = @(sessionTimestamp);
                 }
+                // Pass requested frame rate
+                sckConfig[@"frameRate"] = @(frameRate);
                 
                 if (!CGRectIsNull(captureRect)) {
                     sckConfig[@"captureRect"] = @{
@@ -511,7 +539,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                    bool includeMicrophone,
                                                    bool includeSystemAudio,
                                                    NSString* audioDeviceId,
-                                                   NSString* audioOutputPath);
+                                                   NSString* audioOutputPath,
+                                                   double frameRate);
 
             // CRITICAL SYNC FIX: Start camera BEFORE screen recording for perfect sync
             // This ensures both capture their first frame at approximately the same time
@@ -529,7 +558,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             // Now start screen recording immediately after camera
             MRLog(@"🎯 SYNC: Starting screen recording immediately");
             bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect,
-                                                      captureCursor, includeMicrophone, includeSystemAudio, audioDeviceId, audioOutputPath);
+                                                      captureCursor, includeMicrophone, includeSystemAudio,
+                                                      audioDeviceId, audioOutputPath, frameRate);
 
             if (avResult) {
                 MRLog(@"🎥 RECORDING METHOD: AVFoundation");

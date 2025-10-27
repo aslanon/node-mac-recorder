@@ -44,8 +44,8 @@ class ElectronSafeMacRecorder extends EventEmitter {
 		this.options = {
 			includeMicrophone: false,
 			includeSystemAudio: false,
-			quality: "medium",
-			frameRate: 30,
+			quality: "high",
+			frameRate: 60,
 			captureArea: null,
 			captureCursor: false,
 			showClicks: false,

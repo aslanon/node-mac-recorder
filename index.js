@@ -43,8 +43,8 @@ class MacRecorder extends EventEmitter {
 		this.options = {
 			includeMicrophone: false, // Default olarak mikrofon kapalı
 			includeSystemAudio: false, // Default olarak sistem sesi kapalı - kullanıcı explicit olarak açmalı
-			quality: "medium",
-			frameRate: 30,
+			quality: "high",
+			frameRate: 60,
 			captureArea: null, // { x, y, width, height }
 			captureCursor: false, // Default olarak cursor gizli
 			showClicks: false,
@@ -180,6 +180,13 @@ class MacRecorder extends EventEmitter {
 		}
 		if (options.captureCamera !== undefined) {
 			this.options.captureCamera = options.captureCamera === true;
+		}
+		if (options.frameRate !== undefined) {
+			const fps = parseInt(options.frameRate, 10);
+			if (!Number.isNaN(fps) && fps > 0) {
+				// Clamp reasonable range 1-120
+				this.options.frameRate = Math.min(Math.max(fps, 1), 120);
+			}
 		}
 		if (options.cameraDeviceId !== undefined) {
 			this.options.cameraDeviceId =
@@ -497,6 +504,8 @@ class MacRecorder extends EventEmitter {
 					captureCamera: this.options.captureCamera === true,
 					cameraDeviceId: this.options.cameraDeviceId || null,
 					sessionTimestamp,
+					frameRate: this.options.frameRate || 60,
+					quality: this.options.quality || "high",
 				};
 
 					if (cameraFilePath) {

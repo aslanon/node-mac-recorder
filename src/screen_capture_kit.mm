@@ -32,6 +32,7 @@ static BOOL g_audioWriterStarted = NO;
 
 static NSInteger g_configuredSampleRate = 48000;
 static NSInteger g_configuredChannelCount = 2;
+static NSInteger g_targetFPS = 60;
 
 // Frame rate debugging
 static NSInteger g_frameCount = 0;
@@ -342,9 +343,9 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
     NSDictionary *compressionProps = @{
         AVVideoAverageBitRateKey: @(bitrate),
-        AVVideoMaxKeyFrameIntervalKey: @30,
+        AVVideoMaxKeyFrameIntervalKey: @(MAX(1, g_targetFPS)),
         AVVideoAllowFrameReorderingKey: @YES,
-        AVVideoExpectedSourceFrameRateKey: @60,
+        AVVideoExpectedSourceFrameRateKey: @(MAX(1, g_targetFPS)),
         AVVideoQualityKey: @(0.95),  // 0.0-1.0, higher is better (0.95 = excellent)
         AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
         AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
@@ -524,6 +525,17 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     NSString *audioOutputPath = MRNormalizePath(config[@"audioOutputPath"]);
     NSNumber *sessionTimestampNumber = config[@"sessionTimestamp"];
     
+    // Extract requested frame rate
+    NSNumber *frameRateNumber = config[@"frameRate"];
+    if (frameRateNumber && [frameRateNumber respondsToSelector:@selector(intValue)]) {
+        NSInteger fps = [frameRateNumber intValue];
+        if (fps < 1) fps = 1;
+        if (fps > 120) fps = 120;
+        g_targetFPS = fps;
+    } else {
+        g_targetFPS = 60;
+    }
+    
     MRLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
     MRLog(@"🔧 Config: cursor=%@ mic=%@ system=%@ display=%@ window=%@ crop=%@", 
           captureCursor, includeMicrophone, includeSystemAudio, displayId, windowId, captureRect);
@@ -641,7 +653,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
         streamConfig.width = recordingWidth;
         streamConfig.height = recordingHeight;
-        streamConfig.minimumFrameInterval = CMTimeMake(1, 60); // 60 FPS for smooth recording
+        streamConfig.minimumFrameInterval = CMTimeMake(1, (int)MAX(1, g_targetFPS));
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
         streamConfig.scalesToFit = NO;
 
@@ -650,7 +662,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             streamConfig.queueDepth = 8; // Larger queue for smoother capture
         }
 
-        MRLog(@"🎬 ScreenCaptureKit config: %ldx%ld @ 60fps", (long)recordingWidth, (long)recordingHeight);
+        MRLog(@"🎬 ScreenCaptureKit config: %ldx%ld @ %ldfps", (long)recordingWidth, (long)recordingHeight, (long)g_targetFPS);
         
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
         BOOL shouldCaptureSystemAudio = includeSystemAudio ? [includeSystemAudio boolValue] : NO;
@@ -735,8 +747,8 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         BOOL shouldShowCursor = captureCursor ? [captureCursor boolValue] : YES;
         streamConfig.showsCursor = shouldShowCursor;
         
-        MRLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ 30fps, cursor=%d", 
-              recordingWidth, recordingHeight, shouldShowCursor);
+        MRLog(@"🎥 Pure ScreenCapture config: %ldx%ld @ %ldfps, cursor=%d", 
+              recordingWidth, recordingHeight, (long)g_targetFPS, shouldShowCursor);
         
         NSError *writerError = nil;
         if (![ScreenCaptureKitRecorder prepareVideoWriterWithWidth:recordingWidth height:recordingHeight error:&writerError]) {

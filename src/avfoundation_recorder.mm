@@ -34,7 +34,8 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                            bool includeMicrophone,
                                            bool includeSystemAudio,
                                            NSString* audioDeviceId,
-                                           NSString* audioOutputPath) {
+                                           NSString* audioOutputPath,
+                                           double requestedFrameRate) {
     
     if (g_avIsRecording) {
         NSLog(@"❌ AVFoundation recording already in progress");
@@ -129,15 +130,20 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         NSLog(@"🎬 ULTRA QUALITY AVFoundation: %dx%d, bitrate=%.2fMbps",
               (int)recordingSize.width, (int)recordingSize.height, bitrate / (1000.0 * 1000.0));
 
+        // Resolve target FPS
+        double fps = requestedFrameRate > 0 ? requestedFrameRate : 60.0;
+        if (fps < 1.0) fps = 1.0;
+        if (fps > 120.0) fps = 120.0;
+
         NSDictionary *videoSettings = @{
             AVVideoCodecKey: codecKey,
             AVVideoWidthKey: @((int)recordingSize.width),
             AVVideoHeightKey: @((int)recordingSize.height),
             AVVideoCompressionPropertiesKey: @{
                 AVVideoAverageBitRateKey: @(bitrate),
-                AVVideoMaxKeyFrameIntervalKey: @30,
+                AVVideoMaxKeyFrameIntervalKey: @((int)fps),
                 AVVideoAllowFrameReorderingKey: @YES,
-                AVVideoExpectedSourceFrameRateKey: @60,
+                AVVideoExpectedSourceFrameRateKey: @((int)fps),
                 AVVideoQualityKey: @(0.95),  // 0.0-1.0, higher is better
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
@@ -266,7 +272,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             }
         }
 
-        // Start capture timer (10 FPS for Electron compatibility)
+        // Start capture timer using target FPS
         dispatch_queue_t captureQueue = dispatch_queue_create("AVFoundationCaptureQueue", DISPATCH_QUEUE_SERIAL);
         g_avTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, captureQueue);
         
@@ -275,7 +281,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             return false;
         }
         
-        uint64_t interval = NSEC_PER_SEC / 10; // 10 FPS for Electron stability
+        uint64_t interval = (uint64_t)(NSEC_PER_SEC / fps);
         dispatch_source_set_timer(g_avTimer, dispatch_time(DISPATCH_TIME_NOW, 0), interval, interval / 10);
         
         // Retain objects before passing to block to prevent deallocation
@@ -371,7 +377,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                             
                             // Write frame only if input is ready
                             if (localVideoInput && localVideoInput.readyForMoreMediaData) {
-                                CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(g_avFrameNumber / 10.0, 600));
+                                CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(((double)g_avFrameNumber) / fps, 600));
                                 BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
                                 if (appendSuccess) {
                                     g_avFrameNumber++;
@@ -401,8 +407,8 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         dispatch_resume(g_avTimer);
         g_avIsRecording = true;
         
-        MRLog(@"🎥 AVFoundation recording started: %dx%d @ 10fps", 
-              (int)recordingSize.width, (int)recordingSize.height);
+        MRLog(@"🎥 AVFoundation recording started: %dx%d @ %.0ffps", 
+              (int)recordingSize.width, (int)recordingSize.height, fps);
         
         return true;
         

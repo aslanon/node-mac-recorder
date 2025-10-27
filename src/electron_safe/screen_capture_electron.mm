@@ -121,10 +121,25 @@ static void initializeSafeQueue() {
             SCDisplay *targetDisplay = nil;
             
             if (displayId) {
+                // First, try matching by real CGDirectDisplayID
                 for (SCDisplay *display in content.displays) {
                     if (display.displayID == [displayId unsignedIntValue]) {
                         targetDisplay = display;
                         break;
+                    }
+                }
+
+                // If not matched, treat provided value as index (0-based or 1-based)
+                if (!targetDisplay && content.displays.count > 0) {
+                    NSUInteger count = content.displays.count;
+                    NSUInteger idx0 = (NSUInteger)[displayId unsignedIntValue];
+                    if (idx0 < count) {
+                        targetDisplay = content.displays[idx0];
+                    } else if ([displayId unsignedIntegerValue] > 0) {
+                        NSUInteger idx1 = [displayId unsignedIntegerValue] - 1;
+                        if (idx1 < count) {
+                            targetDisplay = content.displays[idx1];
+                        }
                     }
                 }
             }
@@ -154,9 +169,45 @@ static void initializeSafeQueue() {
         }
         
         // Video configuration
-        config.width = 1920;
-        config.height = 1080;
-        config.minimumFrameInterval = CMTimeMake(1, 30); // 30 FPS
+        // Prefer the target display's native resolution when available
+        if (filter && [filter isKindOfClass:[SCContentFilter class]]) {
+            // Try to infer dimensions from selected display or capture area
+            NSDictionary *captureArea = options[@"captureArea"];
+            if (captureArea) {
+                config.width = (size_t)[captureArea[@"width"] doubleValue];
+                config.height = (size_t)[captureArea[@"height"] doubleValue];
+            } else {
+                // Find the selected display again to get dimensions
+                NSNumber *displayId = options[@"displayId"];
+                if (displayId) {
+                    for (SCDisplay *display in content.displays) {
+                        if (display.displayID == [displayId unsignedIntValue]) {
+                            config.width = (size_t)display.width;
+                            config.height = (size_t)display.height;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fallback default resolution if not set above
+        if (config.width == 0 || config.height == 0) {
+            config.width = 1920;
+            config.height = 1080;
+        }
+        
+        // Frame rate from options (default 60)
+        NSInteger fps = 60;
+        if (options[@"frameRate"]) {
+            NSInteger v = [options[@"frameRate"] integerValue];
+            if (v > 0) {
+                if (v < 1) v = 1;
+                if (v > 120) v = 120;
+                fps = v;
+            }
+        }
+        config.minimumFrameInterval = CMTimeMake(1, (int)fps);
         config.queueDepth = 8;
         
         // Capture area if specified
