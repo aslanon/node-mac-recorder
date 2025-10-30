@@ -837,10 +837,10 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     if (!self.writerStarted) {
         if (self.assetWriter.status == AVAssetWriterStatusUnknown) {
             if ([self.assetWriter startWriting]) {
-                [self.assetWriter startSessionAtSourceTime:timestamp];
+                [self.assetWriter startSessionAtSourceTime:kCMTimeZero];
                 self.writerStarted = YES;
                 self.firstSampleTime = timestamp;
-                MRLog(@"✅ Camera writer started");
+                MRLog(@"✅ Camera writer started (zero-based timeline)");
             } else {
                 MRLog(@"❌ CameraRecorder: Failed to start asset writer: %@", self.assetWriter.error);
                 self.isRecording = NO;
@@ -862,13 +862,26 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return;
     }
     
+    if (CMTIME_IS_INVALID(self.firstSampleTime)) {
+        self.firstSampleTime = timestamp;
+    }
+    
+    CMTime relativeTimestamp = timestamp;
+    if (CMTIME_IS_VALID(self.firstSampleTime)) {
+        // Align camera frames to a zero-based timeline so multi-track compositions stay in sync
+        relativeTimestamp = CMTimeSubtract(timestamp, self.firstSampleTime);
+        if (CMTIME_COMPARE_INLINE(relativeTimestamp, <, kCMTimeZero)) {
+            relativeTimestamp = kCMTimeZero;
+        }
+    }
+    
     CVPixelBufferRetain(pixelBuffer);
-    BOOL appended = [self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:timestamp];
+    BOOL appended = [self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTimestamp];
     CVPixelBufferRelease(pixelBuffer);
     
     if (!appended) {
         MRLog(@"⚠️ CameraRecorder: Failed to append camera frame at time %.2f (status %ld)",
-              CMTimeGetSeconds(timestamp), (long)self.assetWriter.status);
+              CMTimeGetSeconds(relativeTimestamp), (long)self.assetWriter.status);
         if (self.assetWriter.status == AVAssetWriterStatusFailed) {
             MRLog(@"❌ CameraRecorder writer failure: %@", self.assetWriter.error);
             self.isRecording = NO;

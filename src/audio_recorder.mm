@@ -314,7 +314,7 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
             NSLog(@"❌ Audio writer failed to start: %@", self.writer.error);
             return;
         }
-        [self.writer startSessionAtSourceTime:timestamp];
+        [self.writer startSessionAtSourceTime:kCMTimeZero];
         self.writerStarted = YES;
         self.startTime = timestamp;
     }
@@ -323,8 +323,64 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
         return;
     }
     
-    if (![self.writerInput appendSampleBuffer:sampleBuffer]) {
+    if (CMTIME_IS_INVALID(self.startTime)) {
+        self.startTime = timestamp;
+    }
+    
+    CMSampleBufferRef bufferToAppend = sampleBuffer;
+    CMItemCount timingEntryCount = 0;
+    OSStatus timingStatus = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, 0, NULL, &timingEntryCount);
+    CMSampleTimingInfo *timingInfo = NULL;
+    
+    if (timingStatus == noErr && timingEntryCount > 0) {
+        timingInfo = (CMSampleTimingInfo *)malloc(sizeof(CMSampleTimingInfo) * timingEntryCount);
+        if (timingInfo) {
+            timingStatus = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, timingEntryCount, timingInfo, &timingEntryCount);
+            
+            if (timingStatus == noErr) {
+                for (CMItemCount i = 0; i < timingEntryCount; ++i) {
+                    // Shift audio timestamps to begin at t=0 so they align with camera capture
+                    if (CMTIME_IS_VALID(timingInfo[i].presentationTimeStamp)) {
+                        CMTime adjustedPTS = CMTimeSubtract(timingInfo[i].presentationTimeStamp, self.startTime);
+                        if (CMTIME_COMPARE_INLINE(adjustedPTS, <, kCMTimeZero)) {
+                            adjustedPTS = kCMTimeZero;
+                        }
+                        timingInfo[i].presentationTimeStamp = adjustedPTS;
+                    } else {
+                        timingInfo[i].presentationTimeStamp = kCMTimeZero;
+                    }
+                    
+                    if (CMTIME_IS_VALID(timingInfo[i].decodeTimeStamp)) {
+                        CMTime adjustedDTS = CMTimeSubtract(timingInfo[i].decodeTimeStamp, self.startTime);
+                        if (CMTIME_COMPARE_INLINE(adjustedDTS, <, kCMTimeZero)) {
+                            adjustedDTS = kCMTimeZero;
+                        }
+                        timingInfo[i].decodeTimeStamp = adjustedDTS;
+                    }
+                }
+                
+                CMSampleBufferRef adjustedBuffer = NULL;
+                timingStatus = CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault,
+                                                                     sampleBuffer,
+                                                                     timingEntryCount,
+                                                                     timingInfo,
+                                                                     &adjustedBuffer);
+                if (timingStatus == noErr && adjustedBuffer) {
+                    bufferToAppend = adjustedBuffer;
+                }
+            }
+            
+            free(timingInfo);
+            timingInfo = NULL;
+        }
+    }
+    
+    if (![self.writerInput appendSampleBuffer:bufferToAppend]) {
         NSLog(@"⚠️ Failed appending audio buffer: %@", self.writer.error);
+    }
+    
+    if (bufferToAppend != sampleBuffer) {
+        CFRelease(bufferToAppend);
     }
 }
 
