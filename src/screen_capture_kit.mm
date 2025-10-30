@@ -1,5 +1,6 @@
 #import "screen_capture_kit.h"
 #import "logging.h"
+#import "sync_timeline.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
@@ -182,15 +183,20 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
     
+    // Wait for audio to arrive before starting screen video to prevent leading frames.
+    if (MRSyncShouldHoldVideoFrame(presentationTime)) {
+        return;
+    }
+    
     if (!g_videoWriterStarted) {
         if (![g_videoWriter startWriting]) {
             NSLog(@"❌ ScreenCaptureKit video writer failed to start: %@", g_videoWriter.error);
             return;
         }
-        [g_videoWriter startSessionAtSourceTime:presentationTime];
+        [g_videoWriter startSessionAtSourceTime:kCMTimeZero];
         g_videoStartTime = presentationTime;
         g_videoWriterStarted = YES;
-        MRLog(@"🎞️ Video writer session started @ %.3f", CMTimeGetSeconds(presentationTime));
+        MRLog(@"🎞️ Video writer session started @ %.3f (zero-based timeline)", CMTimeGetSeconds(presentationTime));
     }
     
     if (!g_videoInput.readyForMoreMediaData) {
@@ -221,8 +227,16 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         return;
     }
     
+    CMTime relativePresentation = presentationTime;
+    if (CMTIME_IS_VALID(g_videoStartTime)) {
+        relativePresentation = CMTimeSubtract(presentationTime, g_videoStartTime);
+        if (CMTIME_COMPARE_INLINE(relativePresentation, <, kCMTimeZero)) {
+            relativePresentation = kCMTimeZero;
+        }
+    }
+    
     AVAssetWriterInputPixelBufferAdaptor *adaptor = adaptorCandidate;
-    BOOL appended = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
+    BOOL appended = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativePresentation];
     if (!appended) {
         NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
     }
@@ -282,10 +296,10 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             NSLog(@"❌ Audio writer failed to start: %@", g_audioWriter.error);
             return;
         }
-        [g_audioWriter startSessionAtSourceTime:presentationTime];
+        [g_audioWriter startSessionAtSourceTime:kCMTimeZero];
         g_audioStartTime = presentationTime;
         g_audioWriterStarted = YES;
-        MRLog(@"🔊 Audio writer session started @ %.3f", CMTimeGetSeconds(presentationTime));
+        MRLog(@"🔊 Audio writer session started @ %.3f (zero-based timeline)", CMTimeGetSeconds(presentationTime));
     }
     
     if (!g_audioInput.readyForMoreMediaData) {
@@ -296,7 +310,59 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         return;
     }
 
-    BOOL success = [g_audioInput appendSampleBuffer:sampleBuffer];
+    if (CMTIME_IS_INVALID(g_audioStartTime)) {
+        g_audioStartTime = presentationTime;
+    }
+    
+    CMSampleBufferRef bufferToAppend = sampleBuffer;
+    CMItemCount timingEntryCount = 0;
+    OSStatus timingStatus = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, 0, NULL, &timingEntryCount);
+    CMSampleTimingInfo *timingInfo = NULL;
+    
+    if (timingStatus == noErr && timingEntryCount > 0) {
+        timingInfo = (CMSampleTimingInfo *)malloc(sizeof(CMSampleTimingInfo) * timingEntryCount);
+        if (timingInfo) {
+            timingStatus = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, timingEntryCount, timingInfo, &timingEntryCount);
+            
+            if (timingStatus == noErr) {
+                for (CMItemCount i = 0; i < timingEntryCount; ++i) {
+                    // Shift ScreenCaptureKit audio to start at t=0 so it aligns with camera/mic tracks
+                    if (CMTIME_IS_VALID(timingInfo[i].presentationTimeStamp)) {
+                        CMTime adjustedPTS = CMTimeSubtract(timingInfo[i].presentationTimeStamp, g_audioStartTime);
+                        if (CMTIME_COMPARE_INLINE(adjustedPTS, <, kCMTimeZero)) {
+                            adjustedPTS = kCMTimeZero;
+                        }
+                        timingInfo[i].presentationTimeStamp = adjustedPTS;
+                    } else {
+                        timingInfo[i].presentationTimeStamp = kCMTimeZero;
+                    }
+                    
+                    if (CMTIME_IS_VALID(timingInfo[i].decodeTimeStamp)) {
+                        CMTime adjustedDTS = CMTimeSubtract(timingInfo[i].decodeTimeStamp, g_audioStartTime);
+                        if (CMTIME_COMPARE_INLINE(adjustedDTS, <, kCMTimeZero)) {
+                            adjustedDTS = kCMTimeZero;
+                        }
+                        timingInfo[i].decodeTimeStamp = adjustedDTS;
+                    }
+                }
+                
+                CMSampleBufferRef adjustedBuffer = NULL;
+                timingStatus = CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault,
+                                                                     sampleBuffer,
+                                                                     timingEntryCount,
+                                                                     timingInfo,
+                                                                     &adjustedBuffer);
+                if (timingStatus == noErr && adjustedBuffer) {
+                    bufferToAppend = adjustedBuffer;
+                }
+            }
+            
+            free(timingInfo);
+            timingInfo = NULL;
+        }
+    }
+    
+    BOOL success = [g_audioInput appendSampleBuffer:bufferToAppend];
     if (!success) {
         NSLog(@"⚠️ Failed appending audio sample buffer: %@", g_audioWriter.error);
     } else {
@@ -304,6 +370,10 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         if (appendCount++ % 100 == 0) {
             MRLog(@"✅ Audio sample appended successfully (count: %d)", appendCount);
         }
+    }
+    
+    if (bufferToAppend != sampleBuffer) {
+        CFRelease(bufferToAppend);
     }
 }
 @end

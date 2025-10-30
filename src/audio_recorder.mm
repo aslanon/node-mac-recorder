@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
 #import "logging.h"
+#import "sync_timeline.h"
 
 static dispatch_queue_t g_audioCaptureQueue = nil;
 
@@ -308,6 +309,7 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     }
     
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    MRSyncMarkAudioSample(timestamp);
     
     if (!self.writerStarted) {
         if (![self.writer startWriting]) {

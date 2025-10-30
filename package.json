@@ -42,7 +42,8 @@
 		"example:window-selector": "node examples/window-selector-example.js",
 		"build:electron-safe": "node build-electron-safe.js",
 		"test:electron-safe": "node test-electron-safe.js",
-		"clean:electron-safe": "node-gyp clean && rm -rf build"
+		"clean:electron-safe": "node-gyp clean && rm -rf build",
+		"canvas": "node canvas-test.js"
 	},
 	"dependencies": {
 		"node-addon-api": "^7.0.0",

@@ -117,6 +117,7 @@ OBJS := \
 	$(obj).target/$(TARGET)/src/screen_capture_kit.o \
 	$(obj).target/$(TARGET)/src/avfoundation_recorder.o \
 	$(obj).target/$(TARGET)/src/camera_recorder.o \
+	$(obj).target/$(TARGET)/src/sync_timeline.o \
 	$(obj).target/$(TARGET)/src/audio_recorder.o \
 	$(obj).target/$(TARGET)/src/cursor_tracker.o \
 	$(obj).target/$(TARGET)/src/window_selector.o

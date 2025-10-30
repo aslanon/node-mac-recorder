@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Canvas Recording Player - node-mac-recorder</title>
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+			background: #1a1a1a;
+			color: #fff;
+			padding: 20px;
+		}
+
+		.container {
+			max-width: 1400px;
+			margin: 0 auto;
+		}
+
+		h1 {
+			text-align: center;
+			margin-bottom: 30px;
+			font-size: 28px;
+			color: #4a9eff;
+		}
+
+		.canvas-container {
+			position: relative;
+			background: #000;
+			border-radius: 8px;
+			overflow: hidden;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+			margin-bottom: 20px;
+		}
+
+		#mainCanvas {
+			display: block;
+			width: 100%;
+			height: auto;
+			background: #000;
+			position: relative;
+			z-index: 1;
+		}
+
+		.cursor {
+			position: absolute;
+			width: 24px;
+			height: 24px;
+			pointer-events: none;
+			z-index: 100;
+			transform: translate(-2px, -2px);
+			display: block;
+			opacity: 1;
+		}
+
+		.cursor.hidden {
+			display: none;
+		}
+
+		.cursor::before {
+			content: '';
+			position: absolute;
+			width: 0;
+			height: 0;
+			border-left: 12px solid #fff;
+			border-right: 10px solid transparent;
+			border-top: 12px solid #fff;
+			border-bottom: 10px solid transparent;
+			filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.9)) drop-shadow(0 0 2px rgba(255, 255, 255, 0.5));
+		}
+
+		.cursor::after {
+			content: '';
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 0;
+			height: 0;
+			border-left: 10px solid #000;
+			border-right: 8px solid transparent;
+			border-top: 10px solid #000;
+			border-bottom: 8px solid transparent;
+		}
+
+		.controls {
+			background: #2a2a2a;
+			padding: 20px;
+			border-radius: 8px;
+			display: flex;
+			align-items: center;
+			gap: 15px;
+			flex-wrap: wrap;
+		}
+
+		.btn {
+			background: #4a9eff;
+			color: #fff;
+			border: none;
+			padding: 12px 24px;
+			border-radius: 6px;
+			cursor: pointer;
+			font-size: 16px;
+			font-weight: 600;
+			transition: all 0.2s;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.btn:hover {
+			background: #3a8eef;
+			transform: translateY(-1px);
+		}
+
+		.btn:active {
+			transform: translateY(0);
+		}
+
+		.btn:disabled {
+			background: #555;
+			cursor: not-allowed;
+			opacity: 0.5;
+		}
+
+		.time-display {
+			font-size: 18px;
+			font-weight: 600;
+			padding: 8px 16px;
+			background: #1a1a1a;
+			border-radius: 6px;
+			min-width: 120px;
+			text-align: center;
+		}
+
+		.info {
+			background: #2a2a2a;
+			padding: 15px;
+			border-radius: 8px;
+			margin-bottom: 20px;
+		}
+
+		.info-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+			gap: 10px;
+		}
+
+		.info-item {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.info-label {
+			color: #888;
+			font-size: 14px;
+		}
+
+		.info-value {
+			color: #fff;
+			font-weight: 600;
+			font-size: 14px;
+		}
+
+		.status {
+			display: inline-block;
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+			margin-right: 5px;
+		}
+
+		.status.active {
+			background: #4caf50;
+			animation: pulse 2s infinite;
+		}
+
+		.status.inactive {
+			background: #f44336;
+		}
+
+		@keyframes pulse {
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.5; }
+		}
+
+		.loading {
+			text-align: center;
+			padding: 40px;
+			font-size: 18px;
+			color: #888;
+		}
+
+		.error {
+			background: #f44336;
+			color: #fff;
+			padding: 15px;
+			border-radius: 8px;
+			margin-bottom: 20px;
+		}
+
+		video {
+			display: none;
+		}
+
+		.progress-bar {
+			flex: 1;
+			height: 8px;
+			background: #1a1a1a;
+			border-radius: 4px;
+			cursor: pointer;
+			position: relative;
+			overflow: hidden;
+		}
+
+		.progress-fill {
+			height: 100%;
+			background: #4a9eff;
+			border-radius: 4px;
+			width: 0%;
+			transition: width 0.1s linear;
+		}
+
+		.camera-overlay {
+			position: absolute;
+			bottom: 20px;
+			right: 20px;
+			width: 240px;
+			height: 180px;
+			border: 3px solid #4a9eff;
+			border-radius: 8px;
+			overflow: hidden;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+			background: #000;
+			pointer-events: none;
+			z-index: 50;
+		}
+
+		.layer-controls {
+			background: #2a2a2a;
+			padding: 15px;
+			border-radius: 8px;
+			margin-bottom: 20px;
+		}
+
+		.layer-controls h3 {
+			margin-bottom: 10px;
+			font-size: 16px;
+			color: #4a9eff;
+		}
+
+		.layer-toggles {
+			display: flex;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		.toggle-btn {
+			background: #3a3a3a;
+			color: #fff;
+			border: 2px solid #555;
+			padding: 8px 16px;
+			border-radius: 6px;
+			cursor: pointer;
+			font-size: 14px;
+			transition: all 0.2s;
+		}
+
+		.toggle-btn.active {
+			background: #4a9eff;
+			border-color: #4a9eff;
+		}
+
+		.toggle-btn:hover {
+			border-color: #4a9eff;
+		}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<h1>🎬 Canvas Recording Player</h1>
+
+		<div id="errorContainer"></div>
+		<div id="loadingContainer" class="loading">📂 Loading recording files...</div>
+
+		<div id="infoContainer" style="display: none;"></div>
+
+		<div id="layerControls" class="layer-controls" style="display: none;">
+			<h3>🎨 Layers</h3>
+			<div class="layer-toggles">
+				<button class="toggle-btn active" data-layer="screen">🖥️ Screen</button>
+				<button class="toggle-btn active" data-layer="camera">📹 Camera</button>
+				<button class="toggle-btn active" data-layer="cursor">🖱️ Cursor</button>
+			</div>
+		</div>
+
+		<div class="canvas-container" id="canvasContainer" style="display: none;">
+			<canvas id="mainCanvas"></canvas>
+			<div class="cursor" id="cursor"></div>
+		</div>
+
+		<div class="controls" id="controlsContainer" style="display: none;">
+			<button class="btn" id="playPauseBtn" disabled>
+				<span id="playPauseIcon">▶️</span>
+				<span id="playPauseText">Play</span>
+			</button>
+			<div class="time-display" id="timeDisplay">0:00 / 0:00</div>
+			<div class="progress-bar" id="progressBar">
+				<div class="progress-fill" id="progressFill"></div>
+			</div>
+		</div>
+
+		<!-- Hidden video elements -->
+		<video id="screenVideo" preload="auto" playsinline></video>
+		<video id="cameraVideo" preload="auto" playsinline muted></video>
+		<video id="audioVideo" preload="auto" playsinline></video>
+	</div>
+
+	<script>
+		class CanvasPlayer {
+			constructor() {
+				this.canvas = document.getElementById('mainCanvas');
+				this.ctx = this.canvas.getContext('2d');
+				this.cursor = document.getElementById('cursor');
+
+				this.screenVideo = document.getElementById('screenVideo');
+				this.cameraVideo = document.getElementById('cameraVideo');
+				this.audioVideo = document.getElementById('audioVideo');
+
+				this.cursorData = [];
+				this.currentCursorIndex = 0;
+				this.isPlaying = false;
+				this.animationFrame = null;
+				this.startTime = null;
+				this.pausedTime = 0;
+
+				this.metadata = null;
+				this.layers = {
+					screen: true,
+					camera: true,
+					cursor: true
+				};
+
+				// SYNC FIX: Ensure all videos have same playback settings
+				[this.screenVideo, this.cameraVideo, this.audioVideo].forEach(video => {
+					video.playbackRate = 1.0;
+					video.defaultPlaybackRate = 1.0;
+				});
+
+				this.setupEventListeners();
+			}
+
+			async init() {
+				try {
+					// Load metadata
+					const response = await fetch('test-output/recording-metadata.json');
+					this.metadata = await response.json();
+
+					this.displayInfo();
+					this.showLayerControls();
+
+					// Load videos
+					await this.loadVideos();
+
+					// Load cursor data
+					if (this.metadata.files.cursor) {
+						await this.loadCursorData();
+					}
+
+					// Setup canvas size based on screen video
+					this.setupCanvas();
+
+					// Hide loading, show player
+					document.getElementById('loadingContainer').style.display = 'none';
+					document.getElementById('canvasContainer').style.display = 'block';
+					document.getElementById('controlsContainer').style.display = 'flex';
+					document.getElementById('playPauseBtn').disabled = false;
+
+					console.log('✅ Player initialized successfully');
+				} catch (error) {
+					this.showError('Failed to load recording: ' + error.message);
+					console.error(error);
+				}
+			}
+
+			async loadVideos() {
+				const loadVideo = (video, filename) => {
+					return new Promise((resolve, reject) => {
+						if (!filename) {
+							resolve(false);
+							return;
+						}
+
+						video.src = 'test-output/' + filename;
+
+						// SYNC FIX: Wait for canplaythrough to ensure first frame is decoded
+						video.oncanplaythrough = () => {
+							console.log('✅ Ready:', filename, 'duration:', video.duration.toFixed(2) + 's');
+							resolve(true);
+						};
+						video.onerror = () => reject(new Error('Failed to load ' + filename));
+					});
+				};
+
+				try {
+					// SYNC FIX: Load all videos in parallel
+					const [screenLoaded, cameraLoaded, audioLoaded] = await Promise.all([
+						loadVideo(this.screenVideo, this.metadata.files.screen),
+						loadVideo(this.cameraVideo, this.metadata.files.camera),
+						loadVideo(this.audioVideo, this.metadata.files.audio)
+					]);
+
+					console.log('✅ All videos loaded and ready for playback');
+
+					// SYNC FIX: Set all videos to frame 0 and wait for seek complete
+					const seekToStart = (video) => {
+						return new Promise(resolve => {
+							if (video.readyState === 0) {
+								resolve();
+								return;
+							}
+							video.currentTime = 0;
+							video.onseeked = () => {
+								console.log('✅ Seeked to start:', video.src.split('/').pop());
+								resolve();
+							};
+							// Fallback if onseeked doesn't fire
+							setTimeout(resolve, 100);
+						});
+					};
+
+					await Promise.all([
+						seekToStart(this.screenVideo),
+						cameraLoaded ? seekToStart(this.cameraVideo) : Promise.resolve(),
+						audioLoaded ? seekToStart(this.audioVideo) : Promise.resolve()
+					]);
+
+					console.log('✅ All videos synchronized at start position');
+
+				} catch (error) {
+					throw new Error('Video loading failed: ' + error.message);
+				}
+			}
+
+			async loadCursorData() {
+				try {
+					const response = await fetch('test-output/' + this.metadata.files.cursor);
+					this.cursorData = await response.json();
+					console.log('✅ Cursor data loaded:', this.cursorData.length, 'events');
+
+					if (this.cursorData.length > 0) {
+						console.log('   First cursor event:', this.cursorData[0]);
+						console.log('   Last cursor event:', this.cursorData[this.cursorData.length - 1]);
+						console.log('   Coordinate system:', this.cursorData[0].coordinateSystem);
+					}
+				} catch (error) {
+					console.warn('⚠️ Failed to load cursor data:', error);
+					this.cursorData = [];
+				}
+			}
+
+			setupCanvas() {
+				const video = this.screenVideo;
+				const aspectRatio = video.videoWidth / video.videoHeight;
+
+				// Set canvas size to match video
+				this.canvas.width = video.videoWidth;
+				this.canvas.height = video.videoHeight;
+
+				console.log('Canvas size:', this.canvas.width, 'x', this.canvas.height);
+
+				// Test cursor visibility - position at center of canvas
+				setTimeout(() => {
+					const testX = this.canvas.getBoundingClientRect().width / 2;
+					const testY = this.canvas.getBoundingClientRect().height / 2;
+					this.cursor.style.left = testX + 'px';
+					this.cursor.style.top = testY + 'px';
+					this.cursor.classList.remove('hidden');
+					console.log('🖱️ Test cursor positioned at center:', testX, testY);
+				}, 100);
+			}
+
+			setupEventListeners() {
+				document.getElementById('playPauseBtn').addEventListener('click', () => {
+					this.togglePlayPause();
+				});
+
+				document.getElementById('progressBar').addEventListener('click', (e) => {
+					const rect = e.target.getBoundingClientRect();
+					const percent = (e.clientX - rect.left) / rect.width;
+					this.seek(percent);
+				});
+
+				// Layer toggle buttons
+				document.querySelectorAll('.toggle-btn').forEach(btn => {
+					btn.addEventListener('click', (e) => {
+						const layer = e.target.dataset.layer;
+						this.toggleLayer(layer);
+						e.target.classList.toggle('active');
+					});
+				});
+
+				// Keyboard shortcuts
+				document.addEventListener('keydown', (e) => {
+					if (e.code === 'Space') {
+						e.preventDefault();
+						this.togglePlayPause();
+					}
+				});
+			}
+
+			toggleLayer(layer) {
+				this.layers[layer] = !this.layers[layer];
+				console.log('Layer toggled:', layer, this.layers[layer]);
+
+				// If toggling cursor, update visibility immediately
+				if (layer === 'cursor') {
+					if (!this.layers[layer]) {
+						this.cursor.classList.add('hidden');
+					} else {
+						this.cursor.classList.remove('hidden');
+					}
+				}
+			}
+
+			togglePlayPause() {
+				if (this.isPlaying) {
+					this.pause();
+				} else {
+					this.play();
+				}
+			}
+
+			async play() {
+				if (this.isPlaying) return;
+
+				// SYNC FIX: Ensure all videos are at exact same position before playing
+				const targetTime = this.pausedTime / 1000;
+				this.screenVideo.currentTime = targetTime;
+				if (this.metadata.files.camera && this.cameraVideo.readyState >= 2) {
+					this.cameraVideo.currentTime = targetTime;
+				}
+				if (this.metadata.files.audio && this.audioVideo.readyState >= 2) {
+					this.audioVideo.currentTime = targetTime;
+				}
+
+				// Wait a tiny bit for all seeks to complete
+				await new Promise(resolve => setTimeout(resolve, 50));
+
+				this.isPlaying = true;
+				this.startTime = performance.now() - this.pausedTime;
+
+				// SYNC FIX: Play all videos simultaneously using Promise.all
+				const playPromises = [this.screenVideo.play()];
+
+				if (this.metadata.files.camera && this.cameraVideo.readyState >= 2) {
+					playPromises.push(this.cameraVideo.play());
+				}
+
+				if (this.metadata.files.audio && this.audioVideo.readyState >= 2) {
+					playPromises.push(this.audioVideo.play());
+				}
+
+				try {
+					// Wait for all videos to start playing together
+					await Promise.all(playPromises);
+					console.log('✅ All media playing in sync at', targetTime.toFixed(2) + 's');
+				} catch (error) {
+					console.warn('⚠️ Some media failed to play:', error);
+				}
+
+				// Start animation loop
+				this.animate();
+
+				// Update UI
+				document.getElementById('playPauseIcon').textContent = '⏸️';
+				document.getElementById('playPauseText').textContent = 'Pause';
+			}
+
+			pause() {
+				if (!this.isPlaying) return;
+
+				this.isPlaying = false;
+				this.pausedTime = performance.now() - this.startTime;
+
+				// Pause all videos
+				this.screenVideo.pause();
+				if (this.metadata.files.camera) this.cameraVideo.pause();
+				if (this.metadata.files.audio) this.audioVideo.pause();
+
+				// Stop animation loop
+				if (this.animationFrame) {
+					cancelAnimationFrame(this.animationFrame);
+					this.animationFrame = null;
+				}
+
+				// Update UI
+				document.getElementById('playPauseIcon').textContent = '▶️';
+				document.getElementById('playPauseText').textContent = 'Play';
+			}
+
+			async seek(percent) {
+				const time = this.screenVideo.duration * percent;
+
+				// SYNC FIX: Set all video times simultaneously
+				const seekPromises = [];
+
+				this.screenVideo.currentTime = time;
+				seekPromises.push(new Promise(resolve => {
+					this.screenVideo.onseeked = resolve;
+				}));
+
+				if (this.metadata.files.camera) {
+					this.cameraVideo.currentTime = time;
+					seekPromises.push(new Promise(resolve => {
+						this.cameraVideo.onseeked = resolve;
+					}));
+				}
+
+				if (this.metadata.files.audio) {
+					this.audioVideo.currentTime = time;
+					seekPromises.push(new Promise(resolve => {
+						this.audioVideo.onseeked = resolve;
+					}));
+				}
+
+				// Wait for all seeks to complete
+				try {
+					await Promise.all(seekPromises);
+					console.log('✅ All media seeked to:', time.toFixed(2) + 's');
+				} catch (error) {
+					console.warn('⚠️ Seek error:', error);
+				}
+
+				this.pausedTime = time * 1000;
+				if (this.isPlaying) {
+					this.startTime = performance.now() - this.pausedTime;
+				}
+
+				// Update cursor
+				this.updateCursor(time * 1000);
+			}
+
+			animate() {
+				if (!this.isPlaying) return;
+
+				// SYNC FIX: Use screenVideo as master clock
+				const masterTime = this.screenVideo.currentTime * 1000;
+
+				// Sync slave videos to master
+				this.syncSlaveVideos(masterTime);
+
+				// Draw frame
+				this.drawFrame(masterTime);
+
+				// Update cursor
+				this.updateCursor(masterTime);
+
+				// Update progress
+				this.updateProgress(masterTime);
+
+				// Check if ended
+				if (this.screenVideo.ended) {
+					this.pause();
+					this.pausedTime = 0;
+					this.seek(0);
+					return;
+				}
+
+				// Continue animation
+				this.animationFrame = requestAnimationFrame(() => this.animate());
+			}
+
+			syncSlaveVideos(masterTime) {
+				const syncThreshold = 30; // 30ms tolerance (very tight sync)
+				const masterSeconds = masterTime / 1000;
+
+				// Sync camera video
+				if (this.metadata.files.camera && this.cameraVideo.readyState >= 2 && !this.cameraVideo.paused) {
+					const cameraDiff = Math.abs(this.cameraVideo.currentTime * 1000 - masterTime);
+					if (cameraDiff > syncThreshold) {
+						// SYNC FIX: Adjust playback rate temporarily for smoother sync
+						if (cameraDiff > 200) {
+							// Large drift - hard sync
+							this.cameraVideo.currentTime = masterSeconds;
+							console.log('🎥 Camera hard sync:', cameraDiff.toFixed(0) + 'ms → ' + masterSeconds.toFixed(2) + 's');
+						} else if (cameraDiff > syncThreshold) {
+							// Small drift - soft sync with playback rate adjustment
+							if (this.cameraVideo.currentTime > masterSeconds) {
+								this.cameraVideo.playbackRate = 0.95; // Slow down
+							} else {
+								this.cameraVideo.playbackRate = 1.05; // Speed up
+							}
+							// Reset playback rate after correction
+							setTimeout(() => {
+								if (this.cameraVideo) {
+									this.cameraVideo.playbackRate = 1.0;
+								}
+							}, 500);
+						}
+					}
+				}
+
+				// Sync audio video
+				if (this.metadata.files.audio && this.audioVideo.readyState >= 2 && !this.audioVideo.paused) {
+					const audioDiff = Math.abs(this.audioVideo.currentTime * 1000 - masterTime);
+					if (audioDiff > syncThreshold) {
+						// SYNC FIX: Adjust playback rate temporarily for smoother sync
+						if (audioDiff > 200) {
+							// Large drift - hard sync
+							this.audioVideo.currentTime = masterSeconds;
+							console.log('🔊 Audio hard sync:', audioDiff.toFixed(0) + 'ms → ' + masterSeconds.toFixed(2) + 's');
+						} else if (audioDiff > syncThreshold) {
+							// Small drift - soft sync with playback rate adjustment
+							if (this.audioVideo.currentTime > masterSeconds) {
+								this.audioVideo.playbackRate = 0.95; // Slow down
+							} else {
+								this.audioVideo.playbackRate = 1.05; // Speed up
+							}
+							// Reset playback rate after correction
+							setTimeout(() => {
+								if (this.audioVideo) {
+									this.audioVideo.playbackRate = 1.0;
+								}
+							}, 500);
+						}
+					}
+				}
+			}
+
+			drawFrame(currentTime) {
+				// Clear canvas
+				this.ctx.fillStyle = '#000';
+				this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+				// Draw screen video (layer 1)
+				if (this.layers.screen && this.screenVideo.readyState >= 2) {
+					this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
+				}
+
+				// Draw camera video overlay (layer 2)
+				if (this.layers.camera && this.metadata.files.camera && this.cameraVideo.readyState >= 2) {
+					const cameraWidth = 240;
+					const cameraHeight = 180;
+					const padding = 20;
+					const x = this.canvas.width - cameraWidth - padding;
+					const y = this.canvas.height - cameraHeight - padding;
+
+					// Draw border
+					this.ctx.strokeStyle = '#4a9eff';
+					this.ctx.lineWidth = 3;
+					this.ctx.strokeRect(x - 2, y - 2, cameraWidth + 4, cameraHeight + 4);
+
+					// Draw camera video
+					this.ctx.drawImage(this.cameraVideo, x, y, cameraWidth, cameraHeight);
+				}
+			}
+
+			updateCursor(currentTime) {
+				if (!this.layers.cursor || this.cursorData.length === 0) {
+					this.cursor.classList.add('hidden');
+					return;
+				}
+
+				// Find cursor position at current time
+				let cursorEvent = null;
+				for (let i = 0; i < this.cursorData.length; i++) {
+					if (this.cursorData[i].timestamp <= currentTime) {
+						cursorEvent = this.cursorData[i];
+						this.currentCursorIndex = i;
+					} else {
+						break;
+					}
+				}
+
+				if (cursorEvent) {
+					// Calculate scale factor from video size to canvas display size
+					const canvasRect = this.canvas.getBoundingClientRect();
+					const scaleX = canvasRect.width / this.canvas.width;
+					const scaleY = canvasRect.height / this.canvas.height;
+
+					// Scale cursor position to match canvas display size
+					// Cursor data is in video coordinate space (0 to video.width/height)
+					// We need to scale it to canvas display space
+					const x = cursorEvent.x * scaleX;
+					const y = cursorEvent.y * scaleY;
+
+					// Show and position cursor (relative to canvas-container)
+					this.cursor.classList.remove('hidden');
+					this.cursor.style.left = x + 'px';
+					this.cursor.style.top = y + 'px';
+
+					// Debug log (first 10 frames)
+					if (this.currentCursorIndex < 10) {
+						console.log('🖱️ Cursor:', {
+							time: currentTime.toFixed(0) + 'ms',
+							videoCoords: `${cursorEvent.x.toFixed(0)}, ${cursorEvent.y.toFixed(0)}`,
+							displayCoords: `${x.toFixed(1)}, ${y.toFixed(1)}`,
+							videoSize: `${this.canvas.width}x${this.canvas.height}`,
+							displaySize: `${canvasRect.width.toFixed(0)}x${canvasRect.height.toFixed(0)}`,
+							scale: `${scaleX.toFixed(3)}x${scaleY.toFixed(3)}`
+						});
+					}
+				} else {
+					this.cursor.classList.add('hidden');
+				}
+			}
+
+			updateProgress(masterTime) {
+				const duration = this.screenVideo.duration * 1000;
+				const percent = (masterTime / duration) * 100;
+
+				document.getElementById('progressFill').style.width = Math.min(100, percent) + '%';
+
+				// Update time display
+				const current = Math.floor(masterTime / 1000);
+				const total = Math.floor(duration / 1000);
+				document.getElementById('timeDisplay').textContent =
+					this.formatTime(current) + ' / ' + this.formatTime(total);
+			}
+
+			formatTime(seconds) {
+				const mins = Math.floor(seconds / 60);
+				const secs = seconds % 60;
+				return mins + ':' + (secs < 10 ? '0' : '') + secs;
+			}
+
+			displayInfo() {
+				const infoHtml = `
+					<div class="info">
+						<div class="info-grid">
+							<div class="info-item">
+								<span class="info-label">🖥️ Screen:</span>
+								<span class="info-value">${this.metadata.files.screen ? '✅' : '❌'}</span>
+							</div>
+							<div class="info-item">
+								<span class="info-label">📹 Camera:</span>
+								<span class="info-value">${this.metadata.files.camera ? '✅' : '❌'}</span>
+							</div>
+							<div class="info-item">
+								<span class="info-label">🎙️ Audio:</span>
+								<span class="info-value">${this.metadata.files.audio ? '✅' : '❌'}</span>
+							</div>
+							<div class="info-item">
+								<span class="info-label">🖱️ Cursor:</span>
+								<span class="info-value">${this.metadata.files.cursor ? '✅' : '❌'}</span>
+							</div>
+							<div class="info-item">
+								<span class="info-label">⏱️ Duration:</span>
+								<span class="info-value">${this.metadata.duration}s</span>
+							</div>
+							<div class="info-item">
+								<span class="info-label">🎞️ Frame Rate:</span>
+								<span class="info-value">${this.metadata.options.frameRate} FPS</span>
+							</div>
+							<div class="info-item">
+								<span class="info-label">🔄 Sync Mode:</span>
+								<span class="info-value">Master-Slave (30ms) + Adaptive Rate</span>
+							</div>
+						</div>
+					</div>
+				`;
+				document.getElementById('infoContainer').innerHTML = infoHtml;
+				document.getElementById('infoContainer').style.display = 'block';
+			}
+
+			showLayerControls() {
+				document.getElementById('layerControls').style.display = 'block';
+
+				// Hide camera button if no camera
+				if (!this.metadata.files.camera) {
+					document.querySelector('[data-layer="camera"]').style.display = 'none';
+				}
+
+				// Hide cursor button if no cursor data
+				if (!this.metadata.files.cursor) {
+					document.querySelector('[data-layer="cursor"]').style.display = 'none';
+				}
+			}
+
+			showError(message) {
+				const errorHtml = `
+					<div class="error">
+						<strong>❌ Error:</strong> ${message}
+					</div>
+				`;
+				document.getElementById('errorContainer').innerHTML = errorHtml;
+				document.getElementById('loadingContainer').style.display = 'none';
+			}
+		}
+
+		// Initialize player when page loads
+		window.addEventListener('DOMContentLoaded', () => {
+			const player = new CanvasPlayer();
+			player.init();
+		});
+	</script>
+</body>
+</html>

@@ -3,6 +3,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import "logging.h"
+#import "sync_timeline.h"
 
 #ifndef AVVideoCodecTypeVP9
 static AVVideoCodecType const AVVideoCodecTypeVP9 = @"vp09";
@@ -799,6 +800,11 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     }
 
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+
+    // If audio is expected but not yet flowing, hold video frames to keep timeline aligned.
+    if (MRSyncShouldHoldVideoFrame(timestamp)) {
+        return;
+    }
 
     // Lazy initialization - setup writer with actual frame dimensions
     if (!self.assetWriter) {

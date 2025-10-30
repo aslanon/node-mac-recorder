@@ -6,6 +6,7 @@
 #import <AppKit/AppKit.h>
 #include <string>
 #import "logging.h"
+#import "sync_timeline.h"
 
 // Import audio recorder
 extern "C" void* createNativeAudioRecorder(void);
@@ -289,14 +290,19 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         
         dispatch_source_set_event_handler(g_avTimer, ^{
             if (!g_avIsRecording) return;
-            
+
             // Additional null checks for Electron safety
             if (!localVideoInput || !localPixelBufferAdaptor) {
                 NSLog(@"⚠️ Video input or pixel buffer adaptor is nil, stopping recording");
                 g_avIsRecording = false;
                 return;
             }
-            
+
+            CMTime hostTimestamp = CMClockGetTime(CMClockGetHostTimeClock());
+            if (MRSyncShouldHoldVideoFrame(hostTimestamp)) {
+                return;
+            }
+
             @autoreleasepool {
                 @try {
                     // Capture screen with Electron-safe error handling
@@ -376,14 +382,22 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                             
                             // Write frame only if input is ready
                             if (localVideoInput && localVideoInput.readyForMoreMediaData) {
+                                CMTime currentTimestamp = CMClockGetTime(CMClockGetHostTimeClock());
+
                                 if (CMTIME_IS_INVALID(g_avStartTime)) {
-                                    g_avStartTime = CMTimeMakeWithSeconds(CACurrentMediaTime(), 600);
-                                    [g_avWriter startSessionAtSourceTime:g_avStartTime];
-                                    MRLog(@"🎞️ AVFoundation writer session started @ %.3f", CMTimeGetSeconds(g_avStartTime));
+                                    g_avStartTime = currentTimestamp;
+                                    [g_avWriter startSessionAtSourceTime:kCMTimeZero];
+                                    g_avFrameNumber = 0;
+                                    MRLog(@"🎞️ AVFoundation writer session started (zero-based timeline)");
                                 }
 
-                                CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(((double)g_avFrameNumber) / fps, 600));
-                                BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
+                                CMTime relativeTime = CMTimeSubtract(currentTimestamp, g_avStartTime);
+                                if (!CMTIME_IS_VALID(relativeTime) || CMTIME_COMPARE_INLINE(relativeTime, <, kCMTimeZero)) {
+                                    relativeTime = kCMTimeZero;
+                                }
+                                CMTime presentationTime = CMTimeMakeWithSeconds(CMTimeGetSeconds(relativeTime), 600);
+
+                                BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
                                 if (appendSuccess) {
                                     g_avFrameNumber++;
                                 } else {

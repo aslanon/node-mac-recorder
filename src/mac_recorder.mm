@@ -5,6 +5,7 @@
 #import <ImageIO/ImageIO.h>
 #import <CoreAudio/CoreAudio.h>
 #import "logging.h"
+#import "sync_timeline.h"
 
 // Import screen capture (ScreenCaptureKit only)
 #import "screen_capture_kit.h"
@@ -158,6 +159,7 @@ void cleanupRecording() {
     g_usingStandaloneAudio = false;
     
     g_isRecording = false;
+    MRSyncConfigure(NO);
 }
 
 // NAPI Function: Start Recording
@@ -345,6 +347,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     bool captureMicrophone = includeMicrophone;
     bool captureSystemAudio = includeSystemAudio;
     bool captureAnyAudio = captureMicrophone || captureSystemAudio;
+    MRSyncConfigure(captureAnyAudio);
     NSString *preferredAudioDeviceId = nil;
     if (captureSystemAudio && systemAudioDeviceId && [systemAudioDeviceId length] > 0) {
         preferredAudioDeviceId = systemAudioDeviceId;
