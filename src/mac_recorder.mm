@@ -444,20 +444,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     // Set timeout for ScreenCaptureKit initialization
                     // Attempt to start ScreenCaptureKit with safety wrapper
                     @try {
-                        // CRITICAL SYNC FIX: Start camera BEFORE ScreenCaptureKit for perfect sync
-                        bool cameraStarted = true;
-                        if (captureCamera) {
-                            MRLog(@"🎯 SYNC: Starting camera recording first for parallel sync");
-                            cameraStarted = startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp);
-                            if (!cameraStarted) {
-                                MRLog(@"❌ Camera start failed - aborting");
-                                return Napi::Boolean::New(env, false);
-                            }
-                            MRLog(@"✅ SYNC: Camera recording started");
-                        }
-
-                        // Now start ScreenCaptureKit immediately after camera
-                        MRLog(@"🎯 SYNC: Starting ScreenCaptureKit recording immediately");
+                        MRLog(@"🎯 SYNC: Starting ScreenCaptureKit recording");
                         if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig
                                                                              delegate:g_delegate
                                                                                 error:&sckError]) {
@@ -466,16 +453,22 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                             MRLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
                             MRLog(@"✅ SYNC: ScreenCaptureKit recording started successfully");
 
+                            if (captureCamera) {
+                                MRLog(@"🎯 SYNC: Starting camera recording after screen start");
+                                bool cameraStarted = startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp);
+                                if (!cameraStarted) {
+                                    MRLog(@"❌ Camera start failed - stopping ScreenCaptureKit recording");
+                                    [ScreenCaptureKitRecorder stopRecording];
+                                    return Napi::Boolean::New(env, false);
+                                }
+                                MRLog(@"✅ SYNC: Camera recording started");
+                            }
+
                             g_isRecording = true;
                             return Napi::Boolean::New(env, true);
                         } else {
                             NSLog(@"❌ ScreenCaptureKit failed to start");
                             NSLog(@"❌ Error: %@", sckError ? sckError.localizedDescription : @"Unknown error");
-
-                            // Cleanup camera if ScreenCaptureKit failed
-                            if (cameraStarted && isCameraRecording()) {
-                                stopCameraRecording();
-                            }
                         }
                     } @catch (NSException *sckException) {
                         NSLog(@"❌ Exception during ScreenCaptureKit startup: %@", sckException.reason);
@@ -542,21 +535,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                    NSString* audioOutputPath,
                                                    double frameRate);
 
-            // CRITICAL SYNC FIX: Start camera BEFORE screen recording for perfect sync
-            // This ensures both capture their first frame at approximately the same time
-            bool cameraStarted = true;
-            if (captureCamera) {
-                MRLog(@"🎯 SYNC: Starting camera recording first for parallel sync");
-                cameraStarted = startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp);
-                if (!cameraStarted) {
-                    MRLog(@"❌ Camera start failed - aborting");
-                    return Napi::Boolean::New(env, false);
-                }
-                MRLog(@"✅ SYNC: Camera recording started");
-            }
-
-            // Now start screen recording immediately after camera
-            MRLog(@"🎯 SYNC: Starting screen recording immediately");
+            MRLog(@"🎯 SYNC: Starting screen recording");
             bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect,
                                                       captureCursor, includeMicrophone, includeSystemAudio,
                                                       audioDeviceId, audioOutputPath, frameRate);
@@ -564,6 +543,17 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             if (avResult) {
                 MRLog(@"🎥 RECORDING METHOD: AVFoundation");
                 MRLog(@"✅ SYNC: Screen recording started successfully");
+
+                if (captureCamera) {
+                    MRLog(@"🎯 SYNC: Starting camera recording after screen start");
+                    bool cameraStarted = startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp);
+                    if (!cameraStarted) {
+                        MRLog(@"❌ Camera start failed - stopping screen recording");
+                        stopAVFoundationRecording();
+                        return Napi::Boolean::New(env, false);
+                    }
+                    MRLog(@"✅ SYNC: Camera recording started");
+                }
 
                 // NOTE: Audio is handled internally by AVFoundation, no need for standalone audio
                 // AVFoundation integrates audio recording directly
@@ -573,11 +563,6 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             } else {
                 NSLog(@"❌ AVFoundation recording failed to start");
                 NSLog(@"❌ Check permissions and output path validity");
-
-                // Cleanup camera if screen recording failed
-                if (cameraStarted && isCameraRecording()) {
-                    stopCameraRecording();
-                }
             }
         } @catch (NSException *avException) {
             NSLog(@"❌ Exception during AVFoundation startup: %@", avException.reason);

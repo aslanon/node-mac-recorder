@@ -37,6 +37,7 @@ class MacRecorder extends EventEmitter {
 		this.cameraCaptureFile = null;
 		this.cameraCaptureActive = false;
 		this.sessionTimestamp = null;
+		this.syncTimestamp = null;
 		this.audioCaptureFile = null;
 		this.audioCaptureActive = false;
 
@@ -553,6 +554,11 @@ class MacRecorder extends EventEmitter {
 
 				// Only start cursor if native recording started successfully
 				if (success) {
+					this.sessionTimestamp = sessionTimestamp;
+					const syncTimestamp = Date.now();
+					this.syncTimestamp = syncTimestamp;
+					this.recordingStartTime = syncTimestamp;
+
 					const standardCursorOptions = {
 						videoRelative: true,
 						displayInfo: this.recordingDisplayInfo,
@@ -560,11 +566,11 @@ class MacRecorder extends EventEmitter {
 									  this.options.captureArea ? 'area' : 'display',
 						captureArea: this.options.captureArea,
 						windowId: this.options.windowId,
-						startTimestamp: sessionTimestamp // Use the same timestamp base
+						startTimestamp: syncTimestamp // Align cursor timeline to actual start
 					};
 
 					try {
-						console.log('🎯 SYNC: Starting cursor tracking at timestamp:', sessionTimestamp);
+						console.log('🎯 SYNC: Starting cursor tracking at timestamp:', syncTimestamp);
 						await this.startCursorCapture(cursorFilePath, standardCursorOptions);
 						console.log('✅ SYNC: Cursor tracking started successfully');
 					} catch (cursorError) {
@@ -574,6 +580,9 @@ class MacRecorder extends EventEmitter {
 				}
 
 				if (success) {
+					const timelineTimestamp = this.syncTimestamp || sessionTimestamp;
+					const fileTimestamp = this.sessionTimestamp || sessionTimestamp;
+
 					if (this.options.captureCamera === true) {
 						try {
 							const nativeCameraPath = nativeBinding.getCameraRecordingPath
@@ -601,31 +610,33 @@ class MacRecorder extends EventEmitter {
 						}
 					}
 					this.isRecording = true;
-					// SYNC FIX: Use session timestamp for consistent timing across all components
-					this.recordingStartTime = sessionTimestamp;
 
 					if (this.options.captureCamera === true && cameraFilePath) {
 						this.cameraCaptureActive = true;
-						console.log('📹 SYNC: Camera recording started at timestamp:', sessionTimestamp);
+						console.log('📹 SYNC: Camera recording started at timestamp:', timelineTimestamp);
 						this.emit("cameraCaptureStarted", {
 							outputPath: cameraFilePath,
 							deviceId: this.options.cameraDeviceId || null,
-							timestamp: sessionTimestamp,
-							sessionTimestamp,
+							timestamp: timelineTimestamp,
+							sessionTimestamp: fileTimestamp,
+							syncTimestamp: timelineTimestamp,
+							fileTimestamp,
 						});
 					}
 
 					if (captureAudio && audioFilePath) {
 						this.audioCaptureActive = true;
-						console.log('🎙️ SYNC: Audio recording started at timestamp:', sessionTimestamp);
+						console.log('🎙️ SYNC: Audio recording started at timestamp:', timelineTimestamp);
 						this.emit("audioCaptureStarted", {
 							outputPath: audioFilePath,
 							deviceIds: {
 								microphone: this.options.audioDeviceId || null,
 								system: this.options.systemAudioDeviceId || null,
 							},
-							timestamp: sessionTimestamp,
-							sessionTimestamp,
+							timestamp: timelineTimestamp,
+							sessionTimestamp: fileTimestamp,
+							syncTimestamp: timelineTimestamp,
+							fileTimestamp,
 						});
 					}
 
@@ -638,7 +649,7 @@ class MacRecorder extends EventEmitter {
 					if (this.cursorCaptureInterval) activeComponents.push('Cursor');
 					if (this.cameraCaptureActive) activeComponents.push('Camera');
 					if (this.audioCaptureActive) activeComponents.push('Audio');
-					console.log(`✅ SYNC COMPLETE: All components synchronized at timestamp ${sessionTimestamp}`);
+					console.log(`✅ SYNC COMPLETE: All components synchronized at timestamp ${timelineTimestamp}`);
 					console.log(`   Active components: ${activeComponents.join(', ')}`);
 
 					// Timer başlat (progress tracking için)
@@ -659,15 +670,19 @@ class MacRecorder extends EventEmitter {
 								clearInterval(checkRecordingStatus);
 								
 								// Kayıt gerçekten başladığı anda event emit et
+						const startTimestampPayload = this.syncTimestamp || this.recordingStartTime || Date.now();
+						const fileTimestampPayload = this.sessionTimestamp;
 						this.emit("recordingStarted", {
 							outputPath: this.outputPath,
-							timestamp: Date.now(), // Gerçek başlangıç zamanı
+							timestamp: startTimestampPayload,
 							options: this.options,
 							nativeConfirmed: true,
 							cameraOutputPath: this.cameraCaptureFile || null,
 							audioOutputPath: this.audioCaptureFile || null,
 							cursorOutputPath: cursorFilePath,
-							sessionTimestamp: this.sessionTimestamp,
+							sessionTimestamp: fileTimestampPayload,
+							syncTimestamp: startTimestampPayload,
+							fileTimestamp: fileTimestampPayload,
 						});
 							}
 						} catch (error) {
@@ -675,15 +690,19 @@ class MacRecorder extends EventEmitter {
 							if (!recordingStartedEmitted) {
 								recordingStartedEmitted = true;
 								clearInterval(checkRecordingStatus);
+						const startTimestampPayload = this.syncTimestamp || this.recordingStartTime || Date.now();
+						const fileTimestampPayload = this.sessionTimestamp;
 						this.emit("recordingStarted", {
 							outputPath: this.outputPath,
-							timestamp: this.recordingStartTime,
+							timestamp: startTimestampPayload,
 							options: this.options,
 							nativeConfirmed: false,
 							cameraOutputPath: this.cameraCaptureFile || null,
 							audioOutputPath: this.audioCaptureFile || null,
 							cursorOutputPath: cursorFilePath,
-							sessionTimestamp: this.sessionTimestamp,
+							sessionTimestamp: fileTimestampPayload,
+							syncTimestamp: startTimestampPayload,
+							fileTimestamp: fileTimestampPayload,
 						});
 							}
 						}
@@ -694,15 +713,19 @@ class MacRecorder extends EventEmitter {
 						if (!recordingStartedEmitted) {
 							recordingStartedEmitted = true;
 							clearInterval(checkRecordingStatus);
+					const startTimestampPayload = this.syncTimestamp || this.recordingStartTime || Date.now();
+					const fileTimestampPayload = this.sessionTimestamp;
 					this.emit("recordingStarted", {
 						outputPath: this.outputPath,
-						timestamp: this.recordingStartTime,
+						timestamp: startTimestampPayload,
 						options: this.options,
 						nativeConfirmed: false,
 						cameraOutputPath: this.cameraCaptureFile || null,
 						audioOutputPath: this.audioCaptureFile || null,
 						cursorOutputPath: cursorFilePath,
-						sessionTimestamp: this.sessionTimestamp,
+						sessionTimestamp: fileTimestampPayload,
+						syncTimestamp: startTimestampPayload,
+						fileTimestamp: fileTimestampPayload,
 					});
 						}
 					}, 5000);
@@ -735,6 +758,7 @@ class MacRecorder extends EventEmitter {
 					}
 
 					this.sessionTimestamp = null;
+					this.syncTimestamp = null;
 
 					reject(
 						new Error(
@@ -744,6 +768,7 @@ class MacRecorder extends EventEmitter {
 				}
 			} catch (error) {
 				this.sessionTimestamp = null;
+				this.syncTimestamp = null;
 				reject(error);
 			}
 		});
@@ -822,6 +847,7 @@ class MacRecorder extends EventEmitter {
 						outputPath: this.cameraCaptureFile || null,
 						success: success === true,
 						sessionTimestamp: this.sessionTimestamp,
+						syncTimestamp: this.syncTimestamp,
 					});
 				}
 
@@ -832,6 +858,7 @@ class MacRecorder extends EventEmitter {
 						outputPath: this.audioCaptureFile || null,
 						success: success === true,
 						sessionTimestamp: this.sessionTimestamp,
+						syncTimestamp: this.syncTimestamp,
 					});
 				}
 
@@ -857,6 +884,7 @@ class MacRecorder extends EventEmitter {
 					cameraOutputPath: this.cameraCaptureFile || null,
 					audioOutputPath: this.audioCaptureFile || null,
 					sessionTimestamp: sessionId,
+					syncTimestamp: this.syncTimestamp,
 				};
 
 				this.emit("stopped", result);
@@ -871,6 +899,7 @@ class MacRecorder extends EventEmitter {
 				}
 
 				this.sessionTimestamp = null;
+				this.syncTimestamp = null;
 				resolve(result);
 			} catch (error) {
 				this.isRecording = false;
@@ -879,6 +908,7 @@ class MacRecorder extends EventEmitter {
 				this.audioCaptureActive = false;
 				this.audioCaptureFile = null;
 				this.sessionTimestamp = null;
+				this.syncTimestamp = null;
 				if (this.recordingTimer) {
 					clearInterval(this.recordingTimer);
 					this.recordingTimer = null;
@@ -901,6 +931,7 @@ class MacRecorder extends EventEmitter {
 			cameraCapturing: this.cameraCaptureActive,
 			audioCapturing: this.audioCaptureActive,
 			sessionTimestamp: this.sessionTimestamp,
+			syncTimestamp: this.syncTimestamp,
 			options: this.options,
 			recordingTime: this.recordingStartTime
 				? Math.floor((Date.now() - this.recordingStartTime) / 1000)

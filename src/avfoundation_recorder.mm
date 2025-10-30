@@ -189,8 +189,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             return false;
         }
         
-        g_avStartTime = CMTimeMakeWithSeconds(CACurrentMediaTime(), 600);
-        [g_avWriter startSessionAtSourceTime:g_avStartTime];
+        g_avStartTime = kCMTimeInvalid;
         
         // Store recording parameters with scaling correction
         g_avDisplayID = displayID;
@@ -377,6 +376,12 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                             
                             // Write frame only if input is ready
                             if (localVideoInput && localVideoInput.readyForMoreMediaData) {
+                                if (CMTIME_IS_INVALID(g_avStartTime)) {
+                                    g_avStartTime = CMTimeMakeWithSeconds(CACurrentMediaTime(), 600);
+                                    [g_avWriter startSessionAtSourceTime:g_avStartTime];
+                                    MRLog(@"🎞️ AVFoundation writer session started @ %.3f", CMTimeGetSeconds(g_avStartTime));
+                                }
+
                                 CMTime frameTime = CMTimeAdd(g_avStartTime, CMTimeMakeWithSeconds(((double)g_avFrameNumber) / fps, 600));
                                 BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
                                 if (appendSuccess) {
@@ -479,6 +484,7 @@ extern "C" bool stopAVFoundationRecording() {
         g_avVideoInput = nil;
         g_avPixelBufferAdaptor = nil;
         g_avFrameNumber = 0;
+        g_avStartTime = kCMTimeInvalid;
         
         MRLog(@"✅ AVFoundation recording stopped");
         return true;
