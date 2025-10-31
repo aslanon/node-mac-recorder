@@ -71,7 +71,7 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
         }
 
         CMTime elapsed = CMTimeSubtract(timestamp, g_videoFirstTimestamp);
-        CMTime maxWait = CMTimeMakeWithSeconds(1.5, 600);
+        CMTime maxWait = CMTimeMakeWithSeconds(0.25, 600); // Kamera gecikmesini minimumda tut
         if (CMTIME_COMPARE_INLINE(elapsed, >, maxWait)) {
             g_audioReady = YES;
             g_videoFirstTimestamp = kCMTimeInvalid;
@@ -85,9 +85,9 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
     });
 
     if (logHold) {
-        MRLog(@"⏸️ Video pipeline waiting for audio to begin (holding frames up to 1.5s)");
+        MRLog(@"⏸️ Video pipeline waiting for audio to begin (holding frames up to 0.35s)");
     } else if (logRelease) {
-        MRLog(@"▶️ Video pipeline resume forced (audio not detected within 1.5s)");
+        MRLog(@"▶️ Video pipeline resume forced (audio not detected within 0.35s)");
     }
 
     return shouldHold;
