@@ -347,6 +347,15 @@
 					cursor: true
 				};
 
+				// SYNC FIX: Track video durations for sync compensation
+				this.videoDurations = {
+					screen: 0,
+					camera: 0,
+					audio: 0
+				};
+				this.maxDuration = 0;
+				this.cameraStartOffset = 0; // Time offset for camera sync
+
 				// SYNC FIX: Ensure all videos have same playback settings
 				[this.screenVideo, this.cameraVideo, this.audioVideo].forEach(video => {
 					video.playbackRate = 1.0;
@@ -417,6 +426,30 @@
 					]);
 
 					console.log('✅ All videos loaded and ready for playback');
+
+					// SYNC FIX: Calculate duration differences and offset
+					this.videoDurations.screen = this.screenVideo.duration || 0;
+					this.videoDurations.camera = cameraLoaded ? (this.cameraVideo.duration || 0) : 0;
+					this.videoDurations.audio = audioLoaded ? (this.audioVideo.duration || 0) : 0;
+
+					// Find maximum duration (master timeline)
+					this.maxDuration = Math.max(
+						this.videoDurations.screen,
+						this.videoDurations.camera,
+						this.videoDurations.audio
+					);
+
+					// Calculate camera start offset (if camera is shorter, it started late)
+					if (cameraLoaded && this.videoDurations.camera > 0) {
+						this.cameraStartOffset = this.maxDuration - this.videoDurations.camera;
+						if (this.cameraStartOffset > 0.1) { // Only log if significant (>100ms)
+							console.log(`⚠️ Camera duration mismatch detected!`);
+							console.log(`   Screen: ${this.videoDurations.screen.toFixed(2)}s`);
+							console.log(`   Camera: ${this.videoDurations.camera.toFixed(2)}s`);
+							console.log(`   Camera started ${(this.cameraStartOffset * 1000).toFixed(0)}ms late`);
+							console.log(`   ✅ Applying automatic offset compensation`);
+						}
+					}
 
 					// SYNC FIX: Set all videos to frame 0 and wait for seek complete
 					const seekToStart = (video) => {
@@ -681,28 +714,35 @@
 				const syncThreshold = 30; // 30ms tolerance (very tight sync)
 				const masterSeconds = masterTime / 1000;
 
-				// Sync camera video
+				// Sync camera video with offset compensation
 				if (this.metadata.files.camera && this.cameraVideo.readyState >= 2 && !this.cameraVideo.paused) {
-					const cameraDiff = Math.abs(this.cameraVideo.currentTime * 1000 - masterTime);
-					if (cameraDiff > syncThreshold) {
-						// SYNC FIX: Adjust playback rate temporarily for smoother sync
-						if (cameraDiff > 200) {
-							// Large drift - hard sync
-							this.cameraVideo.currentTime = masterSeconds;
-							console.log('🎥 Camera hard sync:', cameraDiff.toFixed(0) + 'ms → ' + masterSeconds.toFixed(2) + 's');
-						} else if (cameraDiff > syncThreshold) {
-							// Small drift - soft sync with playback rate adjustment
-							if (this.cameraVideo.currentTime > masterSeconds) {
-								this.cameraVideo.playbackRate = 0.95; // Slow down
-							} else {
-								this.cameraVideo.playbackRate = 1.05; // Speed up
-							}
-							// Reset playback rate after correction
-							setTimeout(() => {
-								if (this.cameraVideo) {
-									this.cameraVideo.playbackRate = 1.0;
+					// SYNC FIX: Apply camera start offset
+					// If camera started late, adjust the target time accordingly
+					const adjustedMasterTime = Math.max(0, masterSeconds - this.cameraStartOffset);
+
+					// Don't try to sync camera if we're before its start time
+					if (masterSeconds >= this.cameraStartOffset && this.cameraVideo.duration > 0) {
+						const cameraDiff = Math.abs(this.cameraVideo.currentTime - adjustedMasterTime) * 1000;
+						if (cameraDiff > syncThreshold) {
+							// SYNC FIX: Adjust playback rate temporarily for smoother sync
+							if (cameraDiff > 200) {
+								// Large drift - hard sync
+								this.cameraVideo.currentTime = adjustedMasterTime;
+								console.log('🎥 Camera hard sync:', cameraDiff.toFixed(0) + 'ms → ' + adjustedMasterTime.toFixed(2) + 's');
+							} else if (cameraDiff > syncThreshold) {
+								// Small drift - soft sync with playback rate adjustment
+								if (this.cameraVideo.currentTime > adjustedMasterTime) {
+									this.cameraVideo.playbackRate = 0.95; // Slow down
+								} else {
+									this.cameraVideo.playbackRate = 1.05; // Speed up
 								}
-							}, 500);
+								// Reset playback rate after correction
+								setTimeout(() => {
+									if (this.cameraVideo) {
+										this.cameraVideo.playbackRate = 1.0;
+									}
+								}, 500);
+							}
 						}
 					}
 				}
@@ -744,21 +784,47 @@
 					this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
 				}
 
-				// Draw camera video overlay (layer 2)
+				// Draw camera video overlay (layer 2) with offset compensation
 				if (this.layers.camera && this.metadata.files.camera && this.cameraVideo.readyState >= 2) {
-					const cameraWidth = 240;
-					const cameraHeight = 180;
-					const padding = 20;
-					const x = this.canvas.width - cameraWidth - padding;
-					const y = this.canvas.height - cameraHeight - padding;
+					// SYNC FIX: Apply camera start offset
+					// If camera started late (e.g., 1s late), don't show it until currentTime >= offset
+					const timeInSeconds = currentTime / 1000;
+					if (timeInSeconds >= this.cameraStartOffset) {
+						const cameraWidth = 240;
+						const cameraHeight = 180;
+						const padding = 20;
+						const x = this.canvas.width - cameraWidth - padding;
+						const y = this.canvas.height - cameraHeight - padding;
 
-					// Draw border
-					this.ctx.strokeStyle = '#4a9eff';
-					this.ctx.lineWidth = 3;
-					this.ctx.strokeRect(x - 2, y - 2, cameraWidth + 4, cameraHeight + 4);
+						// Draw border
+						this.ctx.strokeStyle = '#4a9eff';
+						this.ctx.lineWidth = 3;
+						this.ctx.strokeRect(x - 2, y - 2, cameraWidth + 4, cameraHeight + 4);
 
-					// Draw camera video
-					this.ctx.drawImage(this.cameraVideo, x, y, cameraWidth, cameraHeight);
+						// Draw camera video
+						this.ctx.drawImage(this.cameraVideo, x, y, cameraWidth, cameraHeight);
+					} else {
+						// Camera hasn't started yet - show placeholder
+						const cameraWidth = 240;
+						const cameraHeight = 180;
+						const padding = 20;
+						const x = this.canvas.width - cameraWidth - padding;
+						const y = this.canvas.height - cameraHeight - padding;
+
+						// Draw border
+						this.ctx.strokeStyle = '#666';
+						this.ctx.lineWidth = 3;
+						this.ctx.strokeRect(x - 2, y - 2, cameraWidth + 4, cameraHeight + 4);
+
+						// Draw "Camera Starting..." text
+						this.ctx.fillStyle = '#333';
+						this.ctx.fillRect(x, y, cameraWidth, cameraHeight);
+						this.ctx.fillStyle = '#999';
+						this.ctx.font = '14px sans-serif';
+						this.ctx.textAlign = 'center';
+						this.ctx.textBaseline = 'middle';
+						this.ctx.fillText('Camera Starting...', x + cameraWidth / 2, y + cameraHeight / 2);
+					}
 				}
 			}
 
@@ -813,7 +879,8 @@
 			}
 
 			updateProgress(masterTime) {
-				const duration = this.screenVideo.duration * 1000;
+				// SYNC FIX: Use maxDuration for accurate timeline
+				const duration = (this.maxDuration || this.screenVideo.duration) * 1000;
 				const percent = (masterTime / duration) * 100;
 
 				document.getElementById('progressFill').style.width = Math.min(100, percent) + '%';
@@ -832,6 +899,12 @@
 			}
 
 			displayInfo() {
+				// Build duration display with offset info if present
+				let durationDisplay = `${this.maxDuration.toFixed(1)}s`;
+				if (this.cameraStartOffset > 0.1) {
+					durationDisplay += ` (Camera +${(this.cameraStartOffset * 1000).toFixed(0)}ms offset)`;
+				}
+
 				const infoHtml = `
 					<div class="info">
 						<div class="info-grid">
@@ -853,7 +926,7 @@
 							</div>
 							<div class="info-item">
 								<span class="info-label">⏱️ Duration:</span>
-								<span class="info-value">${this.metadata.duration}s</span>
+								<span class="info-value">${durationDisplay}</span>
 							</div>
 							<div class="info-item">
 								<span class="info-label">🎞️ Frame Rate:</span>
@@ -861,7 +934,7 @@
 							</div>
 							<div class="info-item">
 								<span class="info-label">🔄 Sync Mode:</span>
-								<span class="info-value">Master-Slave (30ms) + Adaptive Rate</span>
+								<span class="info-value">Master-Slave (30ms) + Adaptive Rate + Offset</span>
 							</div>
 						</div>
 					</div>
