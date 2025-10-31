@@ -754,31 +754,41 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return YES; // Success - nothing to finish
     }
 
-    if (self.assetWriterInput) {
-        [self.assetWriterInput markAsFinished];
+    AVAssetWriter *writer = self.assetWriter;
+    AVAssetWriterInput *writerInput = self.assetWriterInput;
+
+    if (writerInput) {
+        [writerInput markAsFinished];
     }
 
     __block BOOL finished = NO;
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 
-    [self.assetWriter finishWritingWithCompletionHandler:^{
+    [writer finishWritingWithCompletionHandler:^{
         finished = YES;
         dispatch_semaphore_signal(semaphore);
     }];
 
-    // Reduced timeout to 1 second for external devices
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+    // Allow generous flush time so final frames are preserved.
+    const int64_t primaryWaitSeconds = 3;
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(primaryWaitSeconds * NSEC_PER_SEC));
     long result = dispatch_semaphore_wait(semaphore, timeout);
 
     if (result != 0 || !finished) {
-        MRLog(@"⚠️ CameraRecorder: Timed out waiting for writer (external device?) - forcing cancel");
-        // Force cancel if timeout
-        [self.assetWriter cancelWriting];
+        MRLog(@"⚠️ CameraRecorder: Writer still finishing after %ds – waiting longer", (int)primaryWaitSeconds);
+        const int64_t extendedWaitSeconds = 5;
+        dispatch_time_t extendedTimeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(extendedWaitSeconds * NSEC_PER_SEC));
+        result = dispatch_semaphore_wait(semaphore, extendedTimeout);
     }
 
-    BOOL success = (self.assetWriter.status == AVAssetWriterStatusCompleted);
+    if (result != 0 || !finished) {
+        MRLog(@"⚠️ CameraRecorder: Writer did not finish after extended wait – forcing cancel");
+        [writer cancelWriting];
+    }
+
+    BOOL success = (writer.status == AVAssetWriterStatusCompleted);
     if (!success) {
-        MRLog(@"⚠️ CameraRecorder: Writer finished with status %ld error %@", (long)self.assetWriter.status, self.assetWriter.error);
+        MRLog(@"⚠️ CameraRecorder: Writer finished with status %ld error %@", (long)writer.status, writer.error);
     } else {
         MRLog(@"✅ CameraRecorder writer finished successfully");
     }
