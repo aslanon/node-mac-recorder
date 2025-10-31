@@ -266,7 +266,13 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 }
 
 - (void)clearPendingSampleBuffers {
-    for (NSValue *value in self.pendingSampleBuffers) {
+    id container = self.pendingSampleBuffers;
+    if (![container isKindOfClass:[NSArray class]]) {
+        MRLog(@"⚠️ CameraRecorder: pendingSampleBuffers corrupted (%@) — resetting", NSStringFromClass([container class]));
+        self.pendingSampleBuffers = [NSMutableArray array];
+        return;
+    }
+    for (NSValue *value in (NSArray *)container) {
         CMSampleBufferRef buffer = (CMSampleBufferRef)[value pointerValue];
         if (buffer) {
             CFRelease(buffer);
@@ -854,6 +860,11 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     if (!sampleBuffer) {
         return;
     }
+    if (![self.pendingSampleBuffers isKindOfClass:[NSMutableArray class]]) {
+        MRLog(@"⚠️ CameraRecorder: pendingSampleBuffers not NSMutableArray (%@) — reinitializing",
+              NSStringFromClass([self.pendingSampleBuffers class]));
+        self.pendingSampleBuffers = [NSMutableArray array];
+    }
     CMSampleBufferRef bufferCopy = NULL;
     OSStatus status = CMSampleBufferCreateCopy(kCFAllocatorDefault, sampleBuffer, &bufferCopy);
     if (status == noErr && bufferCopy) {
@@ -864,11 +875,18 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 }
 
 - (void)flushPendingSampleBuffers {
-    if (self.pendingSampleBuffers.count == 0) {
+    id container = self.pendingSampleBuffers;
+    if (![container isKindOfClass:[NSArray class]]) {
+        MRLog(@"⚠️ CameraRecorder: pendingSampleBuffers corrupted (%@) — resetting",
+              NSStringFromClass([container class]));
+        self.pendingSampleBuffers = [NSMutableArray array];
+        return;
+    }
+    if ([(NSArray *)container count] == 0) {
         return;
     }
 
-    NSArray<NSValue *> *queued = [self.pendingSampleBuffers copy];
+    NSArray<NSValue *> *queued = [(NSArray *)container copy];
     [self.pendingSampleBuffers removeAllObjects];
 
     CMTime audioStart = MRSyncAudioFirstTimestamp();
