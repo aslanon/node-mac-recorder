@@ -264,13 +264,20 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
             dispatch_semaphore_signal(semaphore);
         }];
 
-        // Reduced timeout to 1 second for external devices
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+        // SYNC FIX: Match camera timeout (3 seconds) for consistent finish timing
+        const int64_t primaryWaitSeconds = 3;
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(primaryWaitSeconds * NSEC_PER_SEC));
         long result = dispatch_semaphore_wait(semaphore, timeout);
 
         if (result != 0 || !finished) {
-            MRLog(@"⚠️ AudioRecorder: Timed out waiting for writer (external device?) - forcing cancel");
-            // Force cancel if timeout
+            MRLog(@"⚠️ AudioRecorder: Writer still finishing after %ds – waiting longer", (int)primaryWaitSeconds);
+            const int64_t extendedWaitSeconds = 5;
+            dispatch_time_t extendedTimeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(extendedWaitSeconds * NSEC_PER_SEC));
+            result = dispatch_semaphore_wait(semaphore, extendedTimeout);
+        }
+
+        if (result != 0 || !finished) {
+            MRLog(@"⚠️ AudioRecorder: Writer did not finish after extended wait – forcing cancel");
             [self.writer cancelWriting];
         } else {
             MRLog(@"✅ AudioRecorder writer finished successfully");
@@ -333,6 +340,9 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
     CMItemCount timingEntryCount = 0;
     OSStatus timingStatus = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, 0, NULL, &timingEntryCount);
     CMSampleTimingInfo *timingInfo = NULL;
+    double stopLimit = MRSyncGetStopLimitSeconds();
+    double audioTolerance = 0.02;
+    BOOL shouldDropBuffer = NO;
     
     if (timingStatus == noErr && timingEntryCount > 0) {
         timingInfo = (CMSampleTimingInfo *)malloc(sizeof(CMSampleTimingInfo) * timingEntryCount);
@@ -348,6 +358,15 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
                             adjustedPTS = kCMTimeZero;
                         }
                         timingInfo[i].presentationTimeStamp = adjustedPTS;
+                        
+                        if (stopLimit > 0) {
+                            double sampleStart = CMTimeGetSeconds(adjustedPTS);
+                            double sampleDuration = CMTIME_IS_VALID(timingInfo[i].duration) ? CMTimeGetSeconds(timingInfo[i].duration) : 0.0;
+                            if (sampleStart > stopLimit + audioTolerance ||
+                                (sampleDuration > 0.0 && (sampleStart + sampleDuration) > stopLimit + audioTolerance)) {
+                                shouldDropBuffer = YES;
+                            }
+                        }
                     } else {
                         timingInfo[i].presentationTimeStamp = kCMTimeZero;
                     }
@@ -375,6 +394,24 @@ static dispatch_queue_t g_audioCaptureQueue = nil;
             free(timingInfo);
             timingInfo = NULL;
         }
+    }
+
+    if (stopLimit > 0 && !shouldDropBuffer && bufferToAppend == sampleBuffer) {
+        // No timing info available; approximate using buffer timestamp.
+        CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+        if (CMTIME_IS_VALID(pts)) {
+            double relativeStart = CMTimeGetSeconds(CMTimeSubtract(pts, self.startTime));
+            if (relativeStart > stopLimit + audioTolerance) {
+                shouldDropBuffer = YES;
+            }
+        }
+    }
+
+    if (shouldDropBuffer) {
+        if (bufferToAppend != sampleBuffer) {
+            CFRelease(bufferToAppend);
+        }
+        return;
     }
     
     if (![self.writerInput appendSampleBuffer:bufferToAppend]) {

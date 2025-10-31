@@ -784,6 +784,11 @@ class MacRecorder extends EventEmitter {
 		}
 
 		return new Promise(async (resolve, reject) => {
+			const stopRequestedAt = Date.now();
+			const elapsedSeconds =
+				this.recordingStartTime && this.recordingStartTime > 0
+					? (stopRequestedAt - this.recordingStartTime) / 1000
+					: -1;
 			try {
 				console.log('🛑 SYNC: Stopping all recording components simultaneously');
 
@@ -804,7 +809,8 @@ class MacRecorder extends EventEmitter {
 				// 2. Stop native screen recording
 				try {
 					console.log('🛑 SYNC: Stopping screen recording');
-					success = nativeBinding.stopRecording();
+					const stopLimit = elapsedSeconds > 0 ? elapsedSeconds : 0;
+					success = nativeBinding.stopRecording(stopLimit);
 					if (success) {
 						console.log('✅ SYNC: Screen recording stopped');
 					}

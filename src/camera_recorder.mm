@@ -90,6 +90,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 @property (nonatomic, assign) int32_t expectedHeight;
 @property (nonatomic, assign) double expectedFrameRate;
 @property (atomic, assign) BOOL needsReconfiguration;
+@property (nonatomic, strong) NSMutableArray<NSValue *> *pendingSampleBuffers;
 
 + (instancetype)sharedRecorder;
 + (NSArray<NSDictionary *> *)availableCameraDevices;
@@ -101,6 +102,14 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 @end
 
 @implementation CameraRecorder
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _pendingSampleBuffers = [NSMutableArray array];
+    }
+    return self;
+}
 
 + (instancetype)sharedRecorder {
     static CameraRecorder *recorder = nil;
@@ -256,6 +265,16 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     return devicesInfo;
 }
 
+- (void)clearPendingSampleBuffers {
+    for (NSValue *value in self.pendingSampleBuffers) {
+        CMSampleBufferRef buffer = (CMSampleBufferRef)[value pointerValue];
+        if (buffer) {
+            CFRelease(buffer);
+        }
+    }
+    [self.pendingSampleBuffers removeAllObjects];
+}
+
 - (void)resetState {
     self.writerStarted = NO;
     self.isRecording = NO;
@@ -269,6 +288,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     self.pixelBufferAdaptor = nil;
     self.outputPath = nil;
     self.captureQueue = nil;
+    [self clearPendingSampleBuffers];
 }
 
 - (AVCaptureDevice *)deviceForId:(NSString *)deviceId {
@@ -600,6 +620,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         MRLog(@"⚠️ CameraRecorder: Failed to remove existing camera file: %@", removeError);
     }
     
+    [self clearPendingSampleBuffers];
     AVCaptureDevice *device = [self deviceForId:deviceId];
     if (!device) {
         if (error) {
@@ -719,6 +740,21 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return YES;
     }
 
+    // Delay stop slightly so camera ends close to audio length.
+    // Tunable via env var CAMERA_TAIL_SECONDS (default 0.11s)
+    NSTimeInterval cameraTailSeconds = 1.7;
+    const char *tailEnv = getenv("CAMERA_TAIL_SECONDS");
+    if (tailEnv) {
+        double parsed = atof(tailEnv);
+        if (parsed >= 0.0 && parsed <= 1.0) {
+            cameraTailSeconds = parsed;
+        }
+    }
+    MRLog(@"⏳ CameraRecorder: Delaying stop by %.3fs for tail capture", cameraTailSeconds);
+    if (cameraTailSeconds > 0) {
+        [NSThread sleepForTimeInterval:cameraTailSeconds];
+    }
+
     // CRITICAL FIX: For external cameras (especially Continuity Camera/iPhone),
     // stopRunning can hang if device is disconnected. Use async approach.
     MRLog(@"🛑 CameraRecorder: Stopping session (external device safe)...");
@@ -814,23 +850,88 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     return success;
 }
 
-- (void)captureOutput:(AVCaptureOutput *)output
- didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
-        fromConnection:(AVCaptureConnection *)connection {
-    if (!self.isRecording) {
+- (void)enqueueSampleBuffer:(CMSampleBufferRef)sampleBuffer {
+    if (!sampleBuffer) {
+        return;
+    }
+    CMSampleBufferRef bufferCopy = NULL;
+    OSStatus status = CMSampleBufferCreateCopy(kCFAllocatorDefault, sampleBuffer, &bufferCopy);
+    if (status == noErr && bufferCopy) {
+        [self.pendingSampleBuffers addObject:[NSValue valueWithPointer:bufferCopy]];
+    } else if (bufferCopy) {
+        CFRelease(bufferCopy);
+    }
+}
+
+- (void)flushPendingSampleBuffers {
+    if (self.pendingSampleBuffers.count == 0) {
         return;
     }
 
+    NSArray<NSValue *> *queued = [self.pendingSampleBuffers copy];
+    [self.pendingSampleBuffers removeAllObjects];
+
+    CMTime audioStart = MRSyncAudioFirstTimestamp();
+    BOOL hasAudioStart = CMTIME_IS_VALID(audioStart);
+
+    double stopLimit = MRSyncGetStopLimitSeconds();
+
+    for (NSValue *value in queued) {
+        CMSampleBufferRef buffer = (CMSampleBufferRef)[value pointerValue];
+        if (!buffer) {
+            continue;
+        }
+
+        CMTime bufferTime = CMSampleBufferGetPresentationTimeStamp(buffer);
+        if (hasAudioStart && CMTIME_IS_VALID(bufferTime)) {
+            // Drop frames captured before audio actually began to keep durations aligned.
+            if (CMTIME_COMPARE_INLINE(bufferTime, <, audioStart)) {
+                CFRelease(buffer);
+                continue;
+            }
+        }
+
+        if (stopLimit > 0 && CMTIME_IS_VALID(bufferTime)) {
+            CMTime baseline = kCMTimeInvalid;
+            if (CMTIME_IS_VALID(self.firstSampleTime)) {
+                baseline = self.firstSampleTime;
+            } else if (hasAudioStart) {
+                baseline = audioStart;
+            }
+            double frameSeconds = 0.0;
+            if (CMTIME_IS_VALID(baseline)) {
+                frameSeconds = CMTimeGetSeconds(CMTimeSubtract(bufferTime, baseline));
+            }
+            // Adjust camera stop limit by start offset relative to audio
+            double effectiveStopLimit = stopLimit;
+            if (hasAudioStart && CMTIME_IS_VALID(baseline)) {
+                CMTime startDeltaTime = CMTimeSubtract(baseline, audioStart);
+                double startDelta = CMTimeGetSeconds(startDeltaTime);
+                if (startDelta > 0) {
+                    effectiveStopLimit += startDelta;
+                }
+            }
+            double tolerance = self.expectedFrameRate > 0 ? (1.5 / self.expectedFrameRate) : 0.02;
+            if (tolerance < 0.02) {
+                tolerance = 0.02;
+            }
+            if (frameSeconds > effectiveStopLimit + tolerance) {
+                CFRelease(buffer);
+                continue;
+            }
+        }
+
+        [self processSampleBufferReadyForWriting:buffer];
+        CFRelease(buffer);
+    }
+}
+
+- (void)processSampleBufferReadyForWriting:(CMSampleBufferRef)sampleBuffer {
     if (!sampleBuffer) {
         return;
     }
 
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-
-    // If audio is expected but not yet flowing, hold video frames to keep timeline aligned.
-    if (MRSyncShouldHoldVideoFrame(timestamp)) {
-        return;
-    }
 
     // Lazy initialization - setup writer with actual frame dimensions
     if (!self.assetWriter) {
@@ -846,11 +947,9 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         MRLog(@"🎬 First frame received: %zux%zu (format said %dx%d)",
               actualWidth, actualHeight, self.expectedWidth, self.expectedHeight);
 
-        // Use ACTUAL dimensions from the frame, not format dimensions
         NSURL *outputURL = [NSURL fileURLWithPath:self.outputPath];
         NSError *setupError = nil;
 
-        // Use frame rate from device configuration
         double frameRate = self.expectedFrameRate > 0 ? self.expectedFrameRate : 30.0;
 
         if (![self setupWriterWithURL:outputURL
@@ -880,37 +979,58 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             }
         }
     }
-    
+
     if (!self.writerStarted || self.assetWriter.status != AVAssetWriterStatusWriting) {
         return;
     }
-    
+
     if (!self.assetWriterInput.readyForMoreMediaData) {
         return;
     }
-    
-    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (!pixelBuffer) {
-        return;
-    }
-    
+
     if (CMTIME_IS_INVALID(self.firstSampleTime)) {
         self.firstSampleTime = timestamp;
     }
-    
+
     CMTime relativeTimestamp = timestamp;
     if (CMTIME_IS_VALID(self.firstSampleTime)) {
-        // Align camera frames to a zero-based timeline so multi-track compositions stay in sync
         relativeTimestamp = CMTimeSubtract(timestamp, self.firstSampleTime);
         if (CMTIME_COMPARE_INLINE(relativeTimestamp, <, kCMTimeZero)) {
             relativeTimestamp = kCMTimeZero;
         }
     }
-    
+
+    double stopLimit = MRSyncGetStopLimitSeconds();
+    if (stopLimit > 0) {
+        // Adjust by camera start vs audio start so durations align closely
+        CMTime audioStartTS = MRSyncAudioFirstTimestamp();
+        if (CMTIME_IS_VALID(audioStartTS) && CMTIME_IS_VALID(self.firstSampleTime)) {
+            CMTime startDeltaTS = CMTimeSubtract(self.firstSampleTime, audioStartTS);
+            double startDelta = CMTimeGetSeconds(startDeltaTS);
+            if (startDelta > 0) {
+                stopLimit += startDelta;
+            }
+        }
+
+        double frameSeconds = CMTimeGetSeconds(relativeTimestamp);
+        double tolerance = self.expectedFrameRate > 0 ? (1.5 / self.expectedFrameRate) : 0.02;
+        if (tolerance < 0.02) {
+            tolerance = 0.02;
+        }
+        if (frameSeconds > stopLimit + tolerance) {
+            return;
+        }
+    }
+
+    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (!pixelBuffer) {
+        return;
+    }
+
     CVPixelBufferRetain(pixelBuffer);
     BOOL appended = [self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativeTimestamp];
     CVPixelBufferRelease(pixelBuffer);
-    
+
     if (!appended) {
         MRLog(@"⚠️ CameraRecorder: Failed to append camera frame at time %.2f (status %ld)",
               CMTimeGetSeconds(relativeTimestamp), (long)self.assetWriter.status);
@@ -919,6 +1039,34 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             self.isRecording = NO;
         }
     }
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+        fromConnection:(AVCaptureConnection *)connection {
+    if (!self.isRecording) {
+        return;
+    }
+
+    if (!sampleBuffer) {
+        return;
+    }
+
+    CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+
+    // If audio is expected but not yet flowing, hold video frames to keep timeline aligned.
+    if (MRSyncShouldHoldVideoFrame(timestamp)) {
+        [self enqueueSampleBuffer:sampleBuffer];
+        if (CMTIME_IS_INVALID(self.firstSampleTime)) {
+            self.firstSampleTime = timestamp;
+        }
+        return;
+    }
+
+    // Flush any buffered frames now that audio is ready
+    [self flushPendingSampleBuffers];
+
+    [self processSampleBufferReadyForWriting:sampleBuffer];
 }
 
 @end

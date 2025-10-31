@@ -16,6 +16,7 @@ static CMTime g_videoFirstTimestamp = kCMTimeInvalid;
 static BOOL g_videoHoldLogged = NO;
 static CMTime g_audioFirstTimestamp = kCMTimeInvalid;
 static CMTime g_alignmentDelta = kCMTimeInvalid;
+static double g_stopLimitSeconds = -1.0;
 
 void MRSyncConfigure(BOOL expectAudio) {
     dispatch_sync(MRSyncQueue(), ^{
@@ -25,6 +26,7 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_videoHoldLogged = NO;
         g_audioFirstTimestamp = kCMTimeInvalid;
         g_alignmentDelta = kCMTimeInvalid;
+        g_stopLimitSeconds = -1.0;
     });
 }
 
@@ -71,7 +73,7 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
         }
 
         CMTime elapsed = CMTimeSubtract(timestamp, g_videoFirstTimestamp);
-        CMTime maxWait = CMTimeMakeWithSeconds(0.25, 600); // Kamera gecikmesini minimumda tut
+        CMTime maxWait = CMTimeMakeWithSeconds(1.0, 600); // SYNC FIX: Increased from 0.25s to 1.0s for better sync tolerance
         if (CMTIME_COMPARE_INLINE(elapsed, >, maxWait)) {
             g_audioReady = YES;
             g_videoFirstTimestamp = kCMTimeInvalid;
@@ -85,9 +87,9 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
     });
 
     if (logHold) {
-        MRLog(@"⏸️ Video pipeline waiting for audio to begin (holding frames up to 0.35s)");
+        MRLog(@"⏸️ Video pipeline waiting for audio to begin (holding frames up to 1.0s)");
     } else if (logRelease) {
-        MRLog(@"▶️ Video pipeline resume forced (audio not detected within 0.35s)");
+        MRLog(@"▶️ Video pipeline resume forced (audio not detected within 1.0s)");
     }
 
     return shouldHold;
@@ -141,4 +143,18 @@ CMTime MRSyncAudioFirstTimestamp(void) {
         ts = g_audioFirstTimestamp;
     });
     return ts;
+}
+
+void MRSyncSetStopLimitSeconds(double seconds) {
+    dispatch_sync(MRSyncQueue(), ^{
+        g_stopLimitSeconds = seconds;
+    });
+}
+
+double MRSyncGetStopLimitSeconds(void) {
+    __block double seconds = -1.0;
+    dispatch_sync(MRSyncQueue(), ^{
+        seconds = g_stopLimitSeconds;
+    });
+    return seconds;
 }

@@ -20,6 +20,16 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp);
 // so both tracks share the same starting point.
 void MRSyncMarkAudioSample(CMTime timestamp);
 
+// Returns the offset between audio and video start timestamps when available.
+CMTime MRSyncVideoAlignmentOffset(void);
+
+// Returns the first audio timestamp observed for the current session.
+CMTime MRSyncAudioFirstTimestamp(void);
+
+// Optional hard stop limit (seconds) shared across capture components.
+void MRSyncSetStopLimitSeconds(double seconds);
+double MRSyncGetStopLimitSeconds(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -80,6 +80,16 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         // CRITICAL FIX: Use actual captured image dimensions for pixel buffer
         // CGDisplayCreateImage returns physical pixels on Retina displays
         CGImageRef testImage = CGDisplayCreateImage(displayID);
+        if (!testImage) {
+            NSLog(@"❌ AVFoundation: Failed to create display image for displayID %u", displayID);
+            NSLog(@"   Display may be invalid. Retrying with main display...");
+            displayID = CGMainDisplayID();
+            testImage = CGDisplayCreateImage(displayID);
+            if (!testImage) {
+                NSLog(@"❌ AVFoundation: Failed to create image even for main display");
+                return false;
+            }
+        }
         CGSize actualImageSize = CGSizeMake(CGImageGetWidth(testImage), CGImageGetHeight(testImage));
         CGImageRelease(testImage);
         
@@ -396,6 +406,22 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                     relativeTime = kCMTimeZero;
                                 }
                                 CMTime presentationTime = CMTimeMakeWithSeconds(CMTimeGetSeconds(relativeTime), 600);
+
+                                double stopLimit = MRSyncGetStopLimitSeconds();
+                                if (stopLimit > 0) {
+                                    double secondsFromStart = CMTimeGetSeconds(presentationTime);
+                                    double tolerance = fps > 0 ? (1.5 / fps) : 0.02;
+                                    if (tolerance < 0.02) {
+                                        tolerance = 0.02;
+                                    }
+                                    if (secondsFromStart > stopLimit + tolerance) {
+                                        MRLog(@"⏹️ Screen frame skipped at %.3fs (limit %.3fs)", secondsFromStart, stopLimit);
+                                        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+                                        CVPixelBufferRelease(pixelBuffer);
+                                        CGImageRelease(screenImage);
+                                        return;
+                                    }
+                                }
 
                                 BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
                                 if (appendSuccess) {

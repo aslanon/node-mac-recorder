@@ -383,17 +383,14 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             MRLog(@"   Reason: ScreenCaptureKit has thread safety issues in Electron (SIGTRAP crashes)");
         }
 
-        // CRITICAL FIX: ScreenCaptureKit causes segmentation faults
-        // Forcing AVFoundation for ALL environments until issue is resolved
-        // TODO: Implement audio capture in AVFoundation
+        // CRITICAL FIX: Always use AVFoundation for stability
+        // ScreenCaptureKit has file writing issues in Node.js environment
+        // AVFoundation works reliably in both Node.js and Electron
         BOOL forceAVFoundation = YES;
 
-        MRLog(@"🔧 CRITICAL: ScreenCaptureKit disabled globally (segfault issue)");
-        MRLog(@"   Using AVFoundation for stability with integrated audio capture");
-
-        if (isElectron) {
-            MRLog(@"⚡ Electron environment detected - using stable AVFoundation");
-        }
+        MRLog(@"🔧 FRAMEWORK SELECTION: Using AVFoundation for stability");
+        MRLog(@"   Environment: %@", isElectron ? @"Electron" : @"Node.js");
+        MRLog(@"   macOS: %ld.%ld.%ld", (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
 
         // Electron-first priority: ALWAYS use AVFoundation in Electron for stability
         // ScreenCaptureKit has severe thread safety issues in Electron causing SIGTRAP crashes
@@ -592,6 +589,19 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     MRLog(@"📞 StopRecording native method called");
+
+    double stopLimitSeconds = -1.0;
+    if (info.Length() > 0 && info[0].IsNumber()) {
+        stopLimitSeconds = info[0].As<Napi::Number>().DoubleValue();
+        if (stopLimitSeconds > 0) {
+            MRLog(@"⏲️ Requested stop limit: %.3f seconds", stopLimitSeconds);
+            MRSyncSetStopLimitSeconds(stopLimitSeconds);
+        } else {
+            MRSyncSetStopLimitSeconds(-1.0);
+        }
+    } else {
+        MRSyncSetStopLimitSeconds(-1.0);
+    }
     
     // Try ScreenCaptureKit first
     if (@available(macOS 12.3, *)) {
@@ -617,6 +627,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
             // DO NOT set g_isRecording here - let ScreenCaptureKit completion handler do it
             // Otherwise we have a race condition where JS thinks recording stopped but it's still running
             g_usingStandaloneAudio = false;
+            MRSyncSetStopLimitSeconds(-1.0);
             return Napi::Boolean::New(env, true);
         }
     }
@@ -631,44 +642,61 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
             MRLog(@"🛑 Stopping AVFoundation recording");
 
             BOOL cameraWasRecording = isCameraRecording();
+            BOOL audioWasRecording = g_usingStandaloneAudio && isStandaloneAudioRecording();
             __block BOOL cameraStopResult = YES;
-            dispatch_group_t cameraStopGroup = NULL;
+            __block BOOL audioStopResult = YES;
 
+            // SYNC FIX: Create unified stop group for camera and audio
+            dispatch_group_t stopGroup = dispatch_group_create();
+
+            // SYNC FIX: Stop camera and audio SIMULTANEOUSLY in parallel
             if (cameraWasRecording) {
-                MRLog(@"🛑 Stopping camera recording...");
+                MRLog(@"🛑 SYNC: Stopping camera recording...");
                 cameraStopResult = NO;
-                cameraStopGroup = dispatch_group_create();
-                dispatch_group_enter(cameraStopGroup);
-                // Stop camera on a background queue so audio/screen shutdown can proceed immediately.
+                dispatch_group_enter(stopGroup);
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
                     cameraStopResult = stopCameraRecording() ? YES : NO;
-                    dispatch_group_leave(cameraStopGroup);
+                    dispatch_group_leave(stopGroup);
                 });
             }
 
-            // Stop standalone audio if used (ScreenCaptureKit fallback)
-            if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
-                MRLog(@"🛑 Stopping standalone audio...");
-                stopStandaloneAudioRecording();
+            if (audioWasRecording) {
+                MRLog(@"🛑 SYNC: Stopping audio recording...");
+                audioStopResult = NO;
+                dispatch_group_enter(stopGroup);
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                    audioStopResult = stopStandaloneAudioRecording() ? YES : NO;
+                    dispatch_group_leave(stopGroup);
+                });
             }
 
             bool avFoundationStopped = stopAVFoundationRecording();
 
-            if (cameraStopGroup) {
-                dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
-                long waitResult = dispatch_group_wait(cameraStopGroup, waitTime);
+            // SYNC FIX: Wait for both camera AND audio to finish (increased timeout to 5s)
+            if (cameraWasRecording || audioWasRecording) {
+                dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
+                long waitResult = dispatch_group_wait(stopGroup, waitTime);
                 if (waitResult != 0) {
-                    MRLog(@"⚠️ Camera stop did not finish within 2 seconds (AVFoundation)");
-                    cameraStopResult = NO;
-                } else if (cameraStopResult) {
-                    MRLog(@"✅ Camera stopped successfully");
+                    MRLog(@"⚠️ SYNC: Camera/Audio stop did not finish within 5 seconds");
+                    if (cameraWasRecording && !cameraStopResult) {
+                        MRLog(@"   ⚠️ Camera stop timed out");
+                    }
+                    if (audioWasRecording && !audioStopResult) {
+                        MRLog(@"   ⚠️ Audio stop timed out");
+                    }
                 } else {
-                    MRLog(@"⚠️ Camera stop reported failure");
+                    if (cameraWasRecording) {
+                        MRLog(@"✅ SYNC: Camera stopped successfully");
+                    }
+                    if (audioWasRecording) {
+                        MRLog(@"✅ SYNC: Audio stopped successfully");
+                    }
                 }
             }
 
             g_isRecording = false;
             g_usingStandaloneAudio = false;
+            MRSyncSetStopLimitSeconds(-1.0);
 
             if (avFoundationStopped && (!cameraWasRecording || cameraStopResult)) {
                 MRLog(@"✅ AVFoundation recording stopped");
@@ -690,6 +718,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
         stopCameraRecording();
     }
     g_isRecording = false;
+    MRSyncSetStopLimitSeconds(-1.0);
     return Napi::Boolean::New(env, true);
 }
 
