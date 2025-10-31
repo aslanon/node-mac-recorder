@@ -630,33 +630,51 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
         if (isAVFoundationRecording()) {
             MRLog(@"🛑 Stopping AVFoundation recording");
 
-            // CRITICAL FIX: Stop camera FIRST (synchronous)
-            if (isCameraRecording()) {
+            BOOL cameraWasRecording = isCameraRecording();
+            __block BOOL cameraStopResult = YES;
+            dispatch_group_t cameraStopGroup = NULL;
+
+            if (cameraWasRecording) {
                 MRLog(@"🛑 Stopping camera recording...");
-                bool cameraStopped = stopCameraRecording();
-                if (cameraStopped) {
-                    MRLog(@"✅ Camera stopped successfully");
-                } else {
-                    MRLog(@"⚠️ Camera stop may have timed out");
-                }
+                cameraStopResult = NO;
+                cameraStopGroup = dispatch_group_create();
+                dispatch_group_enter(cameraStopGroup);
+                // Stop camera on a background queue so audio/screen shutdown can proceed immediately.
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                    cameraStopResult = stopCameraRecording() ? YES : NO;
+                    dispatch_group_leave(cameraStopGroup);
+                });
             }
 
-            // Stop standalone audio if used
+            // Stop standalone audio if used (ScreenCaptureKit fallback)
             if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
                 MRLog(@"🛑 Stopping standalone audio...");
                 stopStandaloneAudioRecording();
             }
 
-            // Stop AVFoundation recording
-            if (stopAVFoundationRecording()) {
-                g_isRecording = false;
-                g_usingStandaloneAudio = false;
+            bool avFoundationStopped = stopAVFoundationRecording();
+
+            if (cameraStopGroup) {
+                dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
+                long waitResult = dispatch_group_wait(cameraStopGroup, waitTime);
+                if (waitResult != 0) {
+                    MRLog(@"⚠️ Camera stop did not finish within 2 seconds (AVFoundation)");
+                    cameraStopResult = NO;
+                } else if (cameraStopResult) {
+                    MRLog(@"✅ Camera stopped successfully");
+                } else {
+                    MRLog(@"⚠️ Camera stop reported failure");
+                }
+            }
+
+            g_isRecording = false;
+            g_usingStandaloneAudio = false;
+
+            if (avFoundationStopped && (!cameraWasRecording || cameraStopResult)) {
                 MRLog(@"✅ AVFoundation recording stopped");
                 return Napi::Boolean::New(env, true);
             } else {
                 NSLog(@"❌ Failed to stop AVFoundation recording");
-                g_isRecording = false;
-                g_usingStandaloneAudio = false;
                 return Napi::Boolean::New(env, false);
             }
         }
