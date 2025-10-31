@@ -724,27 +724,43 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     MRLog(@"🛑 CameraRecorder: Stopping session (external device safe)...");
 
     self.isShuttingDown = YES;
-    self.isRecording = NO;
 
-    // Stop delegate FIRST to prevent new frames
-    [self.videoOutput setSampleBufferDelegate:nil queue:nil];
-
-    // Stop session on background thread to avoid blocking
+    // Stop session on background thread to avoid blocking, but wait briefly so we capture trailing frames.
     AVCaptureSession *sessionToStop = self.session;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        @autoreleasepool {
-            @try {
-                if ([sessionToStop isRunning]) {
-                    MRLog(@"🛑 Stopping AVCaptureSession (camera)...");
-                    [sessionToStop stopRunning];
-                    MRLog(@"✅ AVCaptureSession stopped (camera)");
+
+    dispatch_group_t sessionStopGroup = NULL;
+    if (sessionToStop) {
+        sessionStopGroup = dispatch_group_create();
+        dispatch_group_enter(sessionStopGroup);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            @autoreleasepool {
+                @try {
+                    if ([sessionToStop isRunning]) {
+                        MRLog(@"🛑 Stopping AVCaptureSession (camera)...");
+                        [sessionToStop stopRunning];
+                        MRLog(@"✅ AVCaptureSession stopped (camera)");
+                    }
+                } @catch (NSException *exception) {
+                    MRLog(@"⚠️ CameraRecorder: Exception while stopping session: %@", exception.reason);
                 }
-            } @catch (NSException *exception) {
-                MRLog(@"⚠️ CameraRecorder: Exception while stopping session: %@", exception.reason);
+                dispatch_group_leave(sessionStopGroup);
             }
-            // Release happens automatically when block completes
+        });
+    }
+
+    if (sessionStopGroup) {
+        dispatch_time_t sessionTimeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
+        long waitResult = dispatch_group_wait(sessionStopGroup, sessionTimeout);
+        if (waitResult != 0) {
+            MRLog(@"⚠️ CameraRecorder: AVCaptureSession stop timed out after 2s (continuing shutdown)");
         }
-    });
+    }
+
+    // Now detach delegate to prevent further callbacks
+    if (self.videoOutput) {
+        [self.videoOutput setSampleBufferDelegate:nil queue:nil];
+    }
+    self.isRecording = NO;
 
     // CRITICAL FIX: Check if assetWriter exists before trying to finish it
     // If no frames were captured, assetWriter will be nil
@@ -801,7 +817,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 - (void)captureOutput:(AVCaptureOutput *)output
  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         fromConnection:(AVCaptureConnection *)connection {
-    if (!self.isRecording || self.isShuttingDown) {
+    if (!self.isRecording) {
         return;
     }
 
