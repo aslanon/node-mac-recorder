@@ -747,17 +747,19 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     }
 
     // Delay stop slightly so camera ends close to audio length.
-    // Tunable via env var CAMERA_TAIL_SECONDS (default 0.11s)
-    NSTimeInterval cameraTailSeconds = 1.7;
+    // SYNC FIX: Optimized tail seconds for audio/camera sync
+    // This compensates for camera cold-start delay and trailing frame capture
+    // Tunable via env var CAMERA_TAIL_SECONDS (default 0.55s for optimal sync)
+    NSTimeInterval cameraTailSeconds = 0.55;
     const char *tailEnv = getenv("CAMERA_TAIL_SECONDS");
     if (tailEnv) {
         double parsed = atof(tailEnv);
-        if (parsed >= 0.0 && parsed <= 1.0) {
+        if (parsed >= 0.0 && parsed <= 2.0) {
             cameraTailSeconds = parsed;
         }
     }
-    MRLog(@"⏳ CameraRecorder: Delaying stop by %.3fs for tail capture", cameraTailSeconds);
     if (cameraTailSeconds > 0) {
+        MRLog(@"⏳ CameraRecorder: Delaying stop by %.3fs for tail capture", cameraTailSeconds);
         [NSThread sleepForTimeInterval:cameraTailSeconds];
     }
 

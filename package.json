@@ -43,7 +43,7 @@
 		"build:electron-safe": "node build-electron-safe.js",
 		"test:electron-safe": "node test-electron-safe.js",
 		"clean:electron-safe": "node-gyp clean && rm -rf build",
-		"canvas": "node canvas-test.js"
+		"canvas": "node make-canvas.js"
 	},
 	"dependencies": {
 		"node-addon-api": "^7.0.0",
