@@ -922,15 +922,9 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             if (CMTIME_IS_VALID(baseline)) {
                 frameSeconds = CMTimeGetSeconds(CMTimeSubtract(bufferTime, baseline));
             }
-            // Adjust camera stop limit by start offset relative to audio
+            // Do NOT extend camera stop limit by audio start offset.
+            // Clamping to the same stopLimit as audio ensures durations match.
             double effectiveStopLimit = stopLimit;
-            if (hasAudioStart && CMTIME_IS_VALID(baseline)) {
-                CMTime startDeltaTime = CMTimeSubtract(baseline, audioStart);
-                double startDelta = CMTimeGetSeconds(startDeltaTime);
-                if (startDelta > 0) {
-                    effectiveStopLimit += startDelta;
-                }
-            }
             double tolerance = self.expectedFrameRate > 0 ? (1.5 / self.expectedFrameRate) : 0.02;
             if (tolerance < 0.02) {
                 tolerance = 0.02;
@@ -1022,16 +1016,8 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 
     double stopLimit = MRSyncGetStopLimitSeconds();
     if (stopLimit > 0) {
-        // Adjust by camera start vs audio start so durations align closely
-        CMTime audioStartTS = MRSyncAudioFirstTimestamp();
-        if (CMTIME_IS_VALID(audioStartTS) && CMTIME_IS_VALID(self.firstSampleTime)) {
-            CMTime startDeltaTS = CMTimeSubtract(self.firstSampleTime, audioStartTS);
-            double startDelta = CMTimeGetSeconds(startDeltaTS);
-            if (startDelta > 0) {
-                stopLimit += startDelta;
-            }
-        }
-
+        // Do NOT extend camera stop limit by audio start offset.
+        // Using the same stopLimit as audio keeps durations aligned.
         double frameSeconds = CMTimeGetSeconds(relativeTimestamp);
         double tolerance = self.expectedFrameRate > 0 ? (1.5 / self.expectedFrameRate) : 0.02;
         if (tolerance < 0.02) {
