@@ -4,6 +4,7 @@
 #import "sync_timeline.h"
 
 static dispatch_queue_t g_audioCaptureQueue = nil;
+static NSString *g_lastStandaloneAudioOutputPath = nil;
 
 @interface NativeAudioRecorder : NSObject<AVCaptureAudioDataOutputSampleBufferDelegate>
 
@@ -521,6 +522,9 @@ bool startStandaloneAudioRecording(NSString *outputPath,
     }
     
     g_audioRecorder = [[NativeAudioRecorder alloc] init];
+    if (outputPath && [outputPath length] > 0) {
+        g_lastStandaloneAudioOutputPath = outputPath;
+    }
     return [g_audioRecorder startRecordingWithDeviceId:preferredDeviceId outputPath:outputPath error:error];
 }
 
@@ -553,6 +557,11 @@ NSString *currentStandaloneAudioRecordingPath() {
         return nil;
     }
     return g_audioRecorder.outputPath;
+}
+
+// Returns last standalone mic output path (even after stop)
+extern "C" NSString *lastStandaloneAudioRecordingPath() {
+    return g_lastStandaloneAudioOutputPath;
 }
 
 // C API for AVFoundation integration

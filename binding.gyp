@@ -9,6 +9,7 @@
         "src/camera_recorder.mm",
         "src/sync_timeline.mm",
         "src/audio_recorder.mm",
+        "src/audio_mixer.mm",
         "src/cursor_tracker.mm",
         "src/window_selector.mm"
       ],

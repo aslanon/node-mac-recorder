@@ -6,11 +6,12 @@ API_AVAILABLE(macos(12.3))
 @interface ScreenCaptureKitRecorder : NSObject
 
 + (BOOL)isScreenCaptureKitAvailable;
-+ (BOOL)startRecordingWithConfiguration:(NSDictionary *)config 
-                               delegate:(id)delegate 
++ (BOOL)startRecordingWithConfiguration:(NSDictionary *)config
+                               delegate:(id)delegate
                                   error:(NSError **)error;
 + (void)stopRecording;
 + (BOOL)isRecording;
++ (BOOL)isFullyInitialized;  // Check if first frames received
 + (BOOL)setupVideoWriter;
 + (void)finalizeRecording;
 + (void)finalizeVideoWriter;

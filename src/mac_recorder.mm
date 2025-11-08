@@ -31,6 +31,8 @@ extern "C" {
     bool stopCameraRecording();
     bool isCameraRecording();
     NSString *currentCameraRecordingPath();
+    bool waitForCameraRecordingStart(double timeoutSeconds);
+    double currentCameraRecordingStartTime(void);
     NSString *currentStandaloneAudioRecordingPath();
 
     NSArray<NSDictionary *> *listAudioCaptureDevices();
@@ -62,6 +64,42 @@ extern "C" void showOverlays();
 static MacRecorderDelegate *g_delegate = nil;
 static bool g_isRecording = false;
 static bool g_usingStandaloneAudio = false;
+static CFTimeInterval g_recordingStartTime = 0;
+static bool g_hasRecordingStartTime = false;
+static double g_activeStopLimitSeconds = -1.0;
+
+static void MRMarkRecordingStartTimestamp(void) {
+    g_recordingStartTime = CFAbsoluteTimeGetCurrent();
+    g_hasRecordingStartTime = true;
+}
+
+static double MRComputeElapsedRecordingSeconds(void) {
+    if (!g_hasRecordingStartTime) {
+        return -1.0;
+    }
+    CFTimeInterval elapsed = CFAbsoluteTimeGetCurrent() - g_recordingStartTime;
+    if (elapsed <= 0.0) {
+        return -1.0;
+    }
+    return (double)elapsed;
+}
+
+static void MRResetRecordingStartTimestamp(void) {
+    g_hasRecordingStartTime = false;
+    g_recordingStartTime = 0;
+}
+
+static void MRStoreActiveStopLimit(double seconds) {
+    g_activeStopLimitSeconds = seconds;
+}
+
+extern "C" double MRActiveStopLimitSeconds(void) {
+    return g_activeStopLimitSeconds;
+}
+
+extern "C" double MRScreenRecordingStartTimestampSeconds(void) {
+    return g_hasRecordingStartTime ? g_recordingStartTime : 0.0;
+}
 
 static bool startCameraIfRequested(bool captureCamera,
                                    NSString **cameraOutputPathRef,
@@ -108,6 +146,27 @@ static bool startCameraIfRequested(bool captureCamera,
     }
     
     MRLog(@"🎥 Camera recording started (output: %@)", resolvedOutputPath);
+    return true;
+}
+
+static bool startCameraWithConfirmation(bool captureCamera,
+                                        NSString **cameraOutputPathRef,
+                                        NSString *cameraDeviceId,
+                                        const std::string &screenOutputPath,
+                                        int64_t sessionTimestampMs) {
+    if (!captureCamera) {
+        return true;
+    }
+    if (!startCameraIfRequested(true, cameraOutputPathRef, cameraDeviceId, screenOutputPath, sessionTimestampMs)) {
+        return false;
+    }
+    double cameraWaitTimeout = 3.0;
+    if (!waitForCameraRecordingStart(cameraWaitTimeout)) {
+        MRLog(@"❌ Camera did not signal recording start within %.1fs", cameraWaitTimeout);
+        stopCameraRecording();
+        return false;
+    }
+    MRLog(@"✅ Camera recording confirmed");
     return true;
 }
 
@@ -160,6 +219,8 @@ void cleanupRecording() {
     
     g_isRecording = false;
     MRSyncConfigure(NO);
+    MRResetRecordingStartTimestamp();
+    MRStoreActiveStopLimit(-1.0);
 }
 
 // NAPI Function: Start Recording
@@ -175,6 +236,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     // This fixes the issue where macOS 14/13 users get "recording already in progress"
     MRLog(@"🧹 Cleaning up any previous recording state...");
     cleanupRecording();
+    MRStoreActiveStopLimit(-1.0);
 
     if (g_isRecording) {
         MRLog(@"⚠️ Still recording after cleanup - forcing stop");
@@ -208,6 +270,10 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     int64_t sessionTimestamp = 0;
     NSString *audioOutputPath = nil;
     double frameRate = 60.0;
+    bool mixAudio = true; // Default: mix mic+system into single track when possible
+    double mixMicGain = 0.8;    // default mic priority
+    double mixSystemGain = 0.4; // default system lower
+    bool preferScreenCaptureKitOption = false; // Allow opting into ScreenCaptureKit
     
     if (info.Length() > 1 && info[1].IsObject()) {
         Napi::Object options = info[1].As<Napi::Object>();
@@ -286,6 +352,39 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 frameRate = fps;
             }
         }
+
+        // Optional: allow caller to prefer ScreenCaptureKit when available (macOS 15+)
+        if (options.Has("preferScreenCaptureKit")) {
+            preferScreenCaptureKitOption = options.Get("preferScreenCaptureKit").As<Napi::Boolean>();
+        }
+
+        // Post-process audio mixing toggle (default true)
+        if (options.Has("mixAudio")) {
+            mixAudio = options.Get("mixAudio").As<Napi::Boolean>();
+        }
+
+        // Equal mix or explicit gains
+        if (options.Has("equalMix") && options.Get("equalMix").IsBoolean()) {
+            bool eq = options.Get("equalMix").As<Napi::Boolean>();
+            if (eq) {
+                mixMicGain = 0.5;
+                mixSystemGain = 0.5;
+            }
+        }
+        if (options.Has("mixGains") && options.Get("mixGains").IsObject()) {
+            Napi::Object gains = options.Get("mixGains").As<Napi::Object>();
+            if (gains.Has("mic") && gains.Get("mic").IsNumber()) {
+                mixMicGain = gains.Get("mic").As<Napi::Number>().DoubleValue();
+            }
+            if (gains.Has("system") && gains.Get("system").IsNumber()) {
+                mixSystemGain = gains.Get("system").As<Napi::Number>().DoubleValue();
+            }
+            // Clamp
+            if (mixMicGain < 0.0) mixMicGain = 0.0;
+            if (mixMicGain > 2.0) mixMicGain = 2.0;
+            if (mixSystemGain < 0.0) mixSystemGain = 0.0;
+            if (mixSystemGain > 2.0) mixSystemGain = 2.0;
+        }
         
         // Display ID (accepts either real CGDirectDisplayID or index [0-based or 1-based])
         if (options.Has("displayId") && !options.Get("displayId").IsNull()) {
@@ -346,7 +445,13 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
 
     bool captureMicrophone = includeMicrophone;
     bool captureSystemAudio = includeSystemAudio;
-    bool captureAnyAudio = captureMicrophone || captureSystemAudio;
+    bool screenCaptureSupportsMic = false;
+    if (@available(macOS 15.0, *)) {
+        screenCaptureSupportsMic = true;
+    }
+    bool captureStandaloneMic = captureMicrophone && !screenCaptureSupportsMic;
+    bool captureScreenAudio = captureSystemAudio || (screenCaptureSupportsMic && captureMicrophone);
+    bool captureAnyAudio = captureScreenAudio || captureStandaloneMic;
     MRSyncConfigure(captureAnyAudio);
     NSString *preferredAudioDeviceId = nil;
     if (captureSystemAudio && systemAudioDeviceId && [systemAudioDeviceId length] > 0) {
@@ -354,7 +459,47 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     } else if (captureMicrophone && audioDeviceId && [audioDeviceId length] > 0) {
         preferredAudioDeviceId = audioDeviceId;
     }
-    
+
+    // Auto-generate audio output path if audio is requested but no path provided
+    if (captureAnyAudio && (!audioOutputPath || [audioOutputPath length] == 0)) {
+        NSString *screenPath = [NSString stringWithUTF8String:outputPath.c_str()];
+        NSString *directory = nil;
+        if (screenPath && [screenPath length] > 0) {
+            directory = [screenPath stringByDeletingLastPathComponent];
+        }
+        if (!directory || [directory length] == 0) {
+            directory = [[NSFileManager defaultManager] currentDirectoryPath];
+        }
+        int64_t ts = sessionTimestamp != 0 ? sessionTimestamp : (int64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+        NSString *fileName = [NSString stringWithFormat:@"temp_audio_%lld.mov", ts];
+        audioOutputPath = [directory stringByAppendingPathComponent:fileName];
+        MRLog(@"📁 Auto-generated audio path: %@", audioOutputPath);
+    }
+
+    NSString *standaloneMicOutputPath = nil;
+    if (captureStandaloneMic) {
+        if (captureScreenAudio) {
+            // Avoid clashing writers: use a different file for standalone mic when SCK also writes audio
+            NSString *screenPath = [NSString stringWithUTF8String:outputPath.c_str()];
+            NSString *directory = screenPath && [screenPath length] > 0
+                ? [screenPath stringByDeletingLastPathComponent]
+                : [[NSFileManager defaultManager] currentDirectoryPath];
+            int64_t tsMic = sessionTimestamp != 0 ? sessionTimestamp : (int64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+            NSString *micFileName = [NSString stringWithFormat:@"temp_audio_mic_%lld.mov", tsMic];
+            standaloneMicOutputPath = [directory stringByAppendingPathComponent:micFileName];
+        } else {
+            standaloneMicOutputPath = audioOutputPath;
+        }
+
+        // Always use microphone device ID for standalone mic capture
+        if (!startAudioIfRequested(true, standaloneMicOutputPath, audioDeviceId)) {
+            MRLog(@"❌ Standalone microphone recording failed to start");
+            return Napi::Boolean::New(env, false);
+        }
+        g_usingStandaloneAudio = true;
+        MRLog(@"🎙️ Standalone microphone recording started (audio-only)");
+    }
+
     @try {
         // Smart Recording Selection: ScreenCaptureKit vs Alternative
         MRLog(@"🎯 Smart Recording Engine Selection");
@@ -379,26 +524,30 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
 
         if (isElectron) {
             MRLog(@"⚡ Electron environment detected");
-            MRLog(@"🔧 CRITICAL FIX: Forcing AVFoundation for Electron stability");
-            MRLog(@"   Reason: ScreenCaptureKit has thread safety issues in Electron (SIGTRAP crashes)");
         }
 
-        // CRITICAL FIX: Always use AVFoundation for stability
-        // ScreenCaptureKit has file writing issues in Node.js environment
-        // AVFoundation works reliably in both Node.js and Electron
-        BOOL forceAVFoundation = YES;
+        // Allow preferring ScreenCaptureKit via env or option; allow forcing AVFoundation
+        BOOL preferSCKEnv = (getenv("PREFER_SCREENCAPTUREKIT") != NULL) ||
+                            (getenv("USE_SCREENCAPTUREKIT") != NULL) ||
+                            (getenv("FORCE_SCREENCAPTUREKIT") != NULL) ||
+                            preferScreenCaptureKitOption;
+        BOOL forceAVFoundationEnv = (getenv("FORCE_AVFOUNDATION") != NULL);
 
-        MRLog(@"🔧 FRAMEWORK SELECTION: Using AVFoundation for stability");
+        // POLICY (per request): On macOS 14+ always try ScreenCaptureKit first (Electron included),
+        // then gracefully fall back to AVFoundation if unavailable/fails.
+        BOOL tryScreenCaptureKit = (isM14Plus || isM15Plus) && !forceAVFoundationEnv;
+
+        MRLog(@"🔧 FRAMEWORK SELECTION INPUTS:");
         MRLog(@"   Environment: %@", isElectron ? @"Electron" : @"Node.js");
         MRLog(@"   macOS: %ld.%ld.%ld", (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
+        MRLog(@"   preferSCK(env|option): %@", preferSCKEnv ? @"YES" : @"NO");
+        MRLog(@"   forceAV(env): %@", forceAVFoundationEnv ? @"YES" : @"NO");
 
-        // Electron-first priority: ALWAYS use AVFoundation in Electron for stability
-        // ScreenCaptureKit has severe thread safety issues in Electron causing SIGTRAP crashes
-        if (isM15Plus && !forceAVFoundation) {
+        if (tryScreenCaptureKit) {
             if (isElectron) {
-                MRLog(@"⚡ ELECTRON PRIORITY: macOS 15+ Electron → ScreenCaptureKit with full support");
+                MRLog(@"⚡ ELECTRON: macOS 14+ → trying ScreenCaptureKit first");
             } else {
-                MRLog(@"✅ macOS 15+ Node.js → ScreenCaptureKit available with full compatibility");
+                MRLog(@"✅ macOS 14+ Node.js → using ScreenCaptureKit");
             }
             
             // Try ScreenCaptureKit with extensive safety measures
@@ -413,8 +562,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 sckConfig[@"displayId"] = @(displayID);
                 sckConfig[@"windowId"] = @(windowID);
                 sckConfig[@"captureCursor"] = @(captureCursor);
-                sckConfig[@"includeSystemAudio"] = @(includeSystemAudio);
-                sckConfig[@"includeMicrophone"] = @(includeMicrophone);
+                sckConfig[@"includeSystemAudio"] = @(captureScreenAudio);
+                sckConfig[@"includeMicrophone"] = @((screenCaptureSupportsMic && captureMicrophone) ? YES : NO);
                 sckConfig[@"audioDeviceId"] = audioDeviceId;
                 sckConfig[@"outputPath"] = [NSString stringWithUTF8String:outputPath.c_str()];
                 if (audioOutputPath) {
@@ -426,8 +575,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 if (sessionTimestamp != 0) {
                     sckConfig[@"sessionTimestamp"] = @(sessionTimestamp);
                 }
-                // Pass requested frame rate
+                // Pass requested frame rate and audio mixing preference
                 sckConfig[@"frameRate"] = @(frameRate);
+                sckConfig[@"mixAudio"] = @(mixAudio);
+                sckConfig[@"mixMicGain"] = @((double)mixMicGain);
+                sckConfig[@"mixSystemGain"] = @((double)mixSystemGain);
                 
                 if (!CGRectIsNull(captureRect)) {
                     sckConfig[@"captureRect"] = @{
@@ -441,6 +593,16 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     // Use ScreenCaptureKit with window exclusion and timeout protection
                     NSError *sckError = nil;
 
+                    // CRITICAL SYNC FIX: Start camera BEFORE ScreenCaptureKit
+                    // This allows camera warmup to happen in parallel with async ScreenCaptureKit init
+                    if (captureCamera) {
+                        MRLog(@"🎥 Starting camera recording BEFORE ScreenCaptureKit (parallel warmup)");
+                        if (!startCameraWithConfirmation(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
+                            MRLog(@"❌ Camera failed to start - aborting recording");
+                            return Napi::Boolean::New(env, false);
+                        }
+                    }
+
                     // Set timeout for ScreenCaptureKit initialization
                     // Attempt to start ScreenCaptureKit with safety wrapper
                     @try {
@@ -453,18 +615,9 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                             MRLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
                             MRLog(@"✅ SYNC: ScreenCaptureKit recording started successfully");
 
-                            if (captureCamera) {
-                                MRLog(@"🎯 SYNC: Starting camera recording after screen start");
-                                bool cameraStarted = startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp);
-                                if (!cameraStarted) {
-                                    MRLog(@"❌ Camera start failed - stopping ScreenCaptureKit recording");
-                                    [ScreenCaptureKitRecorder stopRecording];
-                                    return Napi::Boolean::New(env, false);
-                                }
-                                MRLog(@"✅ SYNC: Camera recording started");
-                            }
-
                             g_isRecording = true;
+                            MRMarkRecordingStartTimestamp();
+
                             return Napi::Boolean::New(env, true);
                         } else {
                             NSLog(@"❌ ScreenCaptureKit failed to start");
@@ -473,11 +626,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     } @catch (NSException *sckException) {
                         NSLog(@"❌ Exception during ScreenCaptureKit startup: %@", sckException.reason);
 
-                        // Cleanup camera on exception
-                        if (isCameraRecording()) {
-                            stopCameraRecording();
-                        }
+                    // Cleanup camera on exception
+                    if (isCameraRecording()) {
+                        stopCameraRecording();
                     }
+                }
                     NSLog(@"❌ ScreenCaptureKit failed or unsafe - will fallback to AVFoundation");
                     
                 } else {
@@ -501,9 +654,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     MRLog(@"⚡ ELECTRON PRIORITY: macOS 13 Electron → AVFoundation with limited features");
                 }
             } else {
-                if (isM15Plus) {
-                    MRLog(@"🎯 macOS 15+ Node.js with FORCE_AVFOUNDATION → using AVFoundation");
-                } else if (isM14Plus) {
+                if (isM14Plus) {
                     MRLog(@"🎯 macOS 14 Node.js → using AVFoundation (primary method)");
                 } else if (isM13Plus) {
                     MRLog(@"🎯 macOS 13 Node.js → using AVFoundation (limited features)");  
@@ -545,20 +696,20 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 MRLog(@"✅ SYNC: Screen recording started successfully");
 
                 if (captureCamera) {
-                    MRLog(@"🎯 SYNC: Starting camera recording after screen start");
-                    bool cameraStarted = startCameraIfRequested(captureCamera, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp);
-                    if (!cameraStarted) {
-                        MRLog(@"❌ Camera start failed - stopping screen recording");
+                    MRLog(@"🎥 Starting camera recording for AVFoundation fallback");
+                    if (!startCameraWithConfirmation(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
+                        MRLog(@"❌ Camera failed to start for AVFoundation - stopping");
                         stopAVFoundationRecording();
                         return Napi::Boolean::New(env, false);
                     }
-                    MRLog(@"✅ SYNC: Camera recording started");
                 }
 
                 // NOTE: Audio is handled internally by AVFoundation, no need for standalone audio
                 // AVFoundation integrates audio recording directly
 
                 g_isRecording = true;
+                MRMarkRecordingStartTimestamp();
+                MRStoreActiveStopLimit(-1.0);
                 return Napi::Boolean::New(env, true);
             } else {
                 NSLog(@"❌ AVFoundation recording failed to start");
@@ -569,9 +720,9 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             NSLog(@"❌ Stack trace: %@", [avException callStackSymbols]);
 
             // Cleanup camera on exception
-            if (isCameraRecording()) {
-                stopCameraRecording();
-            }
+    if (isCameraRecording()) {
+        stopCameraRecording();
+    }
         }
         
         // Both ScreenCaptureKit and AVFoundation failed
@@ -590,18 +741,32 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     
     MRLog(@"📞 StopRecording native method called");
 
-    double stopLimitSeconds = -1.0;
+    double requestedStopLimit = -1.0;
+    bool explicitStopLimit = false;
     if (info.Length() > 0 && info[0].IsNumber()) {
-        stopLimitSeconds = info[0].As<Napi::Number>().DoubleValue();
-        if (stopLimitSeconds > 0) {
-            MRLog(@"⏲️ Requested stop limit: %.3f seconds", stopLimitSeconds);
-            MRSyncSetStopLimitSeconds(stopLimitSeconds);
-        } else {
-            MRSyncSetStopLimitSeconds(-1.0);
+        requestedStopLimit = info[0].As<Napi::Number>().DoubleValue();
+        if (requestedStopLimit > 0) {
+            explicitStopLimit = true;
+            MRLog(@"⏲️ Requested stop limit: %.3f seconds", requestedStopLimit);
         }
+    }
+
+    if (!explicitStopLimit) {
+        double autoLimit = MRComputeElapsedRecordingSeconds();
+        if (autoLimit > 0) {
+            requestedStopLimit = autoLimit;
+            MRLog(@"⏲️ Auto stop limit applied: %.3f seconds", requestedStopLimit);
+        }
+    }
+
+    if (requestedStopLimit > 0) {
+        MRStoreActiveStopLimit(requestedStopLimit);
+        MRSyncSetStopLimitSeconds(requestedStopLimit);
     } else {
+        MRStoreActiveStopLimit(-1.0);
         MRSyncSetStopLimitSeconds(-1.0);
     }
+    MRResetRecordingStartTimestamp();
     
     // Try ScreenCaptureKit first
     if (@available(macOS 12.3, *)) {
@@ -619,6 +784,18 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
                 }
             }
 
+            // Stop standalone microphone if it was used (macOS 13/14)
+            if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
+                MRLog(@"🛑 Stopping standalone microphone recording...");
+                bool micStopped = stopStandaloneAudioRecording();
+                if (micStopped) {
+                    MRLog(@"✅ Standalone microphone stopped successfully");
+                } else {
+                    MRLog(@"⚠️ Standalone microphone stop may have timed out");
+                }
+                g_usingStandaloneAudio = false;
+            }
+
             // Now stop ScreenCaptureKit (asynchronous)
             // WARNING: [ScreenCaptureKitRecorder stopRecording] is ASYNC!
             // It will set g_isRecording = NO in its completion handler
@@ -627,7 +804,6 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
             // DO NOT set g_isRecording here - let ScreenCaptureKit completion handler do it
             // Otherwise we have a race condition where JS thinks recording stopped but it's still running
             g_usingStandaloneAudio = false;
-            MRSyncSetStopLimitSeconds(-1.0);
             return Napi::Boolean::New(env, true);
         }
     }
@@ -696,7 +872,6 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
 
             g_isRecording = false;
             g_usingStandaloneAudio = false;
-            MRSyncSetStopLimitSeconds(-1.0);
 
             if (avFoundationStopped && (!cameraWasRecording || cameraStopResult)) {
                 MRLog(@"✅ AVFoundation recording stopped");
@@ -710,6 +885,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
         NSLog(@"❌ Exception stopping AVFoundation: %@", exception.reason);
         g_isRecording = false;
         g_usingStandaloneAudio = false;
+        MRSyncSetStopLimitSeconds(-1.0);
         return Napi::Boolean::New(env, false);
     }
     
@@ -1074,22 +1250,31 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
 // NAPI Function: Get Recording Status
 Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    
-    // Check recording methods
-    bool isRecording = g_isRecording;
-    
+
+    // CRITICAL: For ScreenCaptureKit, ONLY return true when FULLY initialized
+    // This ensures camera/cursor sync doesn't start until ScreenCaptureKit is ready
     if (@available(macOS 12.3, *)) {
-        if ([ScreenCaptureKitRecorder isRecording]) {
-            isRecording = true;
+        BOOL sckRecording = [ScreenCaptureKitRecorder isRecording];
+        if (sckRecording) {
+            // Return true ONLY if fully initialized (first frames captured)
+            BOOL fullyInit = [ScreenCaptureKitRecorder isFullyInitialized];
+            static int logCount = 0;
+            if (logCount++ < 3) {
+                NSLog(@"🔍 GetRecordingStatus: SCK recording=%d, fullyInit=%d", sckRecording, fullyInit);
+            }
+            return Napi::Boolean::New(env, fullyInit);
         }
     }
-    
+
     // Check AVFoundation (supports both Node.js and Electron)
     if (isAVFoundationRecording()) {
-        isRecording = true;
+        NSLog(@"🔍 GetRecordingStatus: Using AVFoundation → true");
+        return Napi::Boolean::New(env, true);
     }
-    
-    return Napi::Boolean::New(env, isRecording);
+
+    // Fallback to global recording flag
+    NSLog(@"🔍 GetRecordingStatus: Fallback g_isRecording=%d", g_isRecording);
+    return Napi::Boolean::New(env, g_isRecording);
 }
 
 // NAPI Function: Get Window Thumbnail
@@ -1338,15 +1523,25 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
         BOOL isM14Plus = (osVersion.majorVersion >= 14);
         BOOL isM13Plus = (osVersion.majorVersion >= 13);
         
-        // Check for force AVFoundation flag
-        BOOL forceAVFoundation = (getenv("FORCE_AVFOUNDATION") != NULL);
-        
-        // Electron detection
+        // Electron detection and preference flags (mirror StartRecording logic)
+        BOOL isElectron = (NSBundle.mainBundle.bundleIdentifier && 
+                          [NSBundle.mainBundle.bundleIdentifier containsString:@"electron"]) ||
+                         (NSProcessInfo.processInfo.processName && 
+                          [NSProcessInfo.processInfo.processName containsString:@"Electron"]) ||
+                         (NSProcessInfo.processInfo.environment[@"ELECTRON_RUN_AS_NODE"] != nil) ||
+                         (NSBundle.mainBundle.bundlePath && 
+                          [NSBundle.mainBundle.bundlePath containsString:@"Electron"]);
+
+        BOOL preferSCKEnv = (getenv("PREFER_SCREENCAPTUREKIT") != NULL) ||
+                            (getenv("USE_SCREENCAPTUREKIT") != NULL) ||
+                            (getenv("FORCE_SCREENCAPTUREKIT") != NULL);
+
         NSLog(@"🔒 Permission check for macOS %ld.%ld.%ld", 
               (long)osVersion.majorVersion, (long)osVersion.minorVersion, (long)osVersion.patchVersion);
         
-        // Determine which framework will be used (Electron fully supported!)
-        BOOL willUseScreenCaptureKit = (isM15Plus && !forceAVFoundation);  // Electron can use ScreenCaptureKit on macOS 15+
+        // Determine which framework will be used (same policy as StartRecording)
+        BOOL forceAVFoundationEnv = (getenv("FORCE_AVFOUNDATION") != NULL);
+        BOOL willUseScreenCaptureKit = (isM14Plus && !forceAVFoundationEnv);
         BOOL willUseAVFoundation = (!willUseScreenCaptureKit && (isM13Plus || isM14Plus));
         
         if (willUseScreenCaptureKit) {

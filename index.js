@@ -2,20 +2,42 @@ const { EventEmitter } = require("events");
 const path = require("path");
 const fs = require("fs");
 
+// Auto-switch to Electron-safe implementation when running under Electron and binary exists
+let USE_ELECTRON_SAFE = false;
+let ElectronSafeMacRecorder = null;
+try {
+  const isElectron = !!(process && process.versions && process.versions.electron);
+  const preferElectronSafe = process.env.PREFER_ELECTRON_SAFE === "1" || process.env.USE_ELECTRON_SAFE === "1";
+  if (isElectron || preferElectronSafe) {
+    const rel = path.join(__dirname, "build", "Release", "mac_recorder_electron.node");
+    const dbg = path.join(__dirname, "build", "Debug", "mac_recorder_electron.node");
+    if (fs.existsSync(rel) || fs.existsSync(dbg) || preferElectronSafe) {
+      // Defer requiring native .node; use JS wrapper which loads it
+      ElectronSafeMacRecorder = require("./electron-safe-index");
+      USE_ELECTRON_SAFE = true;
+      console.log("✅ Auto-enabled Electron-safe MacRecorder");
+    }
+  }
+} catch (_) {
+  // Ignore auto-switch errors; fall back to standard binding
+}
+
 // Native modülü yükle
 let nativeBinding;
-try {
-	nativeBinding = require("./build/Release/mac_recorder.node");
-} catch (error) {
-	try {
-		nativeBinding = require("./build/Debug/mac_recorder.node");
-	} catch (debugError) {
-		throw new Error(
-			'Native module not found. Please run "npm run build" to compile the native module.\n' +
-				"Original error: " +
-				error.message
-		);
-	}
+if (!USE_ELECTRON_SAFE) {
+  try {
+    nativeBinding = require("./build/Release/mac_recorder.node");
+  } catch (error) {
+    try {
+      nativeBinding = require("./build/Debug/mac_recorder.node");
+    } catch (debugError) {
+      throw new Error(
+        'Native module not found. Please run "npm run build" to compile the native module.\n' +
+          "Original error: " +
+          error.message
+      );
+    }
+  }
 }
 
 class MacRecorder extends EventEmitter {
@@ -188,6 +210,10 @@ class MacRecorder extends EventEmitter {
 				// Clamp reasonable range 1-120
 				this.options.frameRate = Math.min(Math.max(fps, 1), 120);
 			}
+		}
+		// Prefer ScreenCaptureKit (macOS 15+) toggle
+		if (options.preferScreenCaptureKit !== undefined) {
+			this.options.preferScreenCaptureKit = options.preferScreenCaptureKit === true;
 		}
 		if (options.cameraDeviceId !== undefined) {
 			this.options.cameraDeviceId =
@@ -507,6 +533,8 @@ class MacRecorder extends EventEmitter {
 					sessionTimestamp,
 					frameRate: this.options.frameRate || 60,
 					quality: this.options.quality || "high",
+					// Hint native side to use ScreenCaptureKit on macOS 15+
+					preferScreenCaptureKit: this.options.preferScreenCaptureKit === true,
 				};
 
 					if (cameraFilePath) {
@@ -554,6 +582,21 @@ class MacRecorder extends EventEmitter {
 
 				// Only start cursor if native recording started successfully
 				if (success) {
+					// For ScreenCaptureKit (async startup), wait briefly until native fully initialized
+					// ScreenCaptureKit needs ~150-300ms to start + ~150ms for first 10 frames
+					const waitStart = Date.now();
+					try {
+						while (Date.now() - waitStart < 600) {
+							try {
+								const nativeStatus = nativeBinding && nativeBinding.getRecordingStatus ? nativeBinding.getRecordingStatus() : true;
+								if (nativeStatus) {
+									console.log(`✅ SYNC: Native recording fully ready after ${Date.now() - waitStart}ms`);
+									break;
+								}
+							} catch (_) {}
+							await new Promise(r => setTimeout(r, 30));
+						}
+					} catch (_) {}
 					this.sessionTimestamp = sessionTimestamp;
 					const syncTimestamp = Date.now();
 					this.syncTimestamp = syncTimestamp;
@@ -1519,4 +1562,4 @@ class MacRecorder extends EventEmitter {
 // WindowSelector modülünü de export edelim
 MacRecorder.WindowSelector = require('./window-selector');
 
-module.exports = MacRecorder;
+module.exports = USE_ELECTRON_SAFE ? ElectronSafeMacRecorder : MacRecorder;

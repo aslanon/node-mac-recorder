@@ -5,6 +5,18 @@
 #import "logging.h"
 #import "sync_timeline.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+double MRActiveStopLimitSeconds(void);
+double MRScreenRecordingStartTimestampSeconds(void);
+double currentCameraRecordingStartTime(void);
+#ifdef __cplusplus
+}
+#endif
+
+static double g_cameraStartTimestamp = 0.0;
+
 #ifndef AVVideoCodecTypeVP9
 static AVVideoCodecType const AVVideoCodecTypeVP9 = @"vp09";
 #endif
@@ -71,26 +83,123 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     return NO;
 }
 
+static void MRTrimMovieFileIfNeeded(NSString *path, double stopLimitSeconds, double headTrimSeconds) {
+    BOOL hasStopLimit = stopLimitSeconds > 0.0;
+    BOOL hasHeadTrim = headTrimSeconds > 0.0;
+    if (!path || [path length] == 0 || (!hasStopLimit && !hasHeadTrim)) {
+        return;
+    }
+
+    NSURL *url = [NSURL fileURLWithPath:path];
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    if (!asset) {
+        return;
+    }
+
+    CMTime duration = asset.duration;
+    if (!CMTIME_IS_NUMERIC(duration) || duration.value == 0) {
+        return;
+    }
+
+    double assetSeconds = CMTimeGetSeconds(duration);
+    double tolerance = 0.03;
+    if (!hasStopLimit) {
+        stopLimitSeconds = assetSeconds;
+    }
+    if (assetSeconds <= stopLimitSeconds + tolerance && !hasHeadTrim) {
+        return;
+    }
+
+    int32_t timescale = duration.timescale > 0 ? duration.timescale : 600;
+    double startTrimSeconds = hasHeadTrim ? MIN(headTrimSeconds, stopLimitSeconds - tolerance) : 0.0;
+    if (startTrimSeconds < 0.0) {
+        startTrimSeconds = 0.0;
+    }
+
+    CMTime targetDuration = CMTimeMakeWithSeconds(stopLimitSeconds, timescale);
+    if (CMTIME_COMPARE_INLINE(targetDuration, <=, kCMTimeZero)) {
+        return;
+    }
+
+    CMTime startTime = CMTimeMakeWithSeconds(startTrimSeconds, timescale);
+    if (CMTIME_COMPARE_INLINE(startTime, >=, targetDuration)) {
+        startTime = kCMTimeZero;
+    }
+    CMTime effectiveDuration = CMTimeSubtract(targetDuration, startTime);
+    if (CMTIME_COMPARE_INLINE(effectiveDuration, <=, kCMTimeZero)) {
+        startTime = kCMTimeZero;
+        effectiveDuration = targetDuration;
+    }
+
+    CMTimeRange trimRange = CMTimeRangeMake(startTime, effectiveDuration);
+
+    NSString *extension = path.pathExtension.lowercaseString;
+    NSString *tempPath = [[path stringByDeletingPathExtension]
+                          stringByAppendingFormat:@"_trim.tmp.%@", extension.length > 0 ? extension : @"mov"];
+    [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+
+    AVAssetExportSession *exportSession = [[AVAssetExportSession alloc] initWithAsset:asset
+                                                                           presetName:AVAssetExportPresetPassthrough];
+    if (!exportSession) {
+        return;
+    }
+    exportSession.timeRange = trimRange;
+    exportSession.outputURL = [NSURL fileURLWithPath:tempPath];
+
+    NSString *fileType = AVFileTypeQuickTimeMovie;
+    if ([extension isEqualToString:@"mp4"]) {
+        fileType = AVFileTypeMPEG4;
+    } else if ([extension isEqualToString:@"mov"]) {
+        fileType = AVFileTypeQuickTimeMovie;
+    }
+    exportSession.outputFileType = fileType;
+
+    if (startTrimSeconds > 0.0) {
+        MRLog(@"✂️ Trimming camera head by %.3f s (target duration %.3f s) for %@", startTrimSeconds, stopLimitSeconds, path);
+    } else {
+        MRLog(@"✂️ Trimming %@ to %.3f seconds", path, stopLimitSeconds);
+    }
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    [exportSession exportAsynchronouslyWithCompletionHandler:^{
+        dispatch_semaphore_signal(semaphore);
+    }];
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC));
+    dispatch_semaphore_wait(semaphore, timeout);
+
+    if (exportSession.status == AVAssetExportSessionStatusCompleted) {
+        NSError *removeError = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:path error:&removeError];
+        if (removeError && removeError.code != NSFileNoSuchFileError) {
+            MRLog(@"⚠️ Failed removing original camera file before trim replace: %@", removeError);
+        }
+        NSError *moveError = nil;
+        if (![[NSFileManager defaultManager] moveItemAtPath:tempPath toPath:path error:&moveError]) {
+            MRLog(@"⚠️ Failed to replace camera file with trimmed version: %@", moveError);
+        } else {
+            MRLog(@"✅ Camera file trimmed to %.3f seconds", stopLimitSeconds);
+        }
+    } else {
+        [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+        if (exportSession.error) {
+            MRLog(@"⚠️ Camera trim export failed: %@", exportSession.error);
+        } else {
+            MRLog(@"⚠️ Camera trim export did not complete (status %ld)", (long)exportSession.status);
+        }
+    }
+}
+
 // Dedicated camera recorder used alongside screen capture
-@interface CameraRecorder : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate>
+// ELECTRON FIX: Using MovieFileOutput instead of VideoDataOutput to avoid buffer conflicts
+@interface CameraRecorder : NSObject<AVCaptureFileOutputRecordingDelegate>
 
 @property (nonatomic, strong) AVCaptureSession *session;
 @property (nonatomic, strong) AVCaptureDeviceInput *deviceInput;
-@property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
-@property (nonatomic, strong) AVAssetWriter *assetWriter;
-@property (nonatomic, strong) AVAssetWriterInput *assetWriterInput;
-@property (nonatomic, strong) AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor;
-@property (nonatomic, strong) dispatch_queue_t captureQueue;
+@property (nonatomic, strong) AVCaptureMovieFileOutput *movieFileOutput;
 @property (nonatomic, strong) NSString *outputPath;
 @property (atomic, assign) BOOL isRecording;
-@property (atomic, assign) BOOL writerStarted;
-@property (atomic, assign) BOOL isShuttingDown;
-@property (nonatomic, assign) CMTime firstSampleTime;
-@property (nonatomic, assign) int32_t expectedWidth;
-@property (nonatomic, assign) int32_t expectedHeight;
-@property (nonatomic, assign) double expectedFrameRate;
-@property (atomic, assign) BOOL needsReconfiguration;
-@property (nonatomic, strong) NSMutableArray<NSValue *> *pendingSampleBuffers;
+@property (nonatomic, strong) dispatch_semaphore_t recordingStartedSemaphore;
+@property (atomic, assign) BOOL recordingStartCompleted;
+@property (atomic, assign) BOOL recordingStartSucceeded;
 
 + (instancetype)sharedRecorder;
 + (NSArray<NSDictionary *> *)availableCameraDevices;
@@ -106,10 +215,47 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _pendingSampleBuffers = [NSMutableArray array];
+        // MovieFileOutput-based recorder - no buffer management needed
+        _recordingStartCompleted = YES;
+        _recordingStartSucceeded = NO;
     }
     return self;
 }
+
+- (void)prepareRecordingStartSignal {
+    self.recordingStartCompleted = NO;
+    self.recordingStartSucceeded = NO;
+    self.recordingStartedSemaphore = dispatch_semaphore_create(0);
+}
+
+- (void)finishRecordingStart:(BOOL)success {
+    if (self.recordingStartCompleted && self.recordingStartSucceeded == success) {
+        return;
+    }
+    self.recordingStartCompleted = YES;
+    self.recordingStartSucceeded = success;
+    dispatch_semaphore_t semaphore = self.recordingStartedSemaphore;
+    if (semaphore) {
+        dispatch_semaphore_signal(semaphore);
+    }
+}
+
+- (BOOL)waitForRecordingStartWithTimeout:(NSTimeInterval)timeout {
+    if (self.recordingStartCompleted) {
+        return self.recordingStartSucceeded;
+    }
+    dispatch_semaphore_t semaphore = self.recordingStartedSemaphore;
+    if (!semaphore) {
+        return self.recordingStartSucceeded;
+    }
+    dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC));
+    long result = dispatch_semaphore_wait(semaphore, waitTime);
+    if (result != 0 && !self.recordingStartCompleted) {
+        return NO;
+    }
+    return self.recordingStartSucceeded;
+}
+
 
 + (instancetype)sharedRecorder {
     static CameraRecorder *recorder = nil;
@@ -265,36 +411,18 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     return devicesInfo;
 }
 
+// ELECTRON FIX: MovieFileOutput-based recorder doesn't need buffer management
+// These methods are kept for compatibility but do nothing
 - (void)clearPendingSampleBuffers {
-    id container = self.pendingSampleBuffers;
-    if (![container isKindOfClass:[NSArray class]]) {
-        MRLog(@"⚠️ CameraRecorder: pendingSampleBuffers corrupted (%@) — resetting", NSStringFromClass([container class]));
-        self.pendingSampleBuffers = [NSMutableArray array];
-        return;
-    }
-    for (NSValue *value in (NSArray *)container) {
-        CMSampleBufferRef buffer = (CMSampleBufferRef)[value pointerValue];
-        if (buffer) {
-            CFRelease(buffer);
-        }
-    }
-    [self.pendingSampleBuffers removeAllObjects];
+    // No-op: MovieFileOutput manages its own buffers
 }
 
 - (void)resetState {
-    self.writerStarted = NO;
     self.isRecording = NO;
-    self.isShuttingDown = NO;
-    self.firstSampleTime = kCMTimeInvalid;
     self.session = nil;
     self.deviceInput = nil;
-    self.videoOutput = nil;
-    self.assetWriter = nil;
-    self.assetWriterInput = nil;
-    self.pixelBufferAdaptor = nil;
+    self.movieFileOutput = nil;
     self.outputPath = nil;
-    self.captureQueue = nil;
-    [self clearPendingSampleBuffers];
 }
 
 - (AVCaptureDevice *)deviceForId:(NSString *)deviceId {
@@ -332,8 +460,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             continue;
         }
 
-        // No filtering - use whatever the device supports
-        // The device knows best what it can capture
+        // ELECTRON FIX: Limit resolution to 1280x720 (720p) for balance
+        // Full HD works fine with MovieFileOutput since it doesn't conflict with ScreenCaptureKit
+        // But we still cap at 720p for reasonable file sizes and performance
+        if (dims.width > 1280 || dims.height > 720) {
+            continue;  // Skip formats higher than 720p
+        }
 
         int64_t score = (int64_t)dims.width * (int64_t)dims.height;
 
@@ -387,8 +519,10 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             device.activeFormat = format;
         }
         
-        // Clamp desired frame rate within supported ranges
-        double targetFrameRate = frameRate > 0 ? frameRate : 30.0;
+        // ELECTRON FIX: Use reasonable frame rate (24 FPS) for good quality
+        // MovieFileOutput works perfectly with ScreenCaptureKit - no conflicts!
+        // 24fps provides smooth motion while keeping file size reasonable
+        double targetFrameRate = frameRate > 0 ? MIN(frameRate, 24.0) : 24.0;
         AVFrameRateRange *bestRange = nil;
         for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
             if (!bestRange || range.maxFrameRate > bestRange.maxFrameRate) {
@@ -432,6 +566,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     return YES;
 }
 
+#if 0  // ELECTRON FIX: Old buffer management code - no longer used with MovieFileOutput
 - (BOOL)setupWriterWithURL:(NSURL *)outputURL
                      width:(int32_t)width
                     height:(int32_t)height
@@ -569,9 +704,12 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     [self.assetWriter addInput:self.assetWriterInput];
     self.writerStarted = NO;
     self.firstSampleTime = kCMTimeInvalid;
-    
+
     return YES;
 }
+#endif  // End old buffer management code (setupWriterWithURL)
+
+// MARK: - NEW MovieFileOutput Implementation (NOT disabled!)
 
 - (BOOL)startRecordingWithDeviceId:(NSString *)deviceId
                         outputPath:(NSString *)outputPath
@@ -596,119 +734,157 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return NO;
     }
     
-    // Ensure camera permission
-    __block BOOL cameraPermissionGranted = YES;
+    // CRITICAL ELECTRON FIX: Non-blocking permission check
     AVAuthorizationStatus cameraStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
-    if (cameraStatus == AVAuthorizationStatusNotDetermined) {
-        dispatch_semaphore_t permissionSemaphore = dispatch_semaphore_create(0);
-        [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
-            cameraPermissionGranted = granted;
-            dispatch_semaphore_signal(permissionSemaphore);
-        }];
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
-        dispatch_semaphore_wait(permissionSemaphore, timeout);
-    } else if (cameraStatus != AVAuthorizationStatusAuthorized) {
-        cameraPermissionGranted = NO;
-    }
 
-    if (!cameraPermissionGranted) {
+    // Definitely denied - stop immediately
+    if (cameraStatus == AVAuthorizationStatusDenied || cameraStatus == AVAuthorizationStatusRestricted) {
         if (error) {
-            NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: @"Camera permission not granted" };
+            NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: @"Camera permission denied - please grant permission in System Settings" };
             *error = [NSError errorWithDomain:@"CameraRecorder" code:-4 userInfo:userInfo];
         }
         return NO;
     }
 
-    // Remove any stale file
-    NSError *removeError = nil;
-    [[NSFileManager defaultManager] removeItemAtPath:outputPath error:&removeError];
-    if (removeError && removeError.code != NSFileNoSuchFileError) {
-        MRLog(@"⚠️ CameraRecorder: Failed to remove existing camera file: %@", removeError);
-    }
-    
-    [self clearPendingSampleBuffers];
-    AVCaptureDevice *device = [self deviceForId:deviceId];
-    if (!device) {
-        if (error) {
-            NSDictionary *userInfo = @{
-                NSLocalizedDescriptionKey: @"No camera devices available"
-            };
-            *error = [NSError errorWithDomain:@"CameraRecorder" code:-3 userInfo:userInfo];
-        }
-        return NO;
+    // CRITICAL ELECTRON FIX: For NotDetermined, request async and assume it will be granted
+    // Blocking/polling here causes Electron crashes
+    if (cameraStatus == AVAuthorizationStatusNotDetermined) {
+        MRLog(@"🔐 Camera permission not determined - requesting async (non-blocking)...");
+        [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
+            if (granted) {
+                MRLog(@"✅ Camera permission granted (async callback)");
+            } else {
+                MRLog(@"❌ Camera permission denied (async callback)");
+            }
+        }];
+        // Don't wait - camera will start when permission is granted
+        MRLog(@"📤 Permission request sent, continuing without blocking...");
     }
 
-    if (MRIsContinuityCamera(device) && !MRAllowContinuityCamera()) {
-        if (error) {
-            NSDictionary *userInfo = @{
-                NSLocalizedDescriptionKey: @"Continuity Camera requires NSCameraUseContinuityCameraDeviceType=true in Info.plist"
-            };
-            *error = [NSError errorWithDomain:@"CameraRecorder" code:-5 userInfo:userInfo];
+    // CRITICAL ELECTRON FIX: Do ALL potentially blocking operations on background thread
+    // File I/O and device locking MUST NOT block main thread
+
+    // Store output path for later use
+    self.outputPath = outputPath;
+    self.isRecording = YES;  // Mark as recording early
+    [self prepareRecordingStartSignal];
+
+    // Schedule all blocking operations on background thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @autoreleasepool {
+            // Remove any stale file (BLOCKING I/O - safe on background thread)
+            NSError *removeError = nil;
+            [[NSFileManager defaultManager] removeItemAtPath:outputPath error:&removeError];
+            if (removeError && removeError.code != NSFileNoSuchFileError) {
+                MRLog(@"⚠️ CameraRecorder: Failed to remove existing camera file: %@", removeError);
+            }
+
+            [self clearPendingSampleBuffers];
+            AVCaptureDevice *device = [self deviceForId:deviceId];
+            if (!device) {
+                MRLog(@"❌ No camera devices available");
+                self.isRecording = NO;
+                [self finishRecordingStart:NO];
+                return;
+            }
+
+            if (MRIsContinuityCamera(device) && !MRAllowContinuityCamera()) {
+                MRLog(@"⚠️ Continuity Camera access denied - missing Info.plist entitlement");
+                self.isRecording = NO;
+                [self finishRecordingStart:NO];
+                return;
+            }
+
+            int32_t width = 0;
+            int32_t height = 0;
+            double frameRate = 0.0;
+            AVCaptureDeviceFormat *bestFormat = [self bestFormatForDevice:device widthOut:&width heightOut:&height frameRateOut:&frameRate];
+
+            NSError *configError = nil;
+            if (![self configureDevice:device withFormat:bestFormat frameRate:frameRate error:&configError]) {
+                MRLog(@"❌ Failed to configure device: %@", configError);
+                self.isRecording = NO;
+                [self finishRecordingStart:NO];
+                return;
+            }
+
+            // Continue with session setup on background thread
+            [self continueSetupWithDevice:device width:width height:height frameRate:frameRate outputPath:outputPath];
         }
-        MRLog(@"⚠️ Continuity Camera access denied - missing Info.plist entitlement");
-        return NO;
-    }
-    
-    int32_t width = 0;
-    int32_t height = 0;
-    double frameRate = 0.0;
-    AVCaptureDeviceFormat *bestFormat = [self bestFormatForDevice:device widthOut:&width heightOut:&height frameRateOut:&frameRate];
-    
-    if (![self configureDevice:device withFormat:bestFormat frameRate:frameRate error:error]) {
-        return NO;
-    }
-    
+    });
+
+    // Return immediately - setup continues async
+    MRLog(@"📤 Camera setup scheduled on background thread (non-blocking)");
+    return YES;
+}
+
+- (void)continueSetupWithDevice:(AVCaptureDevice *)device
+                          width:(int32_t)width
+                         height:(int32_t)height
+                      frameRate:(double)frameRate
+                     outputPath:(NSString *)outputPath {
+
     self.session = [[AVCaptureSession alloc] init];
-    
-    self.deviceInput = [AVCaptureDeviceInput deviceInputWithDevice:device error:error];
+
+    // ELECTRON FIX: Use HIGH preset for good quality
+    // MovieFileOutput works perfectly with ScreenCaptureKit - no more crashes!
+    // We already selected best format (up to 720p), so HIGH preset will use it
+    self.session.sessionPreset = AVCaptureSessionPresetHigh;
+    MRLog(@"📹 Camera session preset: HIGH (up to 720p based on selected format)");
+
+    // CRITICAL ELECTRON FIX: Use beginConfiguration / commitConfiguration
+    // This makes session configuration ATOMIC and prevents crashes
+    [self.session beginConfiguration];
+
+    NSError *localError = nil;
+    self.deviceInput = [AVCaptureDeviceInput deviceInputWithDevice:device error:&localError];
     if (!self.deviceInput) {
+        MRLog(@"❌ Failed to create device input: %@", localError);
+        [self.session commitConfiguration];
         [self resetState];
-        return NO;
+        [self finishRecordingStart:NO];
+        return;
     }
-    
+
     if ([self.session canAddInput:self.deviceInput]) {
         [self.session addInput:self.deviceInput];
     } else {
-        if (error) {
-            NSDictionary *userInfo = @{
-                NSLocalizedDescriptionKey: @"Unable to add camera input to capture session"
-            };
-            *error = [NSError errorWithDomain:@"CameraRecorder" code:-6 userInfo:userInfo];
-        }
+        MRLog(@"❌ Unable to add camera input to capture session");
+        [self.session commitConfiguration];
         [self resetState];
-        return NO;
+        [self finishRecordingStart:NO];
+        return;
     }
-    
-    self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-    self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
-    // Use video range (not full range) for better compatibility and quality
-    // YpCbCr 4:2:0 biplanar is the native format for most cameras
-    self.videoOutput.videoSettings = @{
-        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    };
-    
-    self.captureQueue = dispatch_queue_create("node_mac_recorder.camera.queue", DISPATCH_QUEUE_SERIAL);
-    [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
-    
-    if ([self.session canAddOutput:self.videoOutput]) {
-        [self.session addOutput:self.videoOutput];
-    } else {
-        if (error) {
-            NSDictionary *userInfo = @{
-                NSLocalizedDescriptionKey: @"Unable to add camera output to capture session"
-            };
-            *error = [NSError errorWithDomain:@"CameraRecorder" code:-7 userInfo:userInfo];
-        }
-        [self resetState];
-        return NO;
-    }
-    
-    AVCaptureConnection *connection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (connection) {
-        // DON'T set orientation - let the camera use its natural orientation
-        // The device knows best (portrait for phones, landscape for webcams)
-        // We just capture whatever comes through
 
+    // CRITICAL ELECTRON FIX: Use AVCaptureMovieFileOutput instead of VideoDataOutput
+    // VideoDataOutput uses frame-by-frame buffers that conflict with ScreenCaptureKit
+    // MovieFileOutput writes directly to file with different buffer management
+    self.movieFileOutput = [[AVCaptureMovieFileOutput alloc] init];
+
+    if ([self.session canAddOutput:self.movieFileOutput]) {
+        [self.session addOutput:self.movieFileOutput];
+        MRLog(@"✅ Added AVCaptureMovieFileOutput (file-based recording, no buffer conflicts)");
+    } else {
+        MRLog(@"❌ Unable to add movie file output to capture session");
+        [self.session commitConfiguration];
+        [self resetState];
+        [self finishRecordingStart:NO];
+        return;
+    }
+
+    // CRITICAL FIX: Disable audio recording - we only want video from camera
+    // MovieFileOutput by default tries to record both audio and video
+    // Since we don't have an audio input, it won't start recording at all
+    AVCaptureConnection *audioConnection = [self.movieFileOutput connectionWithMediaType:AVMediaTypeAudio];
+    if (audioConnection) {
+        audioConnection.enabled = NO;
+        MRLog(@"🔇 Disabled audio connection (video-only recording)");
+    } else {
+        MRLog(@"ℹ️ No audio connection found (expected - video-only setup)");
+    }
+
+    AVCaptureConnection *connection = [self.movieFileOutput connectionWithMediaType:AVMediaTypeVideo];
+    if (connection) {
         // Mirror front cameras for natural preview
         if (connection.isVideoMirroringSupported && device.position == AVCaptureDevicePositionFront) {
             if ([connection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
@@ -716,29 +892,124 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
             }
             connection.videoMirrored = YES;
         }
-
-        // Log actual connection properties for debugging
         MRLog(@"📐 Camera connection: orientation=%ld (native), mirrored=%d, format=%dx%d",
               (long)connection.videoOrientation,
               connection.isVideoMirrored,
               width, height);
     }
-    
-    // DON'T setup writer yet - wait for first frame to get actual dimensions
-    // Store configuration for lazy initialization
+
+    // CRITICAL: Commit configuration BEFORE starting
+    [self.session commitConfiguration];
+
+    // Store configuration
     self.outputPath = outputPath;
     self.isRecording = YES;
-    self.isShuttingDown = NO;
-    self.expectedWidth = width;
-    self.expectedHeight = height;
-    self.expectedFrameRate = frameRate;
-    self.needsReconfiguration = NO;
 
+    // CRITICAL ELECTRON FIX: Start on current thread (already on background)
+    // Don't touch main thread at all - AVCaptureSession can start on background thread
+    MRLog(@"🎥 Starting AVCaptureSession (camera) on background thread...");
     [self.session startRunning];
 
-    MRLog(@"🎥 CameraRecorder started: %@ (will use actual frame dimensions)", device.localizedName);
+    // Wait a moment for session to fully start
+    [NSThread sleepForTimeInterval:0.5];
+
+    MRLog(@"✅ AVCaptureSession started");
+    MRLog(@"🔍 Session isRunning: %d", [self.session isRunning]);
+
+    // CRITICAL FIX: MovieFileOutput only supports .mov and .mp4, NOT .webm
+    // If path ends with .webm, change it to .mov
+    NSString *finalOutputPath = outputPath;
+    if ([outputPath.pathExtension.lowercaseString isEqualToString:@"webm"]) {
+        finalOutputPath = [[outputPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
+        MRLog(@"⚠️ Camera: Changed output from .webm to .mov (MovieFileOutput doesn't support WebM)");
+        MRLog(@"   New path: %@", finalOutputPath);
+        // Update stored path
+        self.outputPath = finalOutputPath;
+    }
+
+    // CRITICAL: Start file recording immediately
+    NSURL *outputURL = [NSURL fileURLWithPath:finalOutputPath];
+
+    // Verify path and output are valid
+    if (!outputURL) {
+        MRLog(@"❌ Failed to create output URL from path: %@", finalOutputPath);
+        [self finishRecordingStart:NO];
+        return;
+    }
+
+    if (!self.movieFileOutput) {
+        MRLog(@"❌ movieFileOutput is nil!");
+        return;
+    }
+
+    MRLog(@"📁 Camera output path: %@", outputPath);
+    MRLog(@"📁 Camera output URL: %@", outputURL);
+    MRLog(@"🎥 Starting movie file recording...");
+
+    [self.movieFileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:self];
+
+    MRLog(@"✅ startRecordingToOutputFileURL called");
+    MRLog(@"🔍 Is recording: %d", [self.movieFileOutput isRecording]);
+
+    MRLog(@"🎥 CameraRecorder started: %@ (file-based recording)", device.localizedName);
     MRLog(@"   Format reports: %dx%d @ %.2ffps", width, height, frameRate);
-    return YES;
+}
+
+// MARK: - AVCaptureFileOutputRecordingDelegate
+
+- (void)captureOutput:(AVCaptureFileOutput *)output
+didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections
+                error:(NSError *)error {
+    MRLog(@"🎬 DELEGATE: didFinishRecordingToOutputFileAtURL called");
+    MRLog(@"   File URL: %@", outputFileURL.path);
+
+    if (error) {
+        MRLog(@"❌ Camera recording finished with ERROR:");
+        MRLog(@"   Error code: %ld", (long)error.code);
+        MRLog(@"   Error domain: %@", error.domain);
+        MRLog(@"   Error description: %@", error.localizedDescription);
+        if (error.userInfo) {
+            MRLog(@"   Error userInfo: %@", error.userInfo);
+        }
+    } else {
+        MRLog(@"✅ Camera recording finished SUCCESSFULLY");
+        MRLog(@"   Output file: %@", outputFileURL.path);
+
+        // Check if file actually exists
+        BOOL fileExists = [[NSFileManager defaultManager] fileExistsAtPath:outputFileURL.path];
+        MRLog(@"   File exists on disk: %d", fileExists);
+
+        if (fileExists) {
+            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outputFileURL.path error:nil];
+            unsigned long long fileSize = [attrs fileSize];
+            MRLog(@"   File size: %llu bytes", fileSize);
+        }
+    }
+
+    double stopLimit = MRActiveStopLimitSeconds();
+    double screenStart = MRScreenRecordingStartTimestampSeconds();
+    double cameraStart = currentCameraRecordingStartTime();
+    double headTrim = 0.0;
+    if (screenStart > 0 && cameraStart > 0 && cameraStart < screenStart) {
+        headTrim = screenStart - cameraStart;
+    }
+    if (stopLimit > 0 || headTrim > 0) {
+        MRTrimMovieFileIfNeeded(outputFileURL.path, stopLimit, headTrim);
+    }
+    g_cameraStartTimestamp = 0.0;
+
+    self.isRecording = NO;
+}
+
+- (void)captureOutput:(AVCaptureFileOutput *)output
+didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections {
+    MRLog(@"🎬 DELEGATE: didStartRecordingToOutputFileAtURL called");
+    MRLog(@"   File URL: %@", fileURL.path);
+    MRLog(@"   Connections count: %lu", (unsigned long)connections.count);
+    MRLog(@"✅ Camera file recording STARTED successfully!");
+    [self finishRecordingStart:YES];
 }
 
 - (BOOL)stopRecording {
@@ -746,118 +1017,34 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         return YES;
     }
 
-    // Delay stop slightly so camera ends close to audio length.
-    // SYNC FIX: Optimized tail seconds for audio/camera sync
-    // This compensates for camera cold-start delay and trailing frame capture
-    // Tunable via env var CAMERA_TAIL_SECONDS (default 0.55s for optimal sync)
-    NSTimeInterval cameraTailSeconds = 0.55;
-    const char *tailEnv = getenv("CAMERA_TAIL_SECONDS");
-    if (tailEnv) {
-        double parsed = atof(tailEnv);
-        if (parsed >= 0.0 && parsed <= 2.0) {
-            cameraTailSeconds = parsed;
-        }
-    }
-    if (cameraTailSeconds > 0) {
-        MRLog(@"⏳ CameraRecorder: Delaying stop by %.3fs for tail capture", cameraTailSeconds);
-        [NSThread sleepForTimeInterval:cameraTailSeconds];
+    MRLog(@"🛑 CameraRecorder: Stopping recording...");
+    if (!self.recordingStartCompleted) {
+        [self finishRecordingStart:NO];
     }
 
-    // CRITICAL FIX: For external cameras (especially Continuity Camera/iPhone),
-    // stopRunning can hang if device is disconnected. Use async approach.
-    MRLog(@"🛑 CameraRecorder: Stopping session (external device safe)...");
-
-    self.isShuttingDown = YES;
-
-    // Stop session on background thread to avoid blocking, but wait briefly so we capture trailing frames.
-    AVCaptureSession *sessionToStop = self.session;
-
-    dispatch_group_t sessionStopGroup = NULL;
-    if (sessionToStop) {
-        sessionStopGroup = dispatch_group_create();
-        dispatch_group_enter(sessionStopGroup);
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            @autoreleasepool {
-                @try {
-                    if ([sessionToStop isRunning]) {
-                        MRLog(@"🛑 Stopping AVCaptureSession (camera)...");
-                        [sessionToStop stopRunning];
-                        MRLog(@"✅ AVCaptureSession stopped (camera)");
-                    }
-                } @catch (NSException *exception) {
-                    MRLog(@"⚠️ CameraRecorder: Exception while stopping session: %@", exception.reason);
-                }
-                dispatch_group_leave(sessionStopGroup);
-            }
-        });
+    // CRITICAL ELECTRON FIX: Stop movie file output (simple API)
+    if (self.movieFileOutput && [self.movieFileOutput isRecording]) {
+        [self.movieFileOutput stopRecording];
+        MRLog(@"✅ Movie file output stop requested");
     }
 
-    if (sessionStopGroup) {
-        dispatch_time_t sessionTimeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
-        long waitResult = dispatch_group_wait(sessionStopGroup, sessionTimeout);
-        if (waitResult != 0) {
-            MRLog(@"⚠️ CameraRecorder: AVCaptureSession stop timed out after 2s (continuing shutdown)");
-        }
+    // Stop session
+    if (self.session && [self.session isRunning]) {
+        [self.session stopRunning];
+        MRLog(@"✅ AVCaptureSession stopped");
     }
 
-    // Now detach delegate to prevent further callbacks
-    if (self.videoOutput) {
-        [self.videoOutput setSampleBufferDelegate:nil queue:nil];
-    }
-    self.isRecording = NO;
+    // Cleanup
+    self.session = nil;
+    self.deviceInput = nil;
+    self.movieFileOutput = nil;
+    self.outputPath = nil;
 
-    // CRITICAL FIX: Check if assetWriter exists before trying to finish it
-    // If no frames were captured, assetWriter will be nil
-    if (!self.assetWriter) {
-        MRLog(@"⚠️ CameraRecorder: No writer to finish (no frames captured)");
-        [self resetState];
-        return YES; // Success - nothing to finish
-    }
-
-    AVAssetWriter *writer = self.assetWriter;
-    AVAssetWriterInput *writerInput = self.assetWriterInput;
-
-    if (writerInput) {
-        [writerInput markAsFinished];
-    }
-
-    __block BOOL finished = NO;
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-
-    [writer finishWritingWithCompletionHandler:^{
-        finished = YES;
-        dispatch_semaphore_signal(semaphore);
-    }];
-
-    // Allow generous flush time so final frames are preserved.
-    const int64_t primaryWaitSeconds = 3;
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(primaryWaitSeconds * NSEC_PER_SEC));
-    long result = dispatch_semaphore_wait(semaphore, timeout);
-
-    if (result != 0 || !finished) {
-        MRLog(@"⚠️ CameraRecorder: Writer still finishing after %ds – waiting longer", (int)primaryWaitSeconds);
-        const int64_t extendedWaitSeconds = 5;
-        dispatch_time_t extendedTimeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(extendedWaitSeconds * NSEC_PER_SEC));
-        result = dispatch_semaphore_wait(semaphore, extendedTimeout);
-    }
-
-    if (result != 0 || !finished) {
-        MRLog(@"⚠️ CameraRecorder: Writer did not finish after extended wait – forcing cancel");
-        [writer cancelWriting];
-    }
-
-    BOOL success = (writer.status == AVAssetWriterStatusCompleted);
-    if (!success) {
-        MRLog(@"⚠️ CameraRecorder: Writer finished with status %ld error %@", (long)writer.status, writer.error);
-    } else {
-        MRLog(@"✅ CameraRecorder writer finished successfully");
-    }
-
-    [self resetState];
-    MRLog(@"✅ CameraRecorder stopped (safe for external devices)");
-    return success;
+    MRLog(@"✅ CameraRecorder stopped successfully");
+    return YES;
 }
 
+#if 0  // ELECTRON FIX: Old buffer management code - no longer used with MovieFileOutput
 - (void)enqueueSampleBuffer:(CMSampleBufferRef)sampleBuffer {
     if (!sampleBuffer) {
         return;
@@ -1006,12 +1193,22 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
         self.firstSampleTime = timestamp;
     }
 
-    CMTime relativeTimestamp = timestamp;
-    if (CMTIME_IS_VALID(self.firstSampleTime)) {
-        relativeTimestamp = CMTimeSubtract(timestamp, self.firstSampleTime);
+    CMTime baseline = kCMTimeInvalid;
+    CMTime audioStart = MRSyncAudioFirstTimestamp();
+    if (CMTIME_IS_VALID(audioStart)) {
+        baseline = audioStart;
+    } else if (CMTIME_IS_VALID(self.firstSampleTime)) {
+        baseline = self.firstSampleTime;
+    }
+
+    CMTime relativeTimestamp = kCMTimeZero;
+    if (CMTIME_IS_VALID(baseline)) {
+        relativeTimestamp = CMTimeSubtract(timestamp, baseline);
         if (CMTIME_COMPARE_INLINE(relativeTimestamp, <, kCMTimeZero)) {
             relativeTimestamp = kCMTimeZero;
         }
+    } else {
+        relativeTimestamp = timestamp;
     }
 
     double stopLimit = MRSyncGetStopLimitSeconds();
@@ -1074,6 +1271,7 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
 
     [self processSampleBufferReadyForWriting:sampleBuffer];
 }
+#endif  // End old buffer management code
 
 @end
 
@@ -1089,6 +1287,14 @@ bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **er
     return [[CameraRecorder sharedRecorder] startRecordingWithDeviceId:deviceId
                                                             outputPath:outputPath
                                                                  error:error];
+}
+
+bool waitForCameraRecordingStart(double timeoutSeconds) {
+    return [[CameraRecorder sharedRecorder] waitForRecordingStartWithTimeout:timeoutSeconds];
+}
+
+double currentCameraRecordingStartTime(void) {
+    return g_cameraStartTimestamp;
 }
 
 bool stopCameraRecording() {

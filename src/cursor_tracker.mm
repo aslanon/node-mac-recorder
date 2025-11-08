@@ -463,7 +463,15 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
         return @"zoom-in";
     }
 
-    // Resize cursor patterns - more comprehensive
+    // All-scroll pattern (move in all directions)
+    if ([normalized containsString:@"all-scroll"] ||
+        [normalized containsString:@"allscroll"] ||
+        ([normalized containsString:@"move"] && [normalized containsString:@"all"]) ||
+        [normalized containsString:@"omnidirectional"]) {
+        return @"all-scroll";
+    }
+
+    // Resize cursor patterns - more comprehensive with Electron CSS names
     if ([normalized containsString:@"resize"] || [normalized containsString:@"size"]) {
         // Diagonal resize cursors
         BOOL diagonalUp = [normalized containsString:@"diagonalup"] ||
@@ -473,19 +481,21 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
                             [normalized containsString:@"diagonal-down"] ||
                             [normalized containsString:@"nwse"];
 
-        // Horizontal and vertical resize
+        // Horizontal and vertical resize (Electron CSS names)
         BOOL horizontal = [normalized containsString:@"leftright"] ||
                           [normalized containsString:@"left-right"] ||
                           [normalized containsString:@"horizontal"] ||
                           ([normalized containsString:@"left"] && [normalized containsString:@"right"]) ||
                           [normalized containsString:@"col"] ||
-                          [normalized containsString:@"column"];
+                          [normalized containsString:@"column"] ||
+                          [normalized containsString:@"ew"]; // east-west
 
         BOOL vertical = [normalized containsString:@"updown"] ||
                         [normalized containsString:@"up-down"] ||
                         [normalized containsString:@"vertical"] ||
                         ([normalized containsString:@"up"] && [normalized containsString:@"down"]) ||
-                        [normalized containsString:@"row"];
+                        [normalized containsString:@"row"] ||
+                        [normalized containsString:@"ns"]; // north-south
 
         if (diagonalUp) {
             return @"nesw-resize";
@@ -494,27 +504,26 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
             return @"nwse-resize";
         }
         if (vertical) {
-            return @"ns-resize";
+            return @"row-resize"; // Changed from ns-resize to match Electron
         }
         if (horizontal) {
             return @"col-resize";
         }
 
         // Generic resize fallback
-        return @"default"; // or could be a generic resize
+        return @"default";
     }
 
-    // Additional specific patterns
-    if ([normalized containsString:@"wait"] || [normalized containsString:@"busy"]) {
-        return @"wait";
+    // Progress/wait patterns - Electron uses 'progress'
+    if ([normalized containsString:@"wait"] ||
+        [normalized containsString:@"busy"] ||
+        [normalized containsString:@"progress"]) {
+        return @"progress";
     }
 
+    // Help pattern
     if ([normalized containsString:@"help"] || [normalized containsString:@"question"]) {
         return @"help";
-    }
-
-    if ([normalized containsString:@"progress"]) {
-        return @"progress";
     }
 
     return nil;
@@ -558,13 +567,13 @@ static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
         return @"alias";
     }
     if (cursor == [NSCursor contextualMenuCursor]) {
-        return @"context-menu";
+        return @"pointer"; // Electron uses 'pointer' for context menu
     }
 
-    // Resize cursors - improved detection
+    // Resize cursors - improved detection with Electron CSS cursor names
     if ([NSCursor respondsToSelector:@selector(resizeLeftRightCursor)]) {
         if (cursor == [NSCursor resizeLeftRightCursor]) {
-            return @"col-resize";
+            return @"col-resize"; // ew-resize
         }
     }
     if ([NSCursor respondsToSelector:@selector(resizeLeftCursor)]) {
@@ -579,17 +588,17 @@ static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
     }
     if ([NSCursor respondsToSelector:@selector(resizeUpDownCursor)]) {
         if (cursor == [NSCursor resizeUpDownCursor]) {
-            return @"ns-resize";
+            return @"row-resize"; // Changed from ns-resize to match Electron
         }
     }
     if ([NSCursor respondsToSelector:@selector(resizeUpCursor)]) {
         if (cursor == [NSCursor resizeUpCursor]) {
-            return @"ns-resize";
+            return @"row-resize"; // Changed from ns-resize
         }
     }
     if ([NSCursor respondsToSelector:@selector(resizeDownCursor)]) {
         if (cursor == [NSCursor resizeDownCursor]) {
-            return @"ns-resize";
+            return @"row-resize"; // Changed from ns-resize
         }
     }
 
@@ -643,6 +652,14 @@ static NSString* detectSystemCursorType(void) {
         }
 
         if (currentCursor) {
+            NSString *directType = cursorTypeFromNSCursor(currentCursor);
+            NSString *fallbackType = directType;
+
+            if (directType && ![directType isEqualToString:@"default"]) {
+                cursorType = directType;
+                return;
+            }
+
             NSString *className = NSStringFromClass([currentCursor class]);
             NSString *description = [currentCursor description];
             // Use more direct cursor detection approach
@@ -654,6 +671,16 @@ static NSString* detectSystemCursorType(void) {
             CGFloat aspectRatio = imageSize.width / imageSize.height;
             CGFloat relativeHotspotX = hotspot.x / imageSize.width;
             CGFloat relativeHotspotY = hotspot.y / imageSize.height;
+            BOOL fallbackDefaults = (fallbackType && [fallbackType isEqualToString:@"default"]);
+            BOOL cursorNameSuggestsText = NO;
+            if (className && ([className localizedCaseInsensitiveContainsString:@"ibeam"] ||
+                              [className localizedCaseInsensitiveContainsString:@"text"])) {
+                cursorNameSuggestsText = YES;
+            }
+            if (description && ([description localizedCaseInsensitiveContainsString:@"ibeam"] ||
+                                 [description localizedCaseInsensitiveContainsString:@"text"])) {
+                cursorNameSuggestsText = YES;
+            }
 
 
 
@@ -666,7 +693,12 @@ static NSString* detectSystemCursorType(void) {
             if (aspectRatio >= 0.45 && aspectRatio <= 0.60 && // Narrow (0.50 typical)
                 relativeHotspotX >= 0.35 && relativeHotspotX <= 0.55 && // Center X (0.44 typical)
                 relativeHotspotY >= 0.40 && relativeHotspotY <= 0.60) { // Center Y (0.50 typical)
-                cursorType = @"text";
+                BOOL directSaysText = (directType && [directType isEqualToString:@"text"]);
+                if (cursorNameSuggestsText || directSaysText) {
+                    cursorType = @"text";
+                } else {
+                    cursorType = fallbackType ?: @"default";
+                }
             }
             // 2. ARROW CURSOR - medium ratio, top-left hotspot
             else if (aspectRatio >= 0.65 && aspectRatio <= 0.85 && // Medium (0.74 typical)
@@ -680,12 +712,6 @@ static NSString* detectSystemCursorType(void) {
                      relativeHotspotY >= 0.15 && relativeHotspotY <= 0.35) { // Upper area (0.25 typical)
                 cursorType = @"pointer";
             }
-            // 4. GRAB CURSOR - square, center hotspot
-            else if (aspectRatio >= 0.90 && aspectRatio <= 1.10 && // Square
-                     relativeHotspotX >= 0.40 && relativeHotspotX <= 0.60 && // Center X
-                     relativeHotspotY >= 0.40 && relativeHotspotY <= 0.60) { // Center Y
-                cursorType = @"grab";
-            }
             else {
                 // Try to use a different approach - cursor name introspection
                 NSString *derived = cursorTypeFromNSCursor(currentCursor);
@@ -693,7 +719,7 @@ static NSString* detectSystemCursorType(void) {
                     cursorType = derived;
                     // NSLog(@"🎯 DERIVED FROM ANALYSIS: %@", cursorType);
                 } else {
-                    cursorType = @"default";
+                    cursorType = fallbackType ?: @"default";
                     // NSLog(@"🎯 FALLBACK TO DEFAULT (will check AX)");
                 }
             }
@@ -757,10 +783,14 @@ NSString* getCursorType() {
             // ALWAYS use system cursor when available - it reflects visual state
             finalType = systemCursorType;
 
-            // Special case: Only use AX for resize cursors that system can't detect
-            if ([systemCursorType isEqualToString:@"default"] && axCursorType &&
-                [axCursorType containsString:@"resize"]) {
-                finalType = axCursorType;
+            // Special cases: allow AX to override when system reports default but AX has richer info
+            if ([systemCursorType isEqualToString:@"default"] && axCursorType && [axCursorType length] > 0) {
+                BOOL axIsResize = [axCursorType containsString:@"resize"];
+                BOOL axIsText = [axCursorType isEqualToString:@"text"] || [axCursorType containsString:@"text"];
+                BOOL axIsPointer = [axCursorType isEqualToString:@"pointer"];
+                if (axIsResize || axIsText || axIsPointer) {
+                    finalType = axCursorType;
+                }
             }
         }
         // Only if system completely fails, use AX
