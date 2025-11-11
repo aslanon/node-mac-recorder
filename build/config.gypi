@@ -495,8 +495,9 @@
     "nodedir": "/Users/onur/Library/Caches/node-gyp/24.5.0",
     "python": "/usr/local/opt/python@3.13/bin/python3.13",
     "standalone_static_library": 1,
+    "binding_gyp_path": "electron-safe-binding.gyp",
     "global_prefix": "/Users/onur/.nvm/versions/node/v24.5.0",
-    "local_prefix": "/Users/onur/codes/node-mac-recorder",
+    "local_prefix": "/Users/onur/codes/creavit.studio/desktop",
     "globalconfig": "/Users/onur/.nvm/versions/node/v24.5.0/etc/npmrc",
     "userconfig": "/Users/onur/.npmrc",
     "init_module": "/Users/onur/.npm-init.js",
@@ -504,6 +505,7 @@
     "node_gyp": "/Users/onur/.nvm/versions/node/v24.5.0/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js",
     "cache": "/Users/onur/.npm",
     "user_agent": "npm/11.5.1 node/v24.5.0 darwin arm64 workspaces/false",
-    "prefix": "/Users/onur/.nvm/versions/node/v24.5.0"
+    "prefix": "/Users/onur/.nvm/versions/node/v24.5.0",
+    "build_from_source": "true"
   }
 }

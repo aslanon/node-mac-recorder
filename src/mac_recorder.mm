@@ -1247,6 +1247,21 @@ Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
     }
 }
 
+// NAPI Function: Get Video Start Timestamp
+Napi::Value GetVideoStartTimestamp(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (@available(macOS 12.3, *)) {
+        NSTimeInterval timestamp = [ScreenCaptureKitRecorder getVideoStartTimestamp];
+        if (timestamp > 0) {
+            return Napi::Number::New(env, timestamp);
+        }
+    }
+
+    // Fallback: return 0 if not available
+    return Napi::Number::New(env, 0);
+}
+
 // NAPI Function: Get Recording Status
 Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -1615,6 +1630,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
     exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
     exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
+    exports.Set(Napi::String::New(env, "getVideoStartTimestamp"), Napi::Function::New(env, GetVideoStartTimestamp));
     exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));
     
     // Thumbnail functions

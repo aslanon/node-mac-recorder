@@ -221,32 +221,22 @@ static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPo
     NSString *subrole = CopyAttributeString(element, kAXSubroleAttribute);
     NSString *roleDescription = CopyAttributeString(element, kAXRoleDescriptionAttribute);
 
-    if (StringEqualsAny(role, @[@"AXTextField", @"AXTextArea", @"AXSearchField"])) {
-        return @"text";
-    }
-
-    if (StringEqualsAny(subrole, @[@"AXSecureTextField", @"AXTextField"])) {
-        return @"text";
-    }
-
     BOOL isEditable = NO;
-    if (CopyAttributeBoolean(element, CFSTR("AXEditable"), &isEditable) && isEditable) {
-        return @"text";
-    }
+    CopyAttributeBoolean(element, CFSTR("AXEditable"), &isEditable);
 
-    BOOL supportsSelection = NO;
-    if (CopyAttributeBoolean(element, CFSTR("AXSupportsTextSelection"), &supportsSelection) && supportsSelection) {
-        return @"text";
-    }
+    BOOL hasTextRole = StringEqualsAny(role, @[@"AXTextField",
+                                               @"AXTextArea",
+                                               @"AXTextView",
+                                               @"AXTextEditor",
+                                               @"AXSearchField"]);
+    BOOL hasTextSubrole = StringEqualsAny(subrole, @[@"AXSecureTextField",
+                                                     @"AXTextField",
+                                                     @"AXTextArea",
+                                                     @"AXSearchField",
+                                                     @"AXTextEditor"]);
 
-    CFTypeRef valueAttribute = NULL;
-    if (AXUIElementCopyAttributeValue(element, kAXValueAttribute, &valueAttribute) == kAXErrorSuccess && valueAttribute) {
-        CFTypeID typeId = CFGetTypeID(valueAttribute);
-        if (typeId == CFAttributedStringGetTypeID() || typeId == CFStringGetTypeID()) {
-            CFRelease(valueAttribute);
-            return @"text";
-        }
-        CFRelease(valueAttribute);
+    if (hasTextRole || hasTextSubrole || isEditable) {
+        return @"text";
     }
 
     // Leave progress/help to system cursor; don't force via AX
@@ -282,11 +272,6 @@ static NSString* CursorTypeFromAccessibilityElement(AXUIElementRef element, CGPo
             [lower containsString:@"link"] ||
             [lower containsString:@"tab"]) {
             return @"pointer";
-        }
-        if ([lower containsString:@"text"] ||
-            [lower containsString:@"editor"] ||
-            [lower containsString:@"document"]) {
-            return @"text";
         }
     }
 

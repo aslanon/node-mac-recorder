@@ -12,6 +12,7 @@ API_AVAILABLE(macos(12.3))
 + (void)stopRecording;
 + (BOOL)isRecording;
 + (BOOL)isFullyInitialized;  // Check if first frames received
++ (NSTimeInterval)getVideoStartTimestamp;  // Get video start timestamp in milliseconds
 + (BOOL)setupVideoWriter;
 + (void)finalizeRecording;
 + (void)finalizeVideoWriter;

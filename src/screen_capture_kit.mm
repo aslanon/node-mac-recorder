@@ -905,6 +905,25 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     return g_firstFrameReceived;
 }
 
++ (NSTimeInterval)getVideoStartTimestamp {
+    if (!CMTIME_IS_VALID(g_videoStartTime)) {
+        return 0;
+    }
+    // Return as milliseconds since epoch - approximate using current time
+    // and relative offset from video start
+    NSDate *now = [NSDate date];
+    NSTimeInterval currentTimestamp = [now timeIntervalSince1970] * 1000;
+
+    // Calculate time elapsed since video start
+    CMTime currentCMTime = CMClockGetTime(CMClockGetHostTimeClock());
+    CMTime elapsedCMTime = CMTimeSubtract(currentCMTime, g_videoStartTime);
+    NSTimeInterval elapsedSeconds = CMTimeGetSeconds(elapsedCMTime);
+
+    // Video start timestamp = current timestamp - elapsed time
+    NSTimeInterval videoStartTimestamp = currentTimestamp - (elapsedSeconds * 1000);
+    return videoStartTimestamp;
+}
+
 + (BOOL)isCleaningUp {
     return g_isCleaningUp;
 }

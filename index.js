@@ -598,9 +598,18 @@ class MacRecorder extends EventEmitter {
 						}
 					} catch (_) {}
 					this.sessionTimestamp = sessionTimestamp;
+
+					// CURSOR SYNC FIX: Wait additional 300ms for first frames to start
+					// This ensures cursor tracking aligns with actual video timeline
+					// ScreenCaptureKit needs ~200-350ms to actually start capturing frames
+					// We wait 300ms to ensure cursor starts AFTER first video frame
+					console.log('⏳ CURSOR SYNC: Waiting 300ms for first video frames...');
+					await new Promise(r => setTimeout(r, 300));
+
 					const syncTimestamp = Date.now();
 					this.syncTimestamp = syncTimestamp;
 					this.recordingStartTime = syncTimestamp;
+					console.log(`🎯 CURSOR SYNC: Cursor tracking will use timestamp: ${syncTimestamp}`);
 
 					const standardCursorOptions = {
 						videoRelative: true,
@@ -1230,6 +1239,8 @@ class MacRecorder extends EventEmitter {
 				this.cursorCaptureStartTime = syncStartTime;
 				this.cursorCaptureFirstWrite = true;
 				this.lastCapturedData = null;
+				// Store session timestamp for sync metadata
+				this.cursorCaptureSessionTimestamp = this.sessionTimestamp;
 
 				// JavaScript interval ile polling yap (daha sık - mouse event'leri yakalamak için)
 				this.cursorCaptureInterval = setInterval(() => {
@@ -1286,6 +1297,15 @@ class MacRecorder extends EventEmitter {
 								height: this.cursorDisplayInfo.displayHeight
 							} : null
 						};
+
+						// Add sync metadata to first event only
+						if (this.cursorCaptureFirstWrite && this.cursorCaptureSessionTimestamp) {
+							cursorData._syncMetadata = {
+								videoStartTime: this.cursorCaptureSessionTimestamp,
+								cursorStartTime: this.cursorCaptureStartTime,
+								offsetMs: this.cursorCaptureStartTime - this.cursorCaptureSessionTimestamp
+							};
+						}
 
 						// Sadece eventType değiştiğinde veya pozisyon değiştiğinde kaydet
 						if (this.shouldCaptureEvent(cursorData)) {
