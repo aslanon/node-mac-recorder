@@ -18,6 +18,7 @@ A powerful native macOS screen recording Node.js package with advanced window se
 - 🔊 **Audio Capture** - Record microphone/system audio into synchronized companion files
 - 🚫 **Automatic Overlay Exclusion** - Overlay windows automatically excluded from recordings
 - ⚡ **Electron Compatible** - Enhanced crash protection for Electron applications
+- 🎬 **Multi-Window Recording** - ✨ NEW! Record multiple windows/displays simultaneously
 
 🎵 **Granular Audio Controls**
 
@@ -92,6 +93,56 @@ await recorder.startRecording("./output.mov");
 await new Promise((resolve) => setTimeout(resolve, 5000)); // Record for 5 seconds
 await recorder.stopRecording();
 ```
+
+## Multi-Window Recording ✨ NEW!
+
+Record multiple windows or displays simultaneously using child processes:
+
+```javascript
+const MacRecorder = require("node-mac-recorder/index-multiprocess");
+
+// Create separate recorders for each window
+const recorder1 = new MacRecorder();
+const recorder2 = new MacRecorder();
+
+// Get available windows
+const windows = await recorder1.getWindows();
+
+// Record first window (e.g., Finder)
+await recorder1.startRecording("window1.mov", {
+  windowId: windows[0].id,
+  frameRate: 30
+});
+
+// Wait for ScreenCaptureKit initialization
+await new Promise(r => setTimeout(r, 1000));
+
+// Record second window (e.g., Chrome)
+await recorder2.startRecording("window2.mov", {
+  windowId: windows[1].id,
+  frameRate: 30
+});
+
+// Both recordings are now running in parallel! 🎉
+
+// Stop both after 10 seconds
+await new Promise(r => setTimeout(r, 10000));
+await recorder1.stopRecording();
+await recorder2.stopRecording();
+
+// Cleanup
+recorder1.destroy();
+recorder2.destroy();
+```
+
+**Key Benefits:**
+- ✅ No native code changes required
+- ✅ Each recorder runs in its own process
+- ✅ True parallel recording
+- ✅ Separate output files
+- ✅ Independent control
+
+**See:** `MULTI_RECORDING.md` for detailed documentation and examples.
 
 ## API Reference
 

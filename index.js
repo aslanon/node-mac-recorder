@@ -48,6 +48,9 @@ class MacRecorder extends EventEmitter {
 		this.recordingTimer = null;
 		this.recordingStartTime = null;
 
+		// MULTI-SESSION: Unique session ID for this recorder instance
+		this.nativeSessionId = null;  // Will be generated when recording starts
+
 		// Cursor capture variables
 		this.cursorCaptureInterval = null;
 		this.cursorCaptureFile = null;
@@ -177,6 +180,9 @@ class MacRecorder extends EventEmitter {
 	 */
 	setOptions(options = {}) {
 		// Merge options instead of replacing to preserve previously set values
+		if (options.sessionTimestamp !== undefined) {
+			this.options.sessionTimestamp = options.sessionTimestamp;
+		}
 		if (options.includeMicrophone !== undefined) {
 			this.options.includeMicrophone = options.includeMicrophone === true;
 		}
@@ -474,9 +480,18 @@ class MacRecorder extends EventEmitter {
 
 		return new Promise(async (resolve, reject) => {
 			try {
-				// SYNC FIX: Create unified session timestamp FIRST for all components
-				const sessionTimestamp = Date.now();
+				// MULTI-SESSION: Generate unique session ID for this recording
+				// Use provided sessionTimestamp from options, or generate new one
+				const sessionTimestamp = this.options.sessionTimestamp || Date.now();
 				this.sessionTimestamp = sessionTimestamp;
+				this.nativeSessionId = `rec_${sessionTimestamp}_${Math.random().toString(36).substr(2, 9)}`;
+
+				console.log(`🎬 Starting recording with session ID: ${this.nativeSessionId}`);
+				if (this.options.sessionTimestamp) {
+					console.log(`   ⏰ Using provided sessionTimestamp: ${this.options.sessionTimestamp}`);
+				} else {
+					console.log(`   ⏰ Generated new sessionTimestamp: ${sessionTimestamp}`);
+				}
 
 				// CRITICAL FIX: Ensure main video file also uses sessionTimestamp
 				// This guarantees ALL files have the exact same timestamp
@@ -531,6 +546,8 @@ class MacRecorder extends EventEmitter {
 					captureCamera: this.options.captureCamera === true,
 					cameraDeviceId: this.options.cameraDeviceId || null,
 					sessionTimestamp,
+					// MULTI-SESSION: Pass unique session ID to native code
+					nativeSessionId: this.nativeSessionId,
 					frameRate: this.options.frameRate || 60,
 					quality: this.options.quality || "high",
 					// Hint native side to use ScreenCaptureKit on macOS 15+

@@ -6,13 +6,24 @@ API_AVAILABLE(macos(12.3))
 @interface ScreenCaptureKitRecorder : NSObject
 
 + (BOOL)isScreenCaptureKitAvailable;
-+ (BOOL)startRecordingWithConfiguration:(NSDictionary *)config
-                               delegate:(id)delegate
-                                  error:(NSError **)error;
-+ (void)stopRecording;
-+ (BOOL)isRecording;
-+ (BOOL)isFullyInitialized;  // Check if first frames received
-+ (NSTimeInterval)getVideoStartTimestamp;  // Get video start timestamp in milliseconds
+
+// MULTI-SESSION API: New session-based recording
++ (NSString *)startRecordingWithConfiguration:(NSDictionary *)config
+                                     delegate:(id)delegate
+                                        error:(NSError **)error;  // Returns sessionId
++ (BOOL)stopRecording:(NSString *)sessionId;  // Stop specific session
++ (BOOL)isRecording:(NSString *)sessionId;    // Check specific session
++ (BOOL)isFullyInitialized:(NSString *)sessionId;  // Check if session's first frames received
++ (NSTimeInterval)getVideoStartTimestamp:(NSString *)sessionId;  // Get session's video start timestamp
++ (NSArray<NSString *> *)getActiveSessions;  // Get all active session IDs
++ (NSInteger)getActiveSessionCount;  // Get number of active sessions
+
+// LEGACY API: For backward compatibility (uses implicit default session)
++ (void)stopRecording;  // Stops all sessions
++ (BOOL)isRecording;    // Returns YES if ANY session is recording
++ (BOOL)isFullyInitialized;  // Check if default session initialized
++ (NSTimeInterval)getVideoStartTimestamp;  // Get default session timestamp
+
 + (BOOL)setupVideoWriter;
 + (void)finalizeRecording;
 + (void)finalizeVideoWriter;

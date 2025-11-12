@@ -6,29 +6,147 @@
 #import <CoreMedia/CoreMedia.h>
 #import <AudioToolbox/AudioToolbox.h>
 
-// Pure ScreenCaptureKit implementation - NO AVFoundation
+// MULTI-SESSION RECORDING: Session-based state management
+@interface RecordingSession : NSObject
+@property (nonatomic, strong) NSString *sessionId;
+@property (nonatomic, strong) SCStream *stream API_AVAILABLE(macos(12.3));
+@property (nonatomic, strong) id<SCStreamDelegate> streamDelegate API_AVAILABLE(macos(12.3));
+@property (nonatomic, assign) BOOL isRecording;
+@property (nonatomic, assign) BOOL isCleaningUp;
+@property (nonatomic, assign) BOOL isScheduling;
+@property (nonatomic, strong) NSString *outputPath;
+
+// Frame tracking
+@property (nonatomic, assign) BOOL firstFrameReceived;
+@property (nonatomic, assign) NSInteger frameCountSinceStart;
+
+// Queues and outputs
+@property (nonatomic, strong) dispatch_queue_t videoQueue;
+@property (nonatomic, strong) dispatch_queue_t audioQueue;
+@property (nonatomic, strong) id videoStreamOutput;
+@property (nonatomic, strong) id audioStreamOutput;
+
+// Video writer state
+@property (nonatomic, strong) AVAssetWriter *videoWriter;
+@property (nonatomic, strong) AVAssetWriterInput *videoInput;
+@property (nonatomic, assign) CFTypeRef pixelBufferAdaptorRef;
+@property (nonatomic, assign) CMTime videoStartTime;
+@property (nonatomic, assign) BOOL videoWriterStarted;
+
+// Audio state
+@property (nonatomic, assign) BOOL shouldCaptureAudio;
+@property (nonatomic, strong) NSString *audioOutputPath;
+@property (nonatomic, strong) AVAssetWriter *audioWriter;
+@property (nonatomic, strong) AVAssetWriterInput *systemAudioInput;
+@property (nonatomic, strong) AVAssetWriterInput *microphoneAudioInput;
+@property (nonatomic, assign) CMTime audioStartTime;
+@property (nonatomic, assign) BOOL audioWriterStarted;
+@property (nonatomic, assign) BOOL captureMicrophoneEnabled;
+@property (nonatomic, assign) BOOL captureSystemAudioEnabled;
+@property (nonatomic, assign) BOOL mixAudioEnabled;
+@property (nonatomic, assign) float mixMicGain;
+@property (nonatomic, assign) float mixSystemGain;
+
+// Configuration
+@property (nonatomic, assign) NSInteger configuredSampleRate;
+@property (nonatomic, assign) NSInteger configuredChannelCount;
+@property (nonatomic, assign) NSInteger targetFPS;
+
+// Frame rate debugging
+@property (nonatomic, assign) NSInteger frameCount;
+@property (nonatomic, assign) CFAbsoluteTime firstFrameTime;
+
+- (instancetype)initWithSessionId:(NSString *)sessionId;
+- (void)cleanup;
+@end
+
+@implementation RecordingSession
+
+- (instancetype)initWithSessionId:(NSString *)sessionId {
+    self = [super init];
+    if (self) {
+        _sessionId = sessionId;
+        _isRecording = NO;
+        _isCleaningUp = NO;
+        _isScheduling = NO;
+        _firstFrameReceived = NO;
+        _frameCountSinceStart = 0;
+        _videoStartTime = kCMTimeInvalid;
+        _videoWriterStarted = NO;
+        _audioStartTime = kCMTimeInvalid;
+        _audioWriterStarted = NO;
+        _shouldCaptureAudio = NO;
+        _captureMicrophoneEnabled = NO;
+        _captureSystemAudioEnabled = NO;
+        _mixAudioEnabled = YES;
+        _mixMicGain = 0.8f;
+        _mixSystemGain = 0.4f;
+        _configuredSampleRate = 48000;
+        _configuredChannelCount = 2;
+        _targetFPS = 60;
+        _frameCount = 0;
+        _firstFrameTime = 0;
+        _pixelBufferAdaptorRef = NULL;
+    }
+    return self;
+}
+
+- (void)cleanup {
+    MRLog(@"🧹 Cleaning up session: %@", _sessionId);
+
+    if (_pixelBufferAdaptorRef) {
+        CFRelease(_pixelBufferAdaptorRef);
+        _pixelBufferAdaptorRef = NULL;
+    }
+
+    _stream = nil;
+    _streamDelegate = nil;
+    _videoWriter = nil;
+    _videoInput = nil;
+    _audioWriter = nil;
+    _systemAudioInput = nil;
+    _microphoneAudioInput = nil;
+    _videoStreamOutput = nil;
+    _audioStreamOutput = nil;
+    _videoQueue = nil;
+    _audioQueue = nil;
+    _outputPath = nil;
+    _audioOutputPath = nil;
+    _isRecording = NO;
+    _isCleaningUp = NO;
+    _isScheduling = NO;
+    _firstFrameReceived = NO;
+    _frameCountSinceStart = 0;
+}
+
+- (void)dealloc {
+    [self cleanup];
+}
+
+@end
+
+// Session registry - thread-safe access
+static NSMutableDictionary<NSString *, RecordingSession *> *g_sessions = nil;
+static dispatch_queue_t g_sessionsQueue = nil;
+
+// Legacy global state for backward compatibility (points to first/default session)
 static SCStream * API_AVAILABLE(macos(12.3)) g_stream = nil;
 static id<SCStreamDelegate> API_AVAILABLE(macos(12.3)) g_streamDelegate = nil;
 static BOOL g_isRecording = NO;
-static BOOL g_isCleaningUp = NO;  // Prevent recursive cleanup
-static BOOL g_isScheduling = NO;  // Prevent overlapping start sequences
+static BOOL g_isCleaningUp = NO;
+static BOOL g_isScheduling = NO;
 static NSString *g_outputPath = nil;
-
-// ELECTRON FIX: Track when ScreenCaptureKit has actually started capturing frames
 static BOOL g_firstFrameReceived = NO;
 static NSInteger g_frameCountSinceStart = 0;
-
 static dispatch_queue_t g_videoQueue = nil;
 static dispatch_queue_t g_audioQueue = nil;
 static id g_videoStreamOutput = nil;
 static id g_audioStreamOutput = nil;
-
 static AVAssetWriter *g_videoWriter = nil;
 static AVAssetWriterInput *g_videoInput = nil;
 static CFTypeRef g_pixelBufferAdaptorRef = NULL;
 static CMTime g_videoStartTime = kCMTimeInvalid;
 static BOOL g_videoWriterStarted = NO;
-
 static BOOL g_shouldCaptureAudio = NO;
 static NSString *g_audioOutputPath = nil;
 static AVAssetWriter *g_audioWriter = nil;
@@ -41,12 +159,9 @@ static BOOL g_captureSystemAudioEnabled = NO;
 static BOOL g_mixAudioEnabled = YES;
 static float g_mixMicGain = 0.8f;
 static float g_mixSystemGain = 0.4f;
-
 static NSInteger g_configuredSampleRate = 48000;
 static NSInteger g_configuredChannelCount = 2;
 static NSInteger g_targetFPS = 60;
-
-// Frame rate debugging
 static NSInteger g_frameCount = 0;
 static CFAbsoluteTime g_firstFrameTime = 0;
 
@@ -56,6 +171,79 @@ static void SCKFailScheduling(void);
 static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *content) API_AVAILABLE(macos(12.3));
 
 static void CleanupWriters(void);
+
+// SESSION MANAGEMENT FUNCTIONS
+static void InitializeSessionRegistry(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        g_sessions = [[NSMutableDictionary alloc] init];
+        g_sessionsQueue = dispatch_queue_create("com.macrecorder.sessions", DISPATCH_QUEUE_CONCURRENT);
+        MRLog(@"📦 Session registry initialized");
+    });
+}
+
+static NSString *GenerateSessionId(void) {
+    return [NSString stringWithFormat:@"rec_%lld", (long long)([[NSDate date] timeIntervalSince1970] * 1000)];
+}
+
+static RecordingSession * _Nullable GetSession(NSString *sessionId) {
+    if (!sessionId) return nil;
+    InitializeSessionRegistry();
+
+    __block RecordingSession *session = nil;
+    dispatch_sync(g_sessionsQueue, ^{
+        session = g_sessions[sessionId];
+    });
+    return session;
+}
+
+static NSString *CreateSession(void) {
+    InitializeSessionRegistry();
+
+    NSString *sessionId = GenerateSessionId();
+    RecordingSession *session = [[RecordingSession alloc] initWithSessionId:sessionId];
+
+    dispatch_barrier_async(g_sessionsQueue, ^{
+        g_sessions[sessionId] = session;
+        MRLog(@"➕ Session created: %@", sessionId);
+    });
+
+    return sessionId;
+}
+
+static void RemoveSession(NSString *sessionId) {
+    if (!sessionId) return;
+    InitializeSessionRegistry();
+
+    dispatch_barrier_async(g_sessionsQueue, ^{
+        RecordingSession *session = g_sessions[sessionId];
+        if (session) {
+            [session cleanup];
+            [g_sessions removeObjectForKey:sessionId];
+            MRLog(@"➖ Session removed: %@", sessionId);
+        }
+    });
+}
+
+static NSArray<NSString *> *GetAllSessionIds(void) {
+    InitializeSessionRegistry();
+
+    __block NSArray<NSString *> *sessionIds = nil;
+    dispatch_sync(g_sessionsQueue, ^{
+        sessionIds = [g_sessions allKeys];
+    });
+    return sessionIds ?: @[];
+}
+
+static NSInteger GetActiveSessionCount(void) {
+    InitializeSessionRegistry();
+
+    __block NSInteger count = 0;
+    dispatch_sync(g_sessionsQueue, ^{
+        count = g_sessions.count;
+    });
+    return count;
+}
 
 static AVAssetWriterInputPixelBufferAdaptor * _Nullable CurrentPixelBufferAdaptor(void) {
     if (!g_pixelBufferAdaptorRef) {
