@@ -1169,6 +1169,27 @@ class MacRecorder extends EventEmitter {
 		// SYNC FIX: Use pre-defined timestamp if provided for synchronization
 		const syncStartTime = options.startTimestamp || Date.now();
 
+		// Fetch window bounds for multi-window recording
+		if (options.multiWindowBounds && options.multiWindowBounds.length > 0) {
+			try {
+				const allWindows = await this.getWindows();
+				// Match window IDs and populate bounds
+				for (const windowInfo of options.multiWindowBounds) {
+					const windowData = allWindows.find(w => w.id === windowInfo.windowId);
+					if (windowData) {
+						windowInfo.bounds = {
+							x: windowData.x || 0,
+							y: windowData.y || 0,
+							width: windowData.width || 0,
+							height: windowData.height || 0
+						};
+					}
+				}
+			} catch (error) {
+				console.warn('Failed to fetch window bounds for multi-window cursor tracking:', error.message);
+			}
+		}
+
 		// Use video-relative coordinate system for all recording types
 		if (options.videoRelative && options.displayInfo) {
 			// Calculate video offset based on recording type
@@ -1208,7 +1229,9 @@ class MacRecorder extends EventEmitter {
 				recordingType: options.recordingType || 'display',
 				// Store additional context for debugging
 				captureArea: options.captureArea,
-				windowId: options.windowId
+				windowId: options.windowId,
+				// Multi-window bounds for location detection
+				multiWindowBounds: options.multiWindowBounds || null
 			};
 		} else if (this.recordingDisplayInfo) {
 			// Fallback: Use recording display info if available
@@ -1223,7 +1246,8 @@ class MacRecorder extends EventEmitter {
 				videoWidth: this.recordingDisplayInfo.width || this.recordingDisplayInfo.logicalWidth,
 				videoHeight: this.recordingDisplayInfo.height || this.recordingDisplayInfo.logicalHeight,
 				videoRelative: true,
-				recordingType: options.recordingType || 'display'
+				recordingType: options.recordingType || 'display',
+				multiWindowBounds: options.multiWindowBounds || null
 			};
 		} else {
 			// Final fallback: Main display global coordinates
@@ -1237,6 +1261,7 @@ class MacRecorder extends EventEmitter {
 						y: mainDisplay.y,
 						width: parseInt(mainDisplay.resolution.split("x")[0]),
 						height: parseInt(mainDisplay.resolution.split("x")[1]),
+						multiWindowBounds: options.multiWindowBounds || null
 					};
 				}
 			} catch (error) {
@@ -1307,13 +1332,43 @@ class MacRecorder extends EventEmitter {
 								height: this.cursorDisplayInfo.videoHeight,
 								offsetX: this.cursorDisplayInfo.videoOffsetX,
 								offsetY: this.cursorDisplayInfo.videoOffsetY
-							} : null,
+							} : {},
 							displayInfo: this.cursorDisplayInfo ? {
 								displayId: this.cursorDisplayInfo.displayId,
 								width: this.cursorDisplayInfo.displayWidth,
 								height: this.cursorDisplayInfo.displayHeight
-							} : null
+							} : {}
 						};
+
+						// Multi-window location detection
+						if (this.cursorDisplayInfo?.multiWindowBounds && this.cursorDisplayInfo.multiWindowBounds.length > 0) {
+							const location = { hover: null, click: null };
+
+							// Detect which window the cursor is over
+							for (const windowInfo of this.cursorDisplayInfo.multiWindowBounds) {
+								if (windowInfo.bounds) {
+									const { x: wx, y: wy, width: ww, height: wh } = windowInfo.bounds;
+									// Check if cursor is inside window bounds (using global coordinates)
+									if (position.x >= wx && position.x <= wx + ww &&
+										position.y >= wy && position.y <= wy + wh) {
+										location.hover = windowInfo.windowId;
+										// If this is a click event, mark click location
+										// Native eventType values: 'mousedown', 'mouseup', 'rightmousedown', 'rightmouseup'
+										const eventType = position.eventType || '';
+										if (eventType === 'mousedown' ||
+											eventType === 'mouseup' ||
+											eventType === 'rightmousedown' ||
+											eventType === 'rightmouseup') {
+											location.click = windowInfo.windowId;
+										}
+										break; // Found the window, stop searching
+									}
+								}
+							}
+
+							// Add location info to cursor data
+							cursorData.location = location;
+						}
 
 						// Add sync metadata to first event only
 						if (this.cursorCaptureFirstWrite && this.cursorCaptureSessionTimestamp) {

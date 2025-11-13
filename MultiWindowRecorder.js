@@ -195,10 +195,39 @@ class MultiWindowRecorder extends EventEmitter {
                         this.cursorRecorder = new MacRecorderSync();
                     }
 
-                    // Track cursor globally (not window-relative for multi-window)
-                    await this.cursorRecorder.startCursorCapture(cursorPath, {
-                        windowRelative: false // Global coordinates for multi-window
-                    });
+                    // Get main display info for global cursor tracking
+                    const displays = await this.cursorRecorder.getDisplays();
+                    const mainDisplay = displays.find(d => d.isPrimary) || displays[0];
+
+                    // Collect all window bounds for cursor location detection
+                    const windowBounds = this.recorders.map(rec => ({
+                        windowId: rec.windowId,
+                        appName: rec.windowInfo.appName,
+                        title: rec.windowInfo.title,
+                        // Window bounds will be retrieved from native API
+                        bounds: null // Will be filled by cursor tracker
+                    }));
+
+                    // Track cursor with global coordinates (for multi-window setup)
+                    // Use main display as reference for coordinate system
+                    const cursorOptions = {
+                        videoRelative: false, // Global screen coordinates (not video-relative)
+                        displayInfo: mainDisplay ? {
+                            displayId: mainDisplay.id,
+                            x: mainDisplay.x || 0,
+                            y: mainDisplay.y || 0,
+                            width: parseInt(mainDisplay.resolution.split('x')[0]),
+                            height: parseInt(mainDisplay.resolution.split('x')[1]),
+                            logicalWidth: parseInt(mainDisplay.resolution.split('x')[0]),
+                            logicalHeight: parseInt(mainDisplay.resolution.split('x')[1])
+                        } : null,
+                        recordingType: 'multi-window', // Multi-window recording type
+                        startTimestamp: startTimestamp, // Use same timestamp as video
+                        // Pass window information for location detection
+                        multiWindowBounds: windowBounds
+                    };
+
+                    await this.cursorRecorder.startCursorCapture(cursorPath, cursorOptions);
 
                     // Store cursor file path for all windows
                     this.recorders.forEach(rec => {
@@ -206,7 +235,7 @@ class MultiWindowRecorder extends EventEmitter {
                     });
                     this.cursorFiles.push(cursorPath);
 
-                    console.log(`   🖱️  Cursor tracking started (global)`);
+                    console.log(`   🖱️  Cursor tracking started (multi-window mode)`);
                     console.log(`   📄 Cursor file: ${path.basename(cursorPath)}`);
                 }
 
@@ -419,8 +448,19 @@ class MultiWindowRecorder extends EventEmitter {
 
     /**
      * Get metadata for CRVT file creation
+     * @param {Object} options - Options for metadata generation
+     * @param {string} options.clipId - Clip ID for media paths (e.g., 'clip_1762961230017')
      */
-    getMetadataForCRVT() {
+    getMetadataForCRVT(options = {}) {
+        const { clipId } = options;
+
+        // Helper function to convert full path to media path
+        const toMediaPath = (fullPath) => {
+            if (!fullPath || !clipId) return fullPath;
+            const filename = path.basename(fullPath);
+            return `media/${clipId}/${filename}`;
+        };
+
         return {
             version: '2.0',
             timestamp: this.metadata.startTime,
@@ -430,15 +470,19 @@ class MultiWindowRecorder extends EventEmitter {
                 windowCount: this.recorders.length,
                 windows: this.recorders.map((recInfo, i) => ({
                     index: i,
-                    windowId: recInfo.windowId,
-                    appName: recInfo.windowInfo.appName,
-                    title: recInfo.windowInfo.title,
-                    outputPath: recInfo.outputPath, // Use outputPath for consistency with saveProjectToCrvt
-                    cursorFilePath: recInfo.cursorFilePath,
+                    windowInfo: {
+                        id: recInfo.windowId,
+                        appName: recInfo.windowInfo.appName,
+                        title: recInfo.windowInfo.title,
+                        width: recInfo.windowInfo.width,
+                        height: recInfo.windowInfo.height
+                    },
+                    outputPath: toMediaPath(recInfo.outputPath), // media/clip_xxx/filename.mov
+                    cursorFilePath: toMediaPath(recInfo.cursorFilePath), // media/clip_xxx/filename.json
                     syncTimestamp: recInfo.syncTimestamp,
-                    syncOffset: recInfo.syncTimestamp - this.metadata.startTime,
-                    layoutRow: i  // Each window on separate row
-                }))
+                    syncOffset: recInfo.syncTimestamp - this.metadata.startTime
+                })),
+                syncTimestamps: this.metadata.syncTimestamps
             },
             // Recording options
             options: {
