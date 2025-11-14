@@ -1425,13 +1425,20 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         }
 
         if (captureRect && captureRect[@"x"] && captureRect[@"y"] && captureRect[@"width"] && captureRect[@"height"] && targetDisplay) {
-            CGFloat globalX = [captureRect[@"x"] doubleValue];
-            CGFloat globalY = [captureRect[@"y"] doubleValue];
+            // CRITICAL FIX: captureRect comes from index.js as ALREADY display-relative coordinates
+            // (see index.js:371-376 where global coords are converted to display-relative)
+            // So we should NOT subtract display origin again - just use them directly!
+            CGFloat displayRelativeX = [captureRect[@"x"] doubleValue];
+            CGFloat displayRelativeY = [captureRect[@"y"] doubleValue];
             CGFloat cropWidth = [captureRect[@"width"] doubleValue];
             CGFloat cropHeight = [captureRect[@"height"] doubleValue];
             CGRect displayBounds = targetDisplay.frame;
-            CGFloat displayRelativeX = globalX - displayBounds.origin.x;
-            CGFloat displayRelativeY = globalY - displayBounds.origin.y;
+
+            MRLog(@"🔍 CROP DEBUG: Input coords=(%.0f,%.0f) size=(%.0fx%.0f)",
+                  displayRelativeX, displayRelativeY, cropWidth, cropHeight);
+            MRLog(@"🔍 CROP DEBUG: Display bounds origin=(%.0f,%.0f) size=(%.0fx%.0f)",
+                  displayBounds.origin.x, displayBounds.origin.y,
+                  displayBounds.size.width, displayBounds.size.height);
 
             if (displayRelativeX >= 0 && displayRelativeY >= 0 &&
                 displayRelativeX + cropWidth <= displayBounds.size.width &&
@@ -1442,7 +1449,7 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                       displayRelativeX, displayRelativeY, cropWidth, cropHeight);
             } else {
                 NSLog(@"❌ Crop coordinates out of display bounds - skipping crop");
-                MRLog(@"   Relative: (%.0f,%.0f) size:(%.0fx%.0f) vs display:(%.0fx%.0f)",
+                MRLog(@"   Coords: (%.0f,%.0f) size:(%.0fx%.0f) vs display:(%.0fx%.0f)",
                       displayRelativeX, displayRelativeY, cropWidth, cropHeight,
                       displayBounds.size.width, displayBounds.size.height);
             }
