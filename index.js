@@ -1340,9 +1340,10 @@ class MacRecorder extends EventEmitter {
 							} : {}
 						};
 
-						// Multi-window location detection
+						// Multi-window location detection with window-relative coordinates
 						if (this.cursorDisplayInfo?.multiWindowBounds && this.cursorDisplayInfo.multiWindowBounds.length > 0) {
 							const location = { hover: null, click: null };
+							let windowRelativeCoords = null;
 
 							// Detect which window the cursor is over
 							for (const windowInfo of this.cursorDisplayInfo.multiWindowBounds) {
@@ -1352,6 +1353,20 @@ class MacRecorder extends EventEmitter {
 									if (position.x >= wx && position.x <= wx + ww &&
 										position.y >= wy && position.y <= wy + wh) {
 										location.hover = windowInfo.windowId;
+
+										// Calculate window-relative coordinates
+										// These coords are relative to the window's top-left corner (0,0)
+										// This allows the desktop app to position cursor correctly
+										// regardless of where the window is placed on canvas
+										windowRelativeCoords = {
+											windowId: windowInfo.windowId,
+											x: position.x - wx,
+											y: position.y - wy,
+											// Also include window dimensions for reference
+											windowWidth: ww,
+											windowHeight: wh
+										};
+
 										// If this is a click event, mark click location
 										// Native eventType values: 'mousedown', 'mouseup', 'rightmousedown', 'rightmouseup'
 										const eventType = position.eventType || '';
@@ -1368,6 +1383,11 @@ class MacRecorder extends EventEmitter {
 
 							// Add location info to cursor data
 							cursorData.location = location;
+
+							// Add window-relative coordinates if cursor is over a window
+							if (windowRelativeCoords) {
+								cursorData.windowRelative = windowRelativeCoords;
+							}
 						}
 
 						// Add sync metadata to first event only
