@@ -566,6 +566,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 sckConfig[@"includeMicrophone"] = @((screenCaptureSupportsMic && captureMicrophone) ? YES : NO);
                 sckConfig[@"audioDeviceId"] = audioDeviceId;
                 sckConfig[@"outputPath"] = [NSString stringWithUTF8String:outputPath.c_str()];
+                // Let ScreenCaptureKit know camera is active so it can adjust FPS/resource usage
+                sckConfig[@"captureCamera"] = @(captureCamera);
                 if (audioOutputPath) {
                     sckConfig[@"audioOutputPath"] = audioOutputPath;
                 }

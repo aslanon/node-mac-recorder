@@ -198,6 +198,7 @@ static void MRTrimMovieFileIfNeeded(NSString *path, double stopLimitSeconds, dou
 @property (nonatomic, strong) NSString *outputPath;
 @property (atomic, assign) BOOL isRecording;
 @property (nonatomic, strong) dispatch_semaphore_t recordingStartedSemaphore;
+@property (nonatomic, strong) dispatch_semaphore_t recordingStoppedSemaphore;
 @property (atomic, assign) BOOL recordingStartCompleted;
 @property (atomic, assign) BOOL recordingStartSucceeded;
 
@@ -423,6 +424,8 @@ static void MRTrimMovieFileIfNeeded(NSString *path, double stopLimitSeconds, dou
     self.deviceInput = nil;
     self.movieFileOutput = nil;
     self.outputPath = nil;
+    self.recordingStartedSemaphore = nil;
+    self.recordingStoppedSemaphore = nil;
 }
 
 - (AVCaptureDevice *)deviceForId:(NSString *)deviceId {
@@ -768,6 +771,7 @@ static void MRTrimMovieFileIfNeeded(NSString *path, double stopLimitSeconds, dou
     self.outputPath = outputPath;
     self.isRecording = YES;  // Mark as recording early
     [self prepareRecordingStartSignal];
+    self.recordingStoppedSemaphore = nil;
 
     // Schedule all blocking operations on background thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -987,17 +991,16 @@ didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
         }
     }
 
-    double stopLimit = MRActiveStopLimitSeconds();
-    double screenStart = MRScreenRecordingStartTimestampSeconds();
-    double cameraStart = currentCameraRecordingStartTime();
-    double headTrim = 0.0;
-    if (screenStart > 0 && cameraStart > 0 && cameraStart < screenStart) {
-        headTrim = screenStart - cameraStart;
-    }
-    if (stopLimit > 0 || headTrim > 0) {
-        MRTrimMovieFileIfNeeded(outputFileURL.path, stopLimit, headTrim);
-    }
+    // IMPORTANT: Avoid post-trim to prevent unintended short camera clips on subsequent recordings.
+    // Stop limits can be miscomputed after consecutive runs; keeping the raw camera file is safer.
+    MRLog(@"ℹ️ Camera trim disabled; keeping full recorded duration");
     g_cameraStartTimestamp = 0.0;
+
+    // Signal any waiters that the stop finished
+    dispatch_semaphore_t stopSemaphore = self.recordingStoppedSemaphore;
+    if (stopSemaphore) {
+        dispatch_semaphore_signal(stopSemaphore);
+    }
 
     self.isRecording = NO;
 }
@@ -1009,6 +1012,7 @@ didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
     MRLog(@"   File URL: %@", fileURL.path);
     MRLog(@"   Connections count: %lu", (unsigned long)connections.count);
     MRLog(@"✅ Camera file recording STARTED successfully!");
+    g_cameraStartTimestamp = CFAbsoluteTimeGetCurrent();
     [self finishRecordingStart:YES];
 }
 
@@ -1022,10 +1026,17 @@ didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
         [self finishRecordingStart:NO];
     }
 
+    // Prepare stop semaphore so callers can wait for finalization
+    dispatch_semaphore_t stopSemaphore = dispatch_semaphore_create(0);
+    self.recordingStoppedSemaphore = stopSemaphore;
+
     // CRITICAL ELECTRON FIX: Stop movie file output (simple API)
     if (self.movieFileOutput && [self.movieFileOutput isRecording]) {
         [self.movieFileOutput stopRecording];
         MRLog(@"✅ Movie file output stop requested");
+    } else {
+        // If nothing to stop, signal immediately
+        dispatch_semaphore_signal(stopSemaphore);
     }
 
     // Stop session
@@ -1034,11 +1045,21 @@ didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
         MRLog(@"✅ AVCaptureSession stopped");
     }
 
+    // Wait (briefly) for file writer to finish flushing to disk so next start is clean
+    dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
+    long waitResult = dispatch_semaphore_wait(stopSemaphore, waitTime);
+    if (waitResult != 0) {
+        MRLog(@"⚠️ CameraRecorder: Stop did not finish within 2s (proceeding)");
+    } else {
+        MRLog(@"✅ CameraRecorder: Stop finalized");
+    }
+
     // Cleanup
+    self.isRecording = NO;
     self.session = nil;
     self.deviceInput = nil;
     self.movieFileOutput = nil;
-    self.outputPath = nil;
+    self.recordingStoppedSemaphore = nil;
 
     MRLog(@"✅ CameraRecorder stopped successfully");
     return YES;
