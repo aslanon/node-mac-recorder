@@ -160,8 +160,13 @@ static bool startCameraWithConfirmation(bool captureCamera,
     if (!startCameraIfRequested(true, cameraOutputPathRef, cameraDeviceId, screenOutputPath, sessionTimestampMs)) {
         return false;
     }
-    double cameraWaitTimeout = 3.0;
+    double cameraWaitTimeout = 8.0; // allow slower devices (e.g., Continuity) to spin up
     if (!waitForCameraRecordingStart(cameraWaitTimeout)) {
+        double cameraStartTs = currentCameraRecordingStartTime();
+        if (cameraStartTs > 0 || isCameraRecording()) {
+            MRLog(@"⚠️ Camera did not confirm start within %.1fs but appears to be running; continuing", cameraWaitTimeout);
+            return true;
+        }
         MRLog(@"❌ Camera did not signal recording start within %.1fs", cameraWaitTimeout);
         stopCameraRecording();
         return false;
@@ -238,6 +243,11 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     cleanupRecording();
     MRStoreActiveStopLimit(-1.0);
 
+    // CRITICAL FIX: Reset sync stop limit to prevent consecutive recording issues
+    // The sync stop limit persists from previous recording and causes camera to stop early
+    MRSyncSetStopLimitSeconds(-1.0);
+    MRLog(@"✅ Stop limit reset to unlimited for new recording");
+
     if (g_isRecording) {
         MRLog(@"⚠️ Still recording after cleanup - forcing stop");
         return Napi::Boolean::New(env, false);
@@ -270,6 +280,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     int64_t sessionTimestamp = 0;
     NSString *audioOutputPath = nil;
     double frameRate = 60.0;
+    NSString *qualityPreset = @"high";
     bool mixAudio = true; // Default: mix mic+system into single track when possible
     double mixMicGain = 0.8;    // default mic priority
     double mixSystemGain = 0.4; // default system lower
@@ -350,6 +361,18 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 if (fps < 1.0) fps = 1.0;
                 if (fps > 120.0) fps = 120.0;
                 frameRate = fps;
+            }
+        }
+
+        // Quality preset (low, medium, high)
+        if (options.Has("quality") && options.Get("quality").IsString()) {
+            std::string qualityStd = options.Get("quality").As<Napi::String>().Utf8Value();
+            NSString *qualityStr = [NSString stringWithUTF8String:qualityStd.c_str()];
+            if (qualityStr && [qualityStr length] > 0) {
+                NSString *normalized = [[qualityStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                if ([normalized length] > 0) {
+                    qualityPreset = normalized;
+                }
             }
         }
 
@@ -582,6 +605,7 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 sckConfig[@"mixAudio"] = @(mixAudio);
                 sckConfig[@"mixMicGain"] = @((double)mixMicGain);
                 sckConfig[@"mixSystemGain"] = @((double)mixSystemGain);
+                sckConfig[@"quality"] = qualityPreset ?: @"high";
                 
                 if (!CGRectIsNull(captureRect)) {
                     sckConfig[@"captureRect"] = @{

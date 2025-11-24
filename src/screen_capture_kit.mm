@@ -162,8 +162,73 @@ static float g_mixSystemGain = 0.4f;
 static NSInteger g_configuredSampleRate = 48000;
 static NSInteger g_configuredChannelCount = 2;
 static NSInteger g_targetFPS = 60;
+static NSString *g_qualityPreset = @"high";
 static NSInteger g_frameCount = 0;
 static CFAbsoluteTime g_firstFrameTime = 0;
+
+// Quality helpers
+static NSString *SCKNormalizeQualityPreset(id preset) {
+    if (![preset isKindOfClass:[NSString class]]) {
+        return @"high";
+    }
+    NSString *trimmed = [[(NSString *)preset stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if ([trimmed length] == 0) {
+        return @"high";
+    }
+    if ([trimmed isEqualToString:@"low"] || [trimmed isEqualToString:@"medium"] || [trimmed isEqualToString:@"high"]) {
+        return trimmed;
+    }
+    return @"high";
+}
+
+static CGFloat SCKQualityScaleForPreset(NSString *preset) {
+    NSString *normalized = SCKNormalizeQualityPreset(preset);
+    if ([normalized isEqualToString:@"low"]) {
+        return 0.5;
+    }
+    if ([normalized isEqualToString:@"medium"]) {
+        return 0.75;
+    }
+    return 1.0; // High = full resolution
+}
+
+static void SCKQualityBitrateForDimensions(NSString *preset,
+                                           NSInteger width,
+                                           NSInteger height,
+                                           NSInteger *bitrateOut,
+                                           NSInteger *multiplierOut,
+                                           NSInteger *minOut,
+                                           NSInteger *maxOut) {
+    NSString *normalized = SCKNormalizeQualityPreset(preset);
+
+    NSInteger multiplier = 30;
+    NSInteger minBitrate = 30 * 1000 * 1000;
+    NSInteger maxBitrate = 120 * 1000 * 1000;
+
+    if ([normalized isEqualToString:@"low"]) {
+        multiplier = 10;
+        minBitrate = 10 * 1000 * 1000;
+        maxBitrate = 45 * 1000 * 1000;
+    } else if ([normalized isEqualToString:@"medium"]) {
+        multiplier = 18;
+        minBitrate = 18 * 1000 * 1000;
+        maxBitrate = 80 * 1000 * 1000;
+    } else { // high/default
+        multiplier = 45;
+        minBitrate = 50 * 1000 * 1000;
+        maxBitrate = 200 * 1000 * 1000;
+    }
+
+    double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) * (double)multiplier;
+    NSInteger bitrate = (NSInteger)base;
+    if (bitrate < minBitrate) bitrate = minBitrate;
+    if (bitrate > maxBitrate) bitrate = maxBitrate;
+
+    if (bitrateOut) *bitrateOut = bitrate;
+    if (multiplierOut) *multiplierOut = multiplier;
+    if (minOut) *minOut = minBitrate;
+    if (maxOut) *maxOut = maxBitrate;
+}
 
 static dispatch_queue_t ScreenCaptureControlQueue(void);
 static void SCKMarkSchedulingComplete(void);
@@ -705,23 +770,35 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         return NO;
     }
     
-    // QUALITY FIX: ULTRA HIGH quality for screen recording
-    // ProMotion displays may run at 10Hz (low power) = 10 FPS capture
-    // Solution: Use VERY HIGH bitrate so each frame is perfect quality
-    // Use 30x multiplier for ULTRA quality (was 6x - way too low!)
-    NSInteger bitrate = (NSInteger)(width * height * 30);
-    bitrate = MAX(bitrate, 30 * 1000 * 1000);  // Minimum 30 Mbps for crystal clear screen recording
-    bitrate = MIN(bitrate, 120 * 1000 * 1000); // Maximum 120 Mbps for ultra quality
+    NSInteger bitrate = 0;
+    NSInteger bitrateMultiplier = 0;
+    NSInteger minBitrate = 0;
+    NSInteger maxBitrate = 0;
+    NSString *normalizedQuality = SCKNormalizeQualityPreset(g_qualityPreset);
+    SCKQualityBitrateForDimensions(normalizedQuality, width, height, &bitrate, &bitrateMultiplier, &minBitrate, &maxBitrate);
 
-    MRLog(@"🎬 ULTRA QUALITY Screen encoder: %ldx%ld, bitrate=%.2fMbps",
-          (long)width, (long)height, bitrate / (1000.0 * 1000.0));
+    NSNumber *qualityHint = @0.95;
+    if ([normalizedQuality isEqualToString:@"medium"]) {
+        qualityHint = @0.9;
+    } else if ([normalizedQuality isEqualToString:@"low"]) {
+        qualityHint = @0.85;
+    }
+
+    MRLog(@"🎬 Screen encoder (%@): %ldx%ld, multiplier=%ld, bitrate=%.2fMbps (min=%ldMbps max=%ldMbps)",
+          normalizedQuality,
+          (long)width,
+          (long)height,
+          (long)bitrateMultiplier,
+          bitrate / (1000.0 * 1000.0),
+          (long)(minBitrate / (1000 * 1000)),
+          (long)(maxBitrate / (1000 * 1000)));
 
     NSDictionary *compressionProps = @{
         AVVideoAverageBitRateKey: @(bitrate),
         AVVideoMaxKeyFrameIntervalKey: @(MAX(1, g_targetFPS)),
         AVVideoAllowFrameReorderingKey: @YES,
         AVVideoExpectedSourceFrameRateKey: @(MAX(1, g_targetFPS)),
-        AVVideoQualityKey: @(0.95),  // 0.0-1.0, higher is better (0.95 = excellent)
+        AVVideoQualityKey: qualityHint,  // 0.0-1.0, higher is better
         AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
         AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
     };
@@ -1250,6 +1327,8 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             if (g_mixSystemGain < 0.f) g_mixSystemGain = 0.f;
             if (g_mixSystemGain > 2.f) g_mixSystemGain = 2.f;
         }
+        g_qualityPreset = SCKNormalizeQualityPreset(config[@"quality"]);
+        MRLog(@"🎚️ Requested quality preset: %@", g_qualityPreset);
         NSNumber *captureCamera = config[@"captureCamera"];
 
         if (frameRateNumber && [frameRateNumber respondsToSelector:@selector(intValue)]) {
@@ -1364,6 +1443,26 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                 recordingWidth = (NSInteger)cropWidth;
                 recordingHeight = (NSInteger)cropHeight;
             }
+        }
+
+        CGFloat qualityScale = SCKQualityScaleForPreset(g_qualityPreset);
+        if (qualityScale < 0.999 && recordingWidth > 0 && recordingHeight > 0) {
+            NSInteger scaledWidth = MAX(1, (NSInteger)((double)recordingWidth * qualityScale + 0.5));
+            NSInteger scaledHeight = MAX(1, (NSInteger)((double)recordingHeight * qualityScale + 0.5));
+            MRLog(@"🎚️ Quality '%@': scaling output to %ldx%ld (%.0f%% of source %ldx%ld)",
+                  g_qualityPreset,
+                  (long)scaledWidth,
+                  (long)scaledHeight,
+                  qualityScale * 100.0,
+                  (long)recordingWidth,
+                  (long)recordingHeight);
+            recordingWidth = scaledWidth;
+            recordingHeight = scaledHeight;
+        } else {
+            MRLog(@"🎚️ Quality '%@': using full resolution %ldx%ld",
+                  g_qualityPreset,
+                  (long)recordingWidth,
+                  (long)recordingHeight);
         }
 
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
