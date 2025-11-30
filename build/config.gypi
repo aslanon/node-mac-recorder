@@ -504,7 +504,6 @@
     "node_gyp": "/Users/onur/.nvm/versions/node/v24.5.0/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js",
     "cache": "/Users/onur/.npm",
     "user_agent": "npm/11.5.1 node/v24.5.0 darwin arm64 workspaces/false",
-    "prefix": "/Users/onur/.nvm/versions/node/v24.5.0",
-    "build_from_source": "true"
+    "prefix": "/Users/onur/.nvm/versions/node/v24.5.0"
   }
 }
