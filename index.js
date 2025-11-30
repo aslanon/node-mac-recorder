@@ -1508,6 +1508,7 @@ class MacRecorder extends EventEmitter {
 						y: position.y - y,
 						cursorType: position.cursorType,
 						eventType: position.eventType,
+						seed: position.seed,
 						displayId: display.id,
 						displayIndex: this.cachedDisplays.indexOf(display),
 					};
@@ -1523,6 +1524,7 @@ class MacRecorder extends EventEmitter {
 					y: position.y - parseInt(mainDisplay.y),
 					cursorType: position.cursorType,
 					eventType: position.eventType,
+					seed: position.seed,
 					displayId: mainDisplay.id,
 					displayIndex: this.cachedDisplays.indexOf(mainDisplay),
 					outsideDisplay: true,
