@@ -1261,6 +1261,12 @@ static NSString* cursorTypeFromSeed(int seed) {
         if (override) {
             return override;
         }
+
+        buildRuntimeSeedMapping();
+        NSString *runtime = [g_seedToTypeMap objectForKey:key];
+        if (runtime) {
+            return runtime;
+        }
     }
     switch(seed) {
         case 741324: return @"auto";
@@ -1710,10 +1716,9 @@ static NSString* detectSystemCursorType(void) {
         dispatch_sync(dispatch_get_main_queue(), fetchCursorBlock);
     }
 
-    // Seed learning disabled - using hardcoded mapping instead
-    // if (cursorType && ![cursorType isEqualToString:@"default"] && cursorSeed > 0 && detectedCursor) {
-    //     addCursorToSeedMap(detectedCursor, cursorType, cursorSeed);
-    // }
+    if (cursorType && ![cursorType isEqualToString:@"default"] && cursorSeed > 0 && detectedCursor) {
+        addCursorToSeedMap(detectedCursor, cursorType, cursorSeed);
+    }
 
     return cursorType;
 }
