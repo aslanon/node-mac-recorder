@@ -8,6 +8,7 @@
 #import <dispatch/dispatch.h>
 #import "logging.h"
 #include <vector>
+#include <math.h>
 
 #ifndef kAXHitTestParameterizedAttribute
 #define kAXHitTestParameterizedAttribute CFSTR("AXHitTest")
@@ -457,6 +458,74 @@ static CursorTimerTarget *g_timerTarget = nil;
 static NSString *g_lastDetectedCursorType = nil;
 static int g_cursorTypeCounter = 0;
 static int g_lastCursorSeed = -1; // Track cursor seed for change detection
+static BOOL g_hasLastCursorEvent = NO;
+static CGPoint g_lastCursorLocation = {0, 0};
+static NSString *g_lastCursorType = nil;
+static NSString *g_lastCursorEventType = nil;
+
+static inline BOOL StringsEqual(NSString *a, NSString *b) {
+    if (a == b) {
+        return YES;
+    }
+    if (!a || !b) {
+        return NO;
+    }
+    return [a isEqualToString:b];
+}
+
+static void ResetCursorEventHistory(void) {
+    g_hasLastCursorEvent = NO;
+    g_lastCursorLocation = CGPointZero;
+    if (g_lastCursorType) {
+        [g_lastCursorType release];
+        g_lastCursorType = nil;
+    }
+    if (g_lastCursorEventType) {
+        [g_lastCursorEventType release];
+        g_lastCursorEventType = nil;
+    }
+}
+
+static BOOL ShouldEmitCursorEvent(CGPoint location, NSString *cursorType, NSString *eventType) {
+    if (!g_hasLastCursorEvent) {
+        return YES;
+    }
+
+    const CGFloat movementThreshold = 1.5; // Require ~2px change to treat as movement
+    BOOL moved = fabs(location.x - g_lastCursorLocation.x) >= movementThreshold ||
+                 fabs(location.y - g_lastCursorLocation.y) >= movementThreshold;
+    BOOL eventChanged = !StringsEqual(eventType, g_lastCursorEventType);
+    BOOL isMoveEvent = StringsEqual(eventType, @"move") || StringsEqual(eventType, @"drag");
+    BOOL isClickEvent = StringsEqual(eventType, @"mousedown") ||
+                        StringsEqual(eventType, @"mouseup") ||
+                        StringsEqual(eventType, @"rightmousedown") ||
+                        StringsEqual(eventType, @"rightmouseup");
+
+    if (isMoveEvent) {
+        return moved;
+    }
+
+    if (isClickEvent) {
+        return eventChanged || moved;
+    }
+
+    // Fallback: only emit when something actually changed
+    BOOL cursorChanged = !StringsEqual(cursorType, g_lastCursorType);
+    return moved || cursorChanged || eventChanged;
+}
+
+static void RememberCursorEvent(CGPoint location, NSString *cursorType, NSString *eventType) {
+    g_lastCursorLocation = location;
+    if (g_lastCursorType != cursorType) {
+        [g_lastCursorType release];
+        g_lastCursorType = cursorType ? [cursorType copy] : nil;
+    }
+    if (g_lastCursorEventType != eventType) {
+        [g_lastCursorEventType release];
+        g_lastCursorEventType = eventType ? [eventType copy] : nil;
+    }
+    g_hasLastCursorEvent = YES;
+}
 
 static NSString* CopyAndReleaseCFString(CFStringRef value) {
     if (!value) {
@@ -1752,6 +1821,9 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
+        if (!cursorType) {
+            cursorType = @"default";
+        }
         // (already captured above)
         NSString *eventType = @"move";
         
@@ -1777,6 +1849,10 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
                 eventType = @"move";
                 break;
         }
+
+        if (!ShouldEmitCursorEvent(location, cursorType, eventType)) {
+            return event;
+        }
         
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
@@ -1790,6 +1866,7 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         
         // Direkt dosyaya yaz
         writeToFile(cursorInfo);
+        RememberCursorEvent(location, cursorType, eventType);
         
         return event;
     }
@@ -1818,6 +1895,14 @@ void cursorTimerCallback() {
         NSTimeInterval timestamp = [currentDate timeIntervalSinceDate:g_trackingStartTime] * 1000; // milliseconds
         NSTimeInterval unixTimeMs = [currentDate timeIntervalSince1970] * 1000; // unix timestamp in milliseconds
         NSString *cursorType = getCursorType();
+        if (!cursorType) {
+            cursorType = @"default";
+        }
+        NSString *eventType = @"move";
+
+        if (!ShouldEmitCursorEvent(location, cursorType, eventType)) {
+            return;
+        }
         
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
@@ -1826,11 +1911,12 @@ void cursorTimerCallback() {
             @"timestamp": @(timestamp),
             @"unixTimeMs": @(unixTimeMs),
             @"cursorType": cursorType,
-            @"type": @"move"
+            @"type": eventType
         };
         
         // Direkt dosyaya yaz
         writeToFile(cursorInfo);
+        RememberCursorEvent(location, cursorType, eventType);
     }
 }
 
@@ -1885,6 +1971,7 @@ void cleanupCursorTracking() {
     g_lastDetectedCursorType = nil;
     g_cursorTypeCounter = 0;
     g_isFirstWrite = true;
+    ResetCursorEventHistory();
 }
 
 // NAPI Function: Start Cursor Tracking
@@ -1922,6 +2009,7 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
         g_isFirstWrite = true;
         
         g_trackingStartTime = [NSDate date];
+        ResetCursorEventHistory();
         
         // Create event tap for mouse events
         CGEventMask eventMask = (CGEventMaskBit(kCGEventLeftMouseDown) |
@@ -1935,6 +2023,7 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
                                 CGEventMaskBit(kCGEventRightMouseDragged) |
                                 CGEventMaskBit(kCGEventOtherMouseDragged));
         
+        bool eventTapActive = false;
         g_eventTap = CGEventTapCreate(kCGSessionEventTap,
                                      kCGHeadInsertEventTap,
                                      kCGEventTapOptionListenOnly,
@@ -1947,19 +2036,25 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
             g_runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, g_eventTap, 0);
             CFRunLoopAddSource(CFRunLoopGetMain(), g_runLoopSource, kCFRunLoopCommonModes);
             CGEventTapEnable(g_eventTap, true);
+            eventTapActive = true;
+            NSLog(@"✅ Cursor event tap active - event-driven tracking");
+        } else {
+            NSLog(@"⚠️  Failed to create cursor event tap; falling back to timer-based tracking (requires Accessibility permission)");
         }
         
-        // NSTimer kullan (main thread'de çalışır)
-        g_timerTarget = [[CursorTimerTarget alloc] init];
-        
-        g_cursorTimer = [NSTimer timerWithTimeInterval:0.05 // 50ms (20 FPS)
-                                                target:g_timerTarget
-                                              selector:@selector(timerCallback:)
-                                              userInfo:nil
-                                               repeats:YES];
-        
-        // Main run loop'a ekle
-        [[NSRunLoop mainRunLoop] addTimer:g_cursorTimer forMode:NSRunLoopCommonModes];
+        if (!eventTapActive) {
+            // NSTimer fallback (main thread)
+            g_timerTarget = [[CursorTimerTarget alloc] init];
+            
+            g_cursorTimer = [NSTimer timerWithTimeInterval:0.05 // 50ms (20 FPS)
+                                                    target:g_timerTarget
+                                                  selector:@selector(timerCallback:)
+                                                  userInfo:nil
+                                                   repeats:YES];
+            
+            // Main run loop'a ekle
+            [[NSRunLoop mainRunLoop] addTimer:g_cursorTimer forMode:NSRunLoopCommonModes];
+        }
         
         g_isCursorTracking = true;
         return Napi::Boolean::New(env, true);
