@@ -1223,49 +1223,90 @@ static void LoadCursorMappingOverrides(void) {
 
 // Runtime seed mapping - built dynamically on first use
 // Seeds change between app launches, so we build the mapping at runtime by querying NSCursor objects
+// SAFETY: Protected with try-catch to prevent crashes in Electron environments
+static BOOL g_enableSeedLearning = YES; // Runtime seed learning enabled with crash protection
 static NSMutableDictionary<NSNumber*, NSString*> *g_seedToTypeMap = nil;
 static dispatch_once_t g_seedMapInitToken;
 
 static void buildRuntimeSeedMapping() {
     dispatch_once(&g_seedMapInitToken, ^{
-        g_seedToTypeMap = [NSMutableDictionary dictionary];
+        @try {
+            @autoreleasepool {
+                g_seedToTypeMap = [[NSMutableDictionary alloc] init];
 
-        // Instead of trying to build mapping upfront (which crashes),
-        // we'll build it lazily as we encounter cursors during actual usage
-        // For now, just initialize the empty map
+                // Instead of trying to build mapping upfront (which crashes),
+                // we'll build it lazily as we encounter cursors during actual usage
+                // For now, just initialize the empty map
 
-        NSLog(@"✅ Runtime seed mapping initialized (will build lazily)");
+                NSLog(@"✅ Runtime seed mapping initialized (will build lazily)");
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"⚠️ Failed to initialize runtime seed mapping: %@", exception.reason);
+            g_seedToTypeMap = nil;
+        }
     });
 }
 
 // Add a cursor seed to the runtime mapping
-static void addCursorToSeedMap(NSCursor *cursor, NSString *detectedType, int seed) {
-    if (seed <= 0 || !cursor || !detectedType) return;
+// NOTE: We don't pass cursor object to avoid potential crashes - we only need seed and type
+static void addCursorToSeedMap(NSString *detectedType, int seed) {
+    // Safety: Check if learning is enabled
+    if (!g_enableSeedLearning) return;
 
-    buildRuntimeSeedMapping(); // Ensure map is initialized
+    if (seed <= 0 || !detectedType || [detectedType length] == 0) return;
 
-    // Only add if we don't have this seed yet
-    if (![g_seedToTypeMap objectForKey:@(seed)]) {
-        g_seedToTypeMap[@(seed)] = detectedType;
-        // Log only first 10 learned mappings to avoid spam
-        if ([g_seedToTypeMap count] <= 10) {
-            NSLog(@"📝 Learned seed mapping: %d -> %@", seed, detectedType);
+    @try {
+        @autoreleasepool {
+            buildRuntimeSeedMapping(); // Ensure map is initialized
+
+            // If initialization failed, don't proceed
+            if (!g_seedToTypeMap) return;
+
+            NSNumber *key = @(seed);
+
+            // Only add if we don't have this seed yet
+            if (![g_seedToTypeMap objectForKey:key]) {
+                [g_seedToTypeMap setObject:detectedType forKey:key];
+                // Log only first 10 learned mappings to avoid spam
+                if ([g_seedToTypeMap count] <= 10) {
+                    NSLog(@"📝 Learned seed mapping: %d -> %@", seed, detectedType);
+                }
+            }
         }
+    } @catch (NSException *exception) {
+        // Silently fail - don't crash the app for cursor learning
+        NSLog(@"⚠️ Failed to add cursor seed mapping: %@", exception.reason);
+    } @catch (...) {
+        NSLog(@"⚠️ Failed to add cursor seed mapping (unknown exception)");
     }
 }
 
 static NSString* cursorTypeFromSeed(int seed) {
     if (seed > 0) {
-        NSNumber *key = @(seed);
-        NSString *override = [g_seedOverrides objectForKey:key];
-        if (override) {
-            return override;
-        }
+        @try {
+            @autoreleasepool {
+                NSNumber *key = @(seed);
+                NSString *override = [g_seedOverrides objectForKey:key];
+                if (override) {
+                    return override;
+                }
 
-        buildRuntimeSeedMapping();
-        NSString *runtime = [g_seedToTypeMap objectForKey:key];
-        if (runtime) {
-            return runtime;
+                // Only check runtime mappings if learning is enabled
+                if (g_enableSeedLearning) {
+                    buildRuntimeSeedMapping();
+                    if (g_seedToTypeMap) {
+                        NSString *runtime = [g_seedToTypeMap objectForKey:key];
+                        if (runtime) {
+                            return runtime;
+                        }
+                    }
+                }
+            }
+        } @catch (NSException *exception) {
+            // Silently fail - don't crash for cursor lookup
+            NSLog(@"⚠️ Exception in cursorTypeFromSeed: %@", exception.reason);
+        } @catch (...) {
+            NSLog(@"⚠️ Unknown exception in cursorTypeFromSeed");
         }
     }
     switch(seed) {
@@ -1716,8 +1757,8 @@ static NSString* detectSystemCursorType(void) {
         dispatch_sync(dispatch_get_main_queue(), fetchCursorBlock);
     }
 
-    if (cursorType && ![cursorType isEqualToString:@"default"] && cursorSeed > 0 && detectedCursor) {
-        addCursorToSeedMap(detectedCursor, cursorType, cursorSeed);
+    if (cursorType && ![cursorType isEqualToString:@"default"] && cursorSeed > 0) {
+        addCursorToSeedMap(cursorType, cursorSeed);
     }
 
     return cursorType;
