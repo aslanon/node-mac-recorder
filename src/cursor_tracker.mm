@@ -390,10 +390,14 @@ static NSString* LookupCursorTypeByFingerprint(NSCursor *cursor, NSString **outF
     InitializeCursorFingerprintMap();
 
     NSValue *pointerKey = [NSValue valueWithPointer:(__bridge const void *)cursor];
-    NSString *cachedType = [g_cursorPointerCache objectForKey:pointerKey];
-    if (cachedType) {
-        return cachedType;
-    }
+
+    // DISABLED: Pointer cache causes stale cursor type detection
+    // Since macOS may reuse the same NSCursor object for different contexts,
+    // we need to check the actual cursor state every time for real-time accuracy
+    // NSString *cachedType = [g_cursorPointerCache objectForKey:pointerKey];
+    // if (cachedType) {
+    //     return cachedType;
+    // }
 
     NSString *fingerprint = CursorImageFingerprint(cursor);
     if (!fingerprint) {
@@ -406,9 +410,10 @@ static NSString* LookupCursorTypeByFingerprint(NSCursor *cursor, NSString **outF
 
     NSString *mappedType = [g_cursorFingerprintMap objectForKey:fingerprint];
     if (mappedType) {
-        if (pointerKey) {
-            [g_cursorPointerCache setObject:mappedType forKey:pointerKey];
-        }
+        // DISABLED: Don't cache by pointer for real-time detection
+        // if (pointerKey) {
+        //     [g_cursorPointerCache setObject:mappedType forKey:pointerKey];
+        // }
         return mappedType;
     }
 
@@ -427,13 +432,15 @@ static void CacheCursorFingerprint(NSCursor *cursor, NSString *cursorType, NSStr
     if (!fingerprint) {
         return;
     }
+    // Only cache fingerprint mapping (image hash -> type), not pointer mapping
     if (![g_cursorFingerprintMap objectForKey:fingerprint]) {
         [g_cursorFingerprintMap setObject:cursorType forKey:fingerprint];
     }
-    NSValue *pointerKey = [NSValue valueWithPointer:(__bridge const void *)cursor];
-    if (pointerKey && g_cursorPointerCache) {
-        [g_cursorPointerCache setObject:cursorType forKey:pointerKey];
-    }
+    // DISABLED: Pointer cache for real-time detection
+    // NSValue *pointerKey = [NSValue valueWithPointer:(__bridge const void *)cursor];
+    // if (pointerKey && g_cursorPointerCache) {
+    //     [g_cursorPointerCache setObject:cursorType forKey:pointerKey];
+    // }
 }
 
 // Forward declaration
@@ -940,29 +947,45 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
 
     // Resize cursor patterns - more comprehensive with Electron CSS names
     if ([normalized containsString:@"resize"] || [normalized containsString:@"size"]) {
-        // Diagonal resize cursors
-        BOOL diagonalUp = [normalized containsString:@"diagonalup"] ||
-                          [normalized containsString:@"diagonal-up"] ||
-                          [normalized containsString:@"nesw"];
-        BOOL diagonalDown = [normalized containsString:@"diagonaldown"] ||
-                            [normalized containsString:@"diagonal-down"] ||
-                            [normalized containsString:@"nwse"];
+        // Check for specific directional patterns first
+        // North-East/South-West diagonal
+        if ([normalized containsString:@"nesw"] ||
+            ([normalized containsString:@"northeast"] && [normalized containsString:@"southwest"]) ||
+            ([normalized containsString:@"ne"] && [normalized containsString:@"sw"])) {
+            return @"nesw-resize";
+        }
 
-        // Horizontal and vertical resize (Electron CSS names)
-        BOOL horizontal = [normalized containsString:@"leftright"] ||
+        // North-West/South-East diagonal
+        if ([normalized containsString:@"nwse"] ||
+            ([normalized containsString:@"northwest"] && [normalized containsString:@"southeast"]) ||
+            ([normalized containsString:@"nw"] && [normalized containsString:@"se"])) {
+            return @"nwse-resize";
+        }
+
+        // Generic diagonal patterns
+        BOOL diagonalUp = [normalized containsString:@"diagonalup"] ||
+                          [normalized containsString:@"diagonal-up"];
+        BOOL diagonalDown = [normalized containsString:@"diagonaldown"] ||
+                            [normalized containsString:@"diagonal-down"];
+
+        // Horizontal resize (East-West)
+        BOOL horizontal = [normalized containsString:@"ew-resize"] ||
+                          [normalized containsString:@"ewresize"] ||
+                          [normalized containsString:@"leftright"] ||
                           [normalized containsString:@"left-right"] ||
                           [normalized containsString:@"horizontal"] ||
                           ([normalized containsString:@"left"] && [normalized containsString:@"right"]) ||
-                          [normalized containsString:@"col"] ||
-                          [normalized containsString:@"column"] ||
-                          [normalized containsString:@"ew"]; // east-west
+                          [normalized containsString:@"col-resize"] ||
+                          [normalized containsString:@"column"];
 
-        BOOL vertical = [normalized containsString:@"updown"] ||
+        // Vertical resize (North-South)
+        BOOL vertical = [normalized containsString:@"ns-resize"] ||
+                        [normalized containsString:@"nsresize"] ||
+                        [normalized containsString:@"updown"] ||
                         [normalized containsString:@"up-down"] ||
                         [normalized containsString:@"vertical"] ||
                         ([normalized containsString:@"up"] && [normalized containsString:@"down"]) ||
-                        [normalized containsString:@"row"] ||
-                        [normalized containsString:@"ns"]; // north-south
+                        [normalized containsString:@"row-resize"];
 
         if (diagonalUp) {
             return @"nesw-resize";
@@ -970,15 +993,16 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
         if (diagonalDown) {
             return @"nwse-resize";
         }
-        if (vertical) {
-            return @"row-resize"; // Changed from ns-resize to match Electron
-        }
         if (horizontal) {
-            return @"col-resize";
+            return @"ew-resize"; // Use ew-resize as primary horizontal
+        }
+        if (vertical) {
+            return @"ns-resize"; // Use ns-resize as primary vertical
         }
 
-        // Generic resize fallback
-        return @"default";
+        // If contains "resize" but no specific direction, return generic resize
+        // This catches window resize cursors
+        return @"nwse-resize"; // Default to diagonal for generic resize
     }
 
     // Progress/wait patterns - Electron uses 'progress'
@@ -1267,10 +1291,8 @@ static void addCursorToSeedMap(NSString *detectedType, int seed) {
             // Only add if we don't have this seed yet
             if (![g_seedToTypeMap objectForKey:key]) {
                 [g_seedToTypeMap setObject:detectedType forKey:key];
-                // Log only first 10 learned mappings to avoid spam
-                if ([g_seedToTypeMap count] <= 10) {
-                    NSLog(@"📝 Learned seed mapping: %d -> %@", seed, detectedType);
-                }
+                // Always log new seed mappings for debugging
+                NSLog(@"📝 Learned seed mapping: %d -> %@", seed, detectedType);
             }
         }
     } @catch (NSException *exception) {
@@ -1517,10 +1539,11 @@ static NSString* cursorTypeFromImageSignature(NSImage *image, NSPoint hotspot, N
                 if (cursor == [NSCursor operationNotAllowedCursor]) {
                     return @"not-allowed";
                 }
-                // NOTE: progress, wait, no-drop don't have standard NSCursor pointers
-                // They are visually identical and cannot be distinguished
             }
-            return @"default"; // Fallback to default
+            // NOTE: progress, wait, no-drop don't have standard NSCursor pointers
+            // Return "progress" as default for this hotspot pattern (better than "default")
+            // Let cursor name detection in caller distinguish between progress/wait
+            return @"progress";
         }
         return @"default";
     }
