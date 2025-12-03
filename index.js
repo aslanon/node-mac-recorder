@@ -339,11 +339,246 @@ class MacRecorder extends EventEmitter {
 		// Seçenekleri güncelle
 		this.setOptions(options);
 
+		// Cache display list so we don't fetch multiple times during preparation
+		let cachedDisplays = null;
+		const getCachedDisplays = async () => {
+			if (cachedDisplays) {
+				return cachedDisplays;
+			}
+			try {
+				cachedDisplays = await this.getDisplays();
+			} catch (error) {
+				console.warn("Display bilgisi alınamadı:", error.message);
+				cachedDisplays = [];
+			}
+			return cachedDisplays;
+		};
+
+		/**
+		 * Normalize capture area coordinates:
+		 *  - Pick correct display based on user-provided area/displayId info
+		 *  - Convert global coordinates to display-relative when needed
+		 *  - Clamp to valid bounds to avoid ScreenCaptureKit skipping crops
+		 */
+		const normalizeCaptureArea = async () => {
+			if (!this.options.captureArea) {
+				return;
+			}
+
+			const displays = await getCachedDisplays();
+			if (!Array.isArray(displays) || displays.length === 0) {
+				return;
+			}
+
+			const rawArea = this.options.captureArea;
+			const parsedArea = {
+				x: Number(rawArea.x),
+				y: Number(rawArea.y),
+				width: Number(rawArea.width),
+				height: Number(rawArea.height),
+			};
+
+			if (
+				!Number.isFinite(parsedArea.x) ||
+				!Number.isFinite(parsedArea.y) ||
+				!Number.isFinite(parsedArea.width) ||
+				!Number.isFinite(parsedArea.height) ||
+				parsedArea.width <= 0 ||
+				parsedArea.height <= 0
+			) {
+				return;
+			}
+
+			const areaRect = {
+				left: parsedArea.x,
+				top: parsedArea.y,
+				right: parsedArea.x + parsedArea.width,
+				bottom: parsedArea.y + parsedArea.height,
+			};
+
+			const getDisplayRect = (display) => {
+				const dx = Number(display.x) || 0;
+				const dy = Number(display.y) || 0;
+				const dw = Number(display.width) || 0;
+				const dh = Number(display.height) || 0;
+				return {
+					left: dx,
+					top: dy,
+					right: dx + dw,
+					bottom: dy + dh,
+					width: dw,
+					height: dh,
+				};
+			};
+
+			const requestedDisplayId =
+				this.options.displayId === null || this.options.displayId === undefined
+					? null
+					: Number(this.options.displayId);
+
+			let targetDisplay = null;
+			if (requestedDisplayId !== null && Number.isFinite(requestedDisplayId)) {
+				targetDisplay =
+					displays.find(
+						(display) => Number(display.id) === requestedDisplayId
+					) || null;
+			}
+
+			if (!targetDisplay) {
+				targetDisplay =
+					displays.find((display) => {
+						const rect = getDisplayRect(display);
+						return (
+							areaRect.left >= rect.left &&
+							areaRect.right <= rect.right &&
+							areaRect.top >= rect.top &&
+							areaRect.bottom <= rect.bottom
+						);
+					}) || null;
+			}
+
+			if (!targetDisplay) {
+				let bestDisplay = null;
+				let bestOverlap = 0;
+				displays.forEach((display) => {
+					const rect = getDisplayRect(display);
+					const overlapWidth =
+						Math.min(areaRect.right, rect.right) -
+						Math.max(areaRect.left, rect.left);
+					const overlapHeight =
+						Math.min(areaRect.bottom, rect.bottom) -
+						Math.max(areaRect.top, rect.top);
+					if (overlapWidth > 0 && overlapHeight > 0) {
+						const overlapArea = overlapWidth * overlapHeight;
+						if (overlapArea > bestOverlap) {
+							bestOverlap = overlapArea;
+							bestDisplay = display;
+						}
+					}
+				});
+				targetDisplay = bestDisplay;
+			}
+
+			if (!targetDisplay) {
+				targetDisplay =
+					displays.find((display) => display.isPrimary) || displays[0];
+			}
+
+			if (!targetDisplay) {
+				return;
+			}
+
+			const targetRect = getDisplayRect(targetDisplay);
+			if (targetRect.width <= 0 || targetRect.height <= 0) {
+				return;
+			}
+
+			const tolerance = 1; // allow sub-pixel offsets
+			const isRelativeToDisplay = () => {
+				const endX = parsedArea.x + parsedArea.width;
+				const endY = parsedArea.y + parsedArea.height;
+				return (
+					parsedArea.x >= -tolerance &&
+					parsedArea.y >= -tolerance &&
+					endX <= targetRect.width + tolerance &&
+					endY <= targetRect.height + tolerance
+				);
+			};
+
+			let relativeX = parsedArea.x;
+			let relativeY = parsedArea.y;
+
+			if (!isRelativeToDisplay()) {
+				relativeX = parsedArea.x - targetRect.left;
+				relativeY = parsedArea.y - targetRect.top;
+			}
+
+			let relativeWidth = parsedArea.width;
+			let relativeHeight = parsedArea.height;
+
+			// Discard if area sits completely outside the display
+			if (
+				relativeX >= targetRect.width ||
+				relativeY >= targetRect.height ||
+				relativeWidth <= 0 ||
+				relativeHeight <= 0
+			) {
+				return;
+			}
+
+			if (relativeX < 0) {
+				relativeWidth += relativeX;
+				relativeX = 0;
+			}
+
+			if (relativeY < 0) {
+				relativeHeight += relativeY;
+				relativeY = 0;
+			}
+
+			const maxWidth = targetRect.width - relativeX;
+			const maxHeight = targetRect.height - relativeY;
+
+			if (maxWidth <= 0 || maxHeight <= 0) {
+				return;
+			}
+
+			relativeWidth = Math.min(relativeWidth, maxWidth);
+			relativeHeight = Math.min(relativeHeight, maxHeight);
+
+			if (relativeWidth <= 0 || relativeHeight <= 0) {
+				return;
+			}
+
+			const normalizeValue = (value, minValue) =>
+				Math.max(minValue, Math.round(value));
+			const normalizedArea = {
+				x: Math.max(0, Math.round(relativeX)),
+				y: Math.max(0, Math.round(relativeY)),
+				width: normalizeValue(relativeWidth, 1),
+				height: normalizeValue(relativeHeight, 1),
+			};
+
+			const originalRounded = {
+				x: Math.round(parsedArea.x),
+				y: Math.round(parsedArea.y),
+				width: normalizeValue(parsedArea.width, 1),
+				height: normalizeValue(parsedArea.height, 1),
+			};
+
+			const displayChanged =
+				!Number.isFinite(requestedDisplayId) ||
+				Number(targetDisplay.id) !== requestedDisplayId;
+			const areaChanged =
+				normalizedArea.x !== originalRounded.x ||
+				normalizedArea.y !== originalRounded.y ||
+				normalizedArea.width !== originalRounded.width ||
+				normalizedArea.height !== originalRounded.height;
+
+			if (displayChanged || areaChanged) {
+				console.log(
+					`🎯 Capture area normalize: display=${targetDisplay.id} -> (${rawArea.x},${rawArea.y},${rawArea.width}x${rawArea.height}) ➜ (${normalizedArea.x},${normalizedArea.y},${normalizedArea.width}x${normalizedArea.height})`
+				);
+			}
+
+			this.options.captureArea = normalizedArea;
+			this.options.displayId = Number(targetDisplay.id);
+			this.recordingDisplayInfo = {
+				displayId: Number(targetDisplay.id),
+				x: Number(targetDisplay.x) || 0,
+				y: Number(targetDisplay.y) || 0,
+				width: Number(targetDisplay.width) || 0,
+				height: Number(targetDisplay.height) || 0,
+				logicalWidth: Number(targetDisplay.width) || 0,
+				logicalHeight: Number(targetDisplay.height) || 0,
+			};
+		};
+
 		// WindowId varsa captureArea'yı otomatik ayarla
 		if (this.options.windowId && !this.options.captureArea) {
 			try {
 				const windows = await this.getWindows();
-				const displays = await this.getDisplays();
+				const displays = await getCachedDisplays();
 				const targetWindow = windows.find(
 					(w) => w.id === this.options.windowId
 				);
@@ -442,7 +677,7 @@ class MacRecorder extends EventEmitter {
 		// Ensure recordingDisplayInfo is always set for cursor tracking
 		if (!this.recordingDisplayInfo) {
 			try {
-				const displays = await this.getDisplays();
+				const displays = await getCachedDisplays();
 				let targetDisplay;
 
 				if (this.options.displayId !== null) {
@@ -468,6 +703,11 @@ class MacRecorder extends EventEmitter {
 			} catch (error) {
 				console.warn("Display bilgisi alınamadı:", error.message);
 			}
+		}
+
+		// Normalize capture area AFTER automatic window capture logic
+		if (this.options.captureArea) {
+			await normalizeCaptureArea();
 		}
 
 		// Çıkış dizinini oluştur
