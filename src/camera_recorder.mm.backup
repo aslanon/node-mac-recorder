@@ -98,18 +98,12 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
     }
 }
 
-@interface CameraRecorder : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate>
+@interface CameraRecorder : NSObject<AVCaptureFileOutputRecordingDelegate>
 
 @property (nonatomic, strong) dispatch_queue_t workQueue;
-@property (nonatomic, strong) dispatch_queue_t videoQueue;
 @property (nonatomic, strong) AVCaptureSession *session;
 @property (nonatomic, strong) AVCaptureDeviceInput *deviceInput;
-@property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
-@property (nonatomic, strong) AVAssetWriter *writer;
-@property (nonatomic, strong) AVAssetWriterInput *writerInput;
-@property (nonatomic, strong) AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor;
-@property (nonatomic, assign) CMTime startTime;
-@property (nonatomic, assign) BOOL writerStarted;
+@property (nonatomic, strong) AVCaptureMovieFileOutput *fileOutput;
 @property (nonatomic, copy) NSString *outputPath;
 @property (nonatomic, copy) NSString *lastFinishedOutputPath;
 
@@ -141,13 +135,10 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
     self = [super init];
     if (self) {
         _workQueue = dispatch_queue_create("com.macrecorder.camera", DISPATCH_QUEUE_SERIAL);
-        _videoQueue = dispatch_queue_create("com.macrecorder.camera.video", DISPATCH_QUEUE_SERIAL);
         _startCompleted = YES;
         _startSucceeded = NO;
         _activeToken = 0;
         _unexpectedRestartAttempted = NO;
-        _writerStarted = NO;
-        _startTime = kCMTimeInvalid;
     }
     return self;
 }
@@ -408,172 +399,6 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
     return YES;
 }
 
-#pragma mark - AVAssetWriter Setup
-
-- (BOOL)setupWriterWithSampleBuffer:(CMSampleBufferRef)sampleBuffer error:(NSError **)error {
-    if (self.writer) {
-        return YES;  // Already initialized
-    }
-
-    if (!self.outputPath || [self.outputPath length] == 0) {
-        if (error) {
-            *error = MRCameraError(-100, @"Output path not set");
-        }
-        return NO;
-    }
-
-    NSURL *outputURL = [NSURL fileURLWithPath:self.outputPath];
-    MRCameraRemoveFileIfExists(self.outputPath);
-
-    NSError *writerError = nil;
-    self.writer = [[AVAssetWriter alloc] initWithURL:outputURL
-                                            fileType:AVFileTypeQuickTimeMovie
-                                               error:&writerError];
-    if (!self.writer || writerError) {
-        if (error) {
-            *error = writerError;
-        }
-        MRLog(@"❌ Failed to create camera AVAssetWriter: %@", writerError);
-        return NO;
-    }
-
-    // Get video dimensions from sample buffer
-    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (!pixelBuffer) {
-        if (error) {
-            *error = MRCameraError(-101, @"No pixel buffer in sample");
-        }
-        return NO;
-    }
-
-    size_t width = CVPixelBufferGetWidth(pixelBuffer);
-    size_t height = CVPixelBufferGetHeight(pixelBuffer);
-
-    MRLog(@"🎥 Camera recording dimensions: %zux%zu", width, height);
-
-    // H.264 video settings (matching current quality)
-    NSInteger bitrate = (NSInteger)(width * height * 24);  // 24fps target
-    bitrate = MAX(bitrate, 5 * 1000 * 1000);   // Min 5 Mbps
-    bitrate = MIN(bitrate, 30 * 1000 * 1000);  // Max 30 Mbps
-
-    NSDictionary *compressionProps = @{
-        AVVideoAverageBitRateKey: @(bitrate),
-        AVVideoMaxKeyFrameIntervalKey: @(24),
-        AVVideoAllowFrameReorderingKey: @YES,
-        AVVideoExpectedSourceFrameRateKey: @(24),
-        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
-    };
-
-    NSDictionary *videoSettings = @{
-        AVVideoCodecKey: AVVideoCodecTypeH264,
-        AVVideoWidthKey: @(width),
-        AVVideoHeightKey: @(height),
-        AVVideoCompressionPropertiesKey: compressionProps
-    };
-
-    self.writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
-                                                          outputSettings:videoSettings];
-    self.writerInput.expectsMediaDataInRealTime = YES;
-
-    if (![self.writer canAddInput:self.writerInput]) {
-        if (error) {
-            *error = MRCameraError(-102, @"Cannot add video input to writer");
-        }
-        return NO;
-    }
-    [self.writer addInput:self.writerInput];
-
-    // Create pixel buffer adaptor
-    NSDictionary *pixelBufferAttributes = @{
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (NSString*)kCVPixelBufferWidthKey: @(width),
-        (NSString*)kCVPixelBufferHeightKey: @(height),
-        (NSString*)kCVPixelBufferCGImageCompatibilityKey: @YES,
-        (NSString*)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
-    };
-
-    self.pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor
-        assetWriterInputPixelBufferAdaptorWithAssetWriterInput:self.writerInput
-                                   sourcePixelBufferAttributes:pixelBufferAttributes];
-
-    MRLog(@"✅ Camera AVAssetWriter configured: %.2f Mbps, H.264", bitrate / (1000.0 * 1000.0));
-    return YES;
-}
-
-#pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate
-
-- (void)captureOutput:(AVCaptureOutput *)output
-didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
-       fromConnection:(AVCaptureConnection *)connection {
-
-    if (!CMSampleBufferDataIsReady(sampleBuffer)) {
-        return;
-    }
-
-    // Setup writer on first frame
-    NSError *setupError = nil;
-    if (![self setupWriterWithSampleBuffer:sampleBuffer error:&setupError]) {
-        if (setupError) {
-            MRLog(@"❌ Camera writer setup failed: %@", setupError);
-        }
-        return;
-    }
-
-    if (!self.writer || !self.writerInput || !self.pixelBufferAdaptor) {
-        return;
-    }
-
-    CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-
-    // SYNC INTEGRATION: Register camera as active stream
-    MRSyncMarkAudioSample(timestamp);
-
-    // Start writer session on first frame
-    if (!self.writerStarted) {
-        if (![self.writer startWriting]) {
-            MRLog(@"❌ Camera writer failed to start: %@", self.writer.error);
-            return;
-        }
-        [self.writer startSessionAtSourceTime:kCMTimeZero];  // CRITICAL: t=0 timeline
-        self.writerStarted = YES;
-        self.startTime = timestamp;
-        g_cameraStartTimestamp = CFAbsoluteTimeGetCurrent();
-
-        MRLog(@"🎥 Camera writer started @ t=0 (source PTS: %.3fs)", CMTimeGetSeconds(timestamp));
-
-        // Signal start completion
-        [self completeStart:YES token:self.activeToken];
-    }
-
-    if (!self.writerInput.readyForMoreMediaData) {
-        // Drop frame if writer is not ready (prevents blocking)
-        return;
-    }
-
-    // TIMESTAMP NORMALIZATION (audio_recorder.mm pattern)
-    CMTime adjustedTimestamp = kCMTimeZero;
-    if (CMTIME_IS_VALID(self.startTime)) {
-        adjustedTimestamp = CMTimeSubtract(timestamp, self.startTime);
-        if (CMTIME_COMPARE_INLINE(adjustedTimestamp, <, kCMTimeZero)) {
-            adjustedTimestamp = kCMTimeZero;
-        }
-    }
-
-    // Get pixel buffer from sample
-    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (!pixelBuffer) {
-        MRLog(@"⚠️ No pixel buffer in camera sample");
-        return;
-    }
-
-    // Append to writer with normalized timestamp
-    BOOL success = [self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer
-                                         withPresentationTime:adjustedTimestamp];
-    if (!success) {
-        MRLog(@"⚠️ Failed to append camera pixel buffer: %@", self.writer.error);
-    }
-}
-
 #pragma mark - Synchronization helpers
 
 - (uint64_t)nextToken {
@@ -620,17 +445,66 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 - (void)cleanupAfterStopOnQueue {
     self.session = nil;
     self.deviceInput = nil;
-    self.videoOutput = nil;
-    self.writer = nil;
-    self.writerInput = nil;
-    self.pixelBufferAdaptor = nil;
-    self.writerStarted = NO;
-    self.startTime = kCMTimeInvalid;
+    self.fileOutput = nil;
     self.isRecording = NO;
     self.stopInFlight = NO;
     self.outputPath = nil;
     self.unexpectedRestartAttempted = NO;
     g_cameraStartTimestamp = 0.0;
+}
+
+- (BOOL)attemptRestartAfterUnexpectedStop {
+    if (self.unexpectedRestartAttempted) {
+        MRLog(@"⚠️ Camera already retried after unexpected stop; skipping restart");
+        return NO;
+    }
+    self.unexpectedRestartAttempted = YES;
+
+    if (!self.outputPath || [self.outputPath length] == 0) {
+        MRLog(@"⚠️ Cannot restart camera: missing output path");
+        return NO;
+    }
+    if (!self.session || !self.fileOutput) {
+        MRLog(@"⚠️ Cannot restart camera: session/output unavailable");
+        return NO;
+    }
+
+    if (![self.session isRunning]) {
+        [self.session startRunning];
+    }
+
+    NSURL *outputURL = [NSURL fileURLWithPath:self.outputPath];
+    if (!outputURL) {
+        MRLog(@"⚠️ Cannot restart camera: invalid output URL");
+        return NO;
+    }
+
+    // Move existing clip aside so we don't lose it if restart fails
+    NSString *backupPath = [self.outputPath stringByAppendingPathExtension:@"bak"];
+    [[NSFileManager defaultManager] removeItemAtPath:backupPath error:nil];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:self.outputPath]) {
+        [[NSFileManager defaultManager] moveItemAtPath:self.outputPath toPath:backupPath error:nil];
+    }
+
+    MRLog(@"🔁 Attempting automatic camera restart after unexpected stop");
+    @try {
+        self.stopInFlight = NO;
+        self.isRecording = YES;
+        g_cameraStartTimestamp = 0.0;
+        [self.fileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:self];
+        // Remove backup since restart succeeded
+        [[NSFileManager defaultManager] removeItemAtPath:backupPath error:nil];
+        return YES;
+    } @catch (NSException *exception) {
+        MRLog(@"❌ Camera auto-restart failed: %@", exception.reason);
+        // Restore previous clip if we created a backup
+        if ([[NSFileManager defaultManager] fileExistsAtPath:backupPath]) {
+            [[NSFileManager defaultManager] removeItemAtPath:self.outputPath error:nil];
+            [[NSFileManager defaultManager] moveItemAtPath:backupPath toPath:self.outputPath error:nil];
+        }
+        self.isRecording = NO;
+        return NO;
+    }
 }
 
 #pragma mark - Recording lifecycle
@@ -701,28 +575,26 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         }
         [session addInput:deviceInput];
 
-        // Setup video data output with delegate pattern (realtime sync)
-        AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-
-        NSDictionary *videoSettings = @{
-            (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
-        };
-        [videoOutput setVideoSettings:videoSettings];
-        videoOutput.alwaysDiscardsLateVideoFrames = NO;  // Preserve all frames
-
-        if (![session canAddOutput:videoOutput]) {
-            MRLog(@"❌ Unable to add video data output to capture session");
+        AVCaptureMovieFileOutput *fileOutput = [[AVCaptureMovieFileOutput alloc] init];
+        if (![session canAddOutput:fileOutput]) {
+            MRLog(@"❌ Unable to add movie file output to capture session");
             [session commitConfiguration];
             [self completeStart:NO token:token];
             return;
         }
-        [session addOutput:videoOutput];
+        [session addOutput:fileOutput];
 
-        // Set delegate for per-frame processing
-        [videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+        // Ensure the file output does not auto-stop due to implicit limits
+        fileOutput.movieFragmentInterval = kCMTimeInvalid;
+        fileOutput.maxRecordedDuration = kCMTimeInvalid;
+        fileOutput.maxRecordedFileSize = 0;
 
-        // Configure video mirroring for front camera
-        AVCaptureConnection *videoConnection = [videoOutput connectionWithMediaType:AVMediaTypeVideo];
+        AVCaptureConnection *audioConnection = [fileOutput connectionWithMediaType:AVMediaTypeAudio];
+        if (audioConnection) {
+            audioConnection.enabled = NO;
+        }
+
+        AVCaptureConnection *videoConnection = [fileOutput connectionWithMediaType:AVMediaTypeVideo];
         if (videoConnection && videoConnection.isVideoMirroringSupported && device.position == AVCaptureDevicePositionFront) {
             if ([videoConnection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
                 videoConnection.automaticallyAdjustsVideoMirroring = NO;
@@ -739,14 +611,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
         self.session = session;
         self.deviceInput = deviceInput;
-        self.videoOutput = videoOutput;
+        self.fileOutput = fileOutput;
         self.outputPath = normalizedPath;
-        self.writerStarted = NO;
-        self.startTime = kCMTimeInvalid;
 
         [session startRunning];
 
-        // Give session a brief moment to warm up
+        // Give session a brief moment to warm up to avoid false start timeouts on slower devices
         [NSThread sleepForTimeInterval:0.5];
 
         if (self.stopInFlight || token != self.activeToken) {
@@ -755,8 +625,22 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
             return;
         }
 
-        MRLog(@"🎥 Camera session running - writer will start on first frame");
-        // Note: Recording confirmation will be triggered by first video frame in delegate
+        NSURL *outputURL = [NSURL fileURLWithPath:normalizedPath];
+        if (!outputURL) {
+            MRLog(@"❌ Failed to create output URL for camera recording");
+            [self completeStart:NO token:token];
+            return;
+        }
+
+        MRLog(@"🎥 Starting camera recording to %@", normalizedPath);
+        @try {
+            [fileOutput startRecordingToOutputFileURL:outputURL recordingDelegate:self];
+            MRLog(@"📤 Camera setup scheduled on background queue (non-blocking)");
+        } @catch (NSException *exception) {
+            MRLog(@"❌ Exception while starting camera recording: %@", exception.reason);
+            [self completeStart:NO token:token];
+            return;
+        }
     }
 }
 
@@ -822,8 +706,8 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
 - (BOOL)stopRecording {
     BOOL hasActiveSession = (self.session && [self.session isRunning]);
-    BOOL writerActive = (self.writer && self.writerStarted);
-    if (!self.isRecording && !hasActiveSession && !writerActive) {
+    BOOL outputRecording = (self.fileOutput && [self.fileOutput isRecording]);
+    if (!self.isRecording && !hasActiveSession && !outputRecording) {
         [self waitForStopCompletion:5.0];
         return YES;
     }
@@ -838,38 +722,13 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     self.stopSemaphore = stopSemaphore;
 
     dispatch_async(self.workQueue, ^{
-        // Stop video delegate
-        if (self.videoOutput) {
-            [self.videoOutput setSampleBufferDelegate:nil queue:nil];
+        if (self.fileOutput && [self.fileOutput isRecording]) {
+            MRLog(@"🛑 Movie file output stop requested");
+            [self.fileOutput stopRecording];
+        } else {
+            dispatch_semaphore_signal(stopSemaphore);
         }
 
-        // Finalize writer (audio_recorder.mm pattern)
-        if (self.writer && self.writerStarted) {
-            if (self.writerInput) {
-                [self.writerInput markAsFinished];
-            }
-
-            dispatch_semaphore_t writerSemaphore = dispatch_semaphore_create(0);
-            [self.writer finishWritingWithCompletionHandler:^{
-                if (self.writer.status == AVAssetWriterStatusCompleted) {
-                    MRLog(@"✅ Camera writer finished");
-                } else if (self.writer.status == AVAssetWriterStatusFailed) {
-                    MRLog(@"❌ Camera writer failed: %@", self.writer.error);
-                }
-                dispatch_semaphore_signal(writerSemaphore);
-            }];
-
-            // 3 second timeout (matching audio_recorder.mm:269)
-            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC);
-            if (dispatch_semaphore_wait(writerSemaphore, timeout) != 0) {
-                MRLog(@"⚠️ Camera writer timeout – canceling");
-                [self.writer cancelWriting];
-            }
-        }
-
-        dispatch_semaphore_signal(stopSemaphore);
-
-        // Session cleanup
         if (self.session && [self.session isRunning]) {
             [self.session stopRunning];
         }
@@ -877,11 +736,13 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         if (self.session && self.deviceInput && [self.session.inputs containsObject:self.deviceInput]) {
             [self.session removeInput:self.deviceInput];
         }
-        if (self.session && self.videoOutput && [self.session.outputs containsObject:self.videoOutput]) {
-            [self.session removeOutput:self.videoOutput];
+        if (self.session && self.fileOutput && [self.session.outputs containsObject:self.fileOutput]) {
+            [self.session removeOutput:self.fileOutput];
         }
 
-        [self cleanupAfterStopOnQueue];
+        if (!self.fileOutput || ![self.fileOutput isRecording]) {
+            [self cleanupAfterStopOnQueue];
+        }
     });
 
     dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
@@ -912,6 +773,49 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         return NO;
     }
     return self.startSucceeded;
+}
+
+#pragma mark - AVCaptureFileOutputRecordingDelegate
+
+- (void)captureOutput:(AVCaptureFileOutput *)output
+didFinishRecordingToOutputFileAtURL:(NSURL *)outputFileURL
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections
+                error:(NSError *)error {
+    double elapsedTime = g_cameraStartTimestamp > 0 ? (CFAbsoluteTimeGetCurrent() - g_cameraStartTimestamp) : 0;
+    MRLog(@"🎬 Camera recording finished (elapsed: %.2fs)", elapsedTime);
+    if (error) {
+        MRLog(@"❌ Camera recording finished with error: %@", error);
+    } else {
+        MRLog(@"✅ Camera recording finished successfully");
+    }
+    self.lastFinishedOutputPath = outputFileURL.path ?: self.outputPath;
+
+    dispatch_semaphore_t stopSemaphore = self.stopSemaphore;
+    BOOL expectedStop = self.stopInFlight || (stopSemaphore != nil);
+    dispatch_async(self.workQueue, ^{
+        if (!expectedStop) {
+            BOOL restarted = [self attemptRestartAfterUnexpectedStop];
+            if (restarted) {
+                MRLog(@"🔁 Camera auto-restart initiated after unexpected stop");
+                return;
+            } else {
+                MRLog(@"⚠️ Camera could not auto-restart after unexpected stop");
+            }
+        }
+
+        [self cleanupAfterStopOnQueue];
+        if (stopSemaphore) {
+            dispatch_semaphore_signal(stopSemaphore);
+        }
+    });
+}
+
+- (void)captureOutput:(AVCaptureFileOutput *)output
+didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections {
+    MRLog(@"✅ Camera file recording started: %@", fileURL.path);
+    g_cameraStartTimestamp = CFAbsoluteTimeGetCurrent();
+    [self completeStart:YES token:self.activeToken];
 }
 
 @end
