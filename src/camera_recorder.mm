@@ -525,8 +525,10 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
 
-    // SYNC INTEGRATION: Register camera as active stream
-    MRSyncMarkAudioSample(timestamp);
+    // Hold camera frames until we see audio so timelines stay aligned
+    if (MRSyncShouldHoldVideoFrame(timestamp)) {
+        return;
+    }
 
     // Start writer session on first frame
     if (!self.writerStarted) {

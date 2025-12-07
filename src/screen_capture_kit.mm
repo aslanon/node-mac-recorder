@@ -475,8 +475,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-    MRSyncMarkAudioSample(presentationTime);
-    
+
     // Wait for audio to arrive before starting screen video to prevent leading frames.
     if (MRSyncShouldHoldVideoFrame(presentationTime)) {
         return;
@@ -632,6 +631,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    MRSyncMarkAudioSample(presentationTime);
     
     if (!g_audioWriterStarted) {
         if (![g_audioWriter startWriting]) {
