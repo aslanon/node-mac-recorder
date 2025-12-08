@@ -538,10 +538,30 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         }
         [self.writer startSessionAtSourceTime:kCMTimeZero];  // CRITICAL: t=0 timeline
         self.writerStarted = YES;
-        self.startTime = timestamp;
+        
+        // LIP SYNC FIX: Align camera startTime with audio's first timestamp for perfect lip sync
+        // This ensures camera and audio start from the same reference point
+        CMTime audioFirstTimestamp = MRSyncAudioFirstTimestamp();
+        CMTime alignmentOffset = MRSyncVideoAlignmentOffset();
+        
+        if (CMTIME_IS_VALID(audioFirstTimestamp)) {
+            // Use audio's first timestamp as reference - this is the key to lip sync
+            self.startTime = audioFirstTimestamp;
+            CMTime offset = CMTimeSubtract(timestamp, audioFirstTimestamp);
+            double offsetMs = CMTimeGetSeconds(offset) * 1000.0;
+            MRLog(@"🎥 Camera writer started @ t=0 (aligned with audio first timestamp, offset: %.1fms)", offsetMs);
+        } else if (CMTIME_IS_VALID(alignmentOffset)) {
+            // If audio came first, use the alignment offset to sync
+            self.startTime = CMTimeSubtract(timestamp, alignmentOffset);
+            double offsetMs = CMTimeGetSeconds(alignmentOffset) * 1000.0;
+            MRLog(@"🎥 Camera writer started @ t=0 (using alignment offset: %.1fms)", offsetMs);
+        } else {
+            // Fallback: use camera's own timestamp (should not happen if sync is configured)
+            self.startTime = timestamp;
+            MRLog(@"🎥 Camera writer started @ t=0 (source PTS: %.3fs, no audio sync available)", CMTimeGetSeconds(timestamp));
+        }
+        
         g_cameraStartTimestamp = CFAbsoluteTimeGetCurrent();
-
-        MRLog(@"🎥 Camera writer started @ t=0 (source PTS: %.3fs)", CMTimeGetSeconds(timestamp));
 
         // Signal start completion
         [self completeStart:YES token:self.activeToken];
@@ -553,12 +573,17 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     }
 
     // TIMESTAMP NORMALIZATION (audio_recorder.mm pattern)
+    // LIP SYNC FIX: Use audio-aligned startTime for perfect synchronization
     CMTime adjustedTimestamp = kCMTimeZero;
     if (CMTIME_IS_VALID(self.startTime)) {
         adjustedTimestamp = CMTimeSubtract(timestamp, self.startTime);
         if (CMTIME_COMPARE_INLINE(adjustedTimestamp, <, kCMTimeZero)) {
             adjustedTimestamp = kCMTimeZero;
         }
+    } else {
+        // Fallback: if startTime not set, use current timestamp as base
+        // This should not happen if sync is working correctly
+        adjustedTimestamp = kCMTimeZero;
     }
 
     // Get pixel buffer from sample
