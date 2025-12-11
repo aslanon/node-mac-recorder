@@ -586,6 +586,39 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         adjustedTimestamp = kCMTimeZero;
     }
 
+    // LIP SYNC FIX: Check stopLimit OR elapsed time to drop frames after recording duration
+    // This prevents camera from recording longer than audio
+    double frameTime = CMTimeGetSeconds(adjustedTimestamp);
+    double stopLimit = MRSyncGetStopLimitSeconds();
+    double videoTolerance = 0.05;  // 50ms tolerance for video frames (larger than audio's 20ms)
+
+    // CRITICAL FIX: Also check elapsed time since recording started
+    // This works even if stopLimit hasn't been set yet
+    double elapsedTime = (g_cameraStartTimestamp > 0) ? (CFAbsoluteTimeGetCurrent() - g_cameraStartTimestamp) : 0;
+    double maxDuration = (stopLimit > 0) ? stopLimit : elapsedTime + 1.0;  // Use stopLimit if available, else allow 1s more
+
+    // DEBUG: Log every 30th frame
+    static int frameCounter = 0;
+    frameCounter++;
+    if (frameCounter % 30 == 0) {
+        MRLog(@"📹 Camera frame #%d: frameTime=%.3fs, elapsedTime=%.3fs, stopLimit=%.3fs, maxDuration=%.3fs",
+              frameCounter, frameTime, elapsedTime, stopLimit, maxDuration);
+    }
+
+    // Drop frame if it exceeds stopLimit (when set) or if elapsed time is suspiciously long
+    if (stopLimit > 0 && frameTime > stopLimit + videoTolerance) {
+        MRLog(@"🛑 Camera dropping frame #%d: frameTime %.3fs > stopLimit %.3fs + tolerance",
+              frameCounter, frameTime, stopLimit);
+        return;
+    }
+
+    // Safety check: Drop frames if recording has been going for too long (failsafe)
+    if (elapsedTime > maxDuration + 1.0) {  // Allow 1s grace period
+        MRLog(@"🛑 Camera dropping frame #%d: elapsed %.3fs > maxDuration %.3fs (failsafe)",
+              frameCounter, elapsedTime, maxDuration);
+        return;
+    }
+
     // Get pixel buffer from sample
     CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!pixelBuffer) {
@@ -872,6 +905,14 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
         // Finalize writer (audio_recorder.mm pattern)
         if (self.writer && self.writerStarted) {
+            // LIP SYNC FIX: End session at stopLimit to trim excess frames
+            double stopLimit = MRSyncGetStopLimitSeconds();
+            if (stopLimit > 0) {
+                CMTime endTime = CMTimeMakeWithSeconds(stopLimit, 600);
+                [self.writer endSessionAtSourceTime:endTime];
+                MRLog(@"🎯 Camera writer session ended at %.3fs (stopLimit)", stopLimit);
+            }
+
             if (self.writerInput) {
                 [self.writerInput markAsFinished];
             }

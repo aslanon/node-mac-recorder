@@ -786,14 +786,23 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     }
 
     if (requestedStopLimit > 0) {
+        MRLog(@"🎯 SYNC FIX: Setting stopLimit = %.3f seconds", requestedStopLimit);
         MRStoreActiveStopLimit(requestedStopLimit);
         MRSyncSetStopLimitSeconds(requestedStopLimit);
     } else {
+        MRLog(@"⚠️ SYNC FIX: stopLimit NOT set (requestedStopLimit = %.3f)", requestedStopLimit);
         MRStoreActiveStopLimit(-1.0);
         MRSyncSetStopLimitSeconds(-1.0);
     }
     MRResetRecordingStartTimestamp();
-    
+
+    // LIP SYNC FIX: Wait 150ms for camera/audio delegates to see stopLimit and drop excess frames
+    if (requestedStopLimit > 0 && (isCameraRecording() || isStandaloneAudioRecording())) {
+        MRLog(@"⏳ LIP SYNC: Waiting 150ms for delegates to process stopLimit...");
+        [NSThread sleepForTimeInterval:0.15];
+        MRLog(@"✅ LIP SYNC: Delegate processing time complete");
+    }
+
     // Try ScreenCaptureKit first
     if (@available(macOS 12.3, *)) {
         if ([ScreenCaptureKitRecorder isRecording]) {

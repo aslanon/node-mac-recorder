@@ -1119,12 +1119,15 @@ class MacRecorder extends EventEmitter {
 				try {
 					console.log('🛑 SYNC: Stopping screen recording');
 					const stopLimit = elapsedSeconds > 0 ? elapsedSeconds : 0;
+					console.log(`📊 DEBUG: elapsedSeconds=${elapsedSeconds.toFixed(3)}, stopLimit=${stopLimit.toFixed(3)}`);
+					console.log(`📊 DEBUG: typeof nativeBinding.stopRecording = ${typeof nativeBinding.stopRecording}`);
+					console.log(`📊 DEBUG: nativeBinding.stopRecording = ${nativeBinding.stopRecording}`);
 					success = nativeBinding.stopRecording(stopLimit);
 					if (success) {
 						console.log('✅ SYNC: Screen recording stopped');
 					}
 				} catch (nativeError) {
-					// console.log('Native stop failed:', nativeError.message);
+					console.log('⚠️ Native stop failed:', nativeError.message);
 					success = true; // Assume success to avoid throwing
 				}
 
