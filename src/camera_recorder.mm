@@ -451,10 +451,11 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
 
     MRLog(@"🎥 Camera recording dimensions: %zux%zu", width, height);
 
-    // H.264 video settings (matching current quality)
-    NSInteger bitrate = (NSInteger)(width * height * 24);  // 24fps target
-    bitrate = MAX(bitrate, 5 * 1000 * 1000);   // Min 5 Mbps
-    bitrate = MIN(bitrate, 30 * 1000 * 1000);  // Max 30 Mbps
+    // H.264 video settings - optimized for smaller file size
+    // Using lower bitrate multiplier for camera (2x instead of 24x) to reduce file size
+    NSInteger bitrate = (NSInteger)(width * height * 2);
+    bitrate = MAX(bitrate, 1 * 1000 * 1000);   // Min 1 Mbps
+    bitrate = MIN(bitrate, 6 * 1000 * 1000);   // Max 6 Mbps (significantly reduced from 30)
 
     NSDictionary *compressionProps = @{
         AVVideoAverageBitRateKey: @(bitrate),
