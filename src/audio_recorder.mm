@@ -45,6 +45,22 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     return [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
 }
 
+- (BOOL)configureVoiceProcessingForDevice:(AVCaptureDevice *)device {
+    // NOTE: Voice Isolation (microphoneMode) is iOS-only and not available on macOS
+    // For macOS noise reduction, users should:
+    // 1. Enable "Voice Isolation" in macOS Control Center > Microphone menu (macOS 13+)
+    // 2. Or use third-party apps like Krisp, RTX Voice, or SoundSource
+    //
+    // AVCaptureDevice on macOS does not expose noise reduction or voice processing properties
+    // Alternative approaches would require:
+    // - Core Audio AUVoiceIO unit (complex, requires audio graph restructuring)
+    // - AVAudioEngine with voice processing (causes crashes on macOS with aggregate devices)
+    // - Custom DSP filtering (significant development effort, may not be effective)
+
+    MRLog(@"ℹ️ macOS microphone noise reduction: Use System Settings or Control Center to enable Voice Isolation");
+    return NO;
+}
+
 - (BOOL)setupWriterWithSampleBuffer:(CMSampleBufferRef)sampleBuffer error:(NSError **)error {
     if (self.writer) {
         return YES;
@@ -167,7 +183,10 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
         }
         return NO;
     }
-    
+
+    // Configure voice processing to filter keyboard/mouse clicks and background noise
+    [self configureVoiceProcessingForDevice:device];
+
     self.outputPath = outputPath;
     self.session = [[AVCaptureSession alloc] init];
     

@@ -1516,6 +1516,11 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                     micIdToUse = nil;
                 }
             }
+
+            // NOTE: Voice processing (microphoneMode) is iOS-only and not available on macOS
+            // Voice isolation is configured in audio_recorder.mm for AVFoundation-based recordings
+            // ScreenCaptureKit microphone capture on macOS 15+ doesn't support microphoneMode
+
             if (micIdToUse && micIdToUse.length > 0) {
                 streamConfig.microphoneCaptureDeviceID = micIdToUse;
             }
