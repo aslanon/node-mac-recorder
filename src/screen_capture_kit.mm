@@ -214,9 +214,9 @@ static void SCKQualityBitrateForDimensions(NSString *preset,
         minBitrate = 18 * 1000 * 1000;
         maxBitrate = 80 * 1000 * 1000;
     } else { // high/default - ULTRA quality
-        multiplier = 60;
-        minBitrate = 80 * 1000 * 1000;
-        maxBitrate = 300 * 1000 * 1000;
+        multiplier = 80;
+        minBitrate = 100 * 1000 * 1000;
+        maxBitrate = 400 * 1000 * 1000;
     }
 
     double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) * (double)multiplier;

@@ -134,9 +134,9 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         
         // QUALITY FIX: ULTRA HIGH quality screen recording
         // ProMotion displays may capture at 10 FPS - use very high bitrate for perfect quality
-        NSInteger bitrate = (NSInteger)(recordingSize.width * recordingSize.height * 45);
-        bitrate = MAX(bitrate, 50 * 1000 * 1000);  // Minimum 50 Mbps
-        bitrate = MIN(bitrate, 200 * 1000 * 1000); // Maximum 200 Mbps
+        NSInteger bitrate = (NSInteger)(recordingSize.width * recordingSize.height * 60);
+        bitrate = MAX(bitrate, 70 * 1000 * 1000);  // Minimum 70 Mbps
+        bitrate = MIN(bitrate, 250 * 1000 * 1000); // Maximum 250 Mbps
 
         NSLog(@"🎬 ULTRA QUALITY AVFoundation: %dx%d, bitrate=%.2fMbps",
               (int)recordingSize.width, (int)recordingSize.height, bitrate / (1000.0 * 1000.0));
