@@ -800,7 +800,10 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         AVVideoExpectedSourceFrameRateKey: @(MAX(1, g_targetFPS)),
         AVVideoQualityKey: qualityHint,  // 0.0-1.0, higher is better
         AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-        AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
+        AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
+        // Add data rate limits for consistent quality during motion
+        AVVideoAverageNonDroppableFrameRateKey: @(MAX(1, g_targetFPS)),
+        AVVideoMaxKeyFrameIntervalDurationKey: @(1.0)  // Keyframe at least every second
     };
 
     NSDictionary *videoSettings = @{
@@ -1532,6 +1535,13 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         streamConfig.scalesToFit = NO;
         if (@available(macOS 13.0, *)) {
             streamConfig.queueDepth = 8;
+        }
+        if (@available(macOS 14.0, *)) {
+            // Use best capture resolution for maximum quality on Retina displays
+            streamConfig.captureResolution = SCCaptureResolutionBest;
+            // Make stream opaque to avoid alpha channel overhead
+            streamConfig.shouldBeOpaque = YES;
+            MRLog(@"🎯 Using SCCaptureResolutionBest + shouldBeOpaque for maximum quality (macOS 14+)");
         }
 
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
