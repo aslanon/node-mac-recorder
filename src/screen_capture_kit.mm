@@ -1383,11 +1383,46 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             }
 
             if (targetWindow && targetApp) {
-                MRLog(@"🪟 Recording window: %@ (%ux%u)",
-                      targetWindow.title, (unsigned)targetWindow.frame.size.width, (unsigned)targetWindow.frame.size.height);
+                CGFloat windowLogicalWidth = targetWindow.frame.size.width;
+                CGFloat windowLogicalHeight = targetWindow.frame.size.height;
+
+                // Find display containing this window to get scale factor
+                CGFloat scaleFactor = 1.0;
+                CGPoint windowCenter = CGPointMake(
+                    targetWindow.frame.origin.x + windowLogicalWidth / 2.0,
+                    targetWindow.frame.origin.y + windowLogicalHeight / 2.0
+                );
+                for (SCDisplay *disp in content.displays) {
+                    CGRect dispBounds = CGRectMake(disp.frame.origin.x, disp.frame.origin.y,
+                                                   disp.frame.size.width, disp.frame.size.height);
+                    if (CGRectContainsPoint(dispBounds, windowCenter)) {
+                        NSInteger physW = (NSInteger)CGDisplayPixelsWide(disp.displayID);
+                        NSInteger physH = (NSInteger)CGDisplayPixelsHigh(disp.displayID);
+                        CGFloat scX = (disp.width > 0) ? (CGFloat)physW / (CGFloat)disp.width : 1.0;
+                        CGFloat scY = (disp.height > 0) ? (CGFloat)physH / (CGFloat)disp.height : 1.0;
+                        scaleFactor = MAX(scX, scY);
+                        break;
+                    }
+                }
+                // Fallback: use main display scale factor
+                if (scaleFactor == 1.0 && content.displays.count > 0) {
+                    SCDisplay *mainDisp = content.displays.firstObject;
+                    NSInteger physW = (NSInteger)CGDisplayPixelsWide(mainDisp.displayID);
+                    NSInteger physH = (NSInteger)CGDisplayPixelsHigh(mainDisp.displayID);
+                    CGFloat scX = (mainDisp.width > 0) ? (CGFloat)physW / (CGFloat)mainDisp.width : 1.0;
+                    CGFloat scY = (mainDisp.height > 0) ? (CGFloat)physH / (CGFloat)mainDisp.height : 1.0;
+                    scaleFactor = MAX(scX, scY);
+                }
+
+                NSInteger physicalWindowWidth = (NSInteger)(windowLogicalWidth * scaleFactor);
+                NSInteger physicalWindowHeight = (NSInteger)(windowLogicalHeight * scaleFactor);
+
+                MRLog(@"🪟 Recording window: %@ logical=%ux%u, physical=%ldx%ld, scale=%.2fx",
+                      targetWindow.title, (unsigned)windowLogicalWidth, (unsigned)windowLogicalHeight,
+                      (long)physicalWindowWidth, (long)physicalWindowHeight, scaleFactor);
                 filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
-                recordingWidth = (NSInteger)targetWindow.frame.size.width;
-                recordingHeight = (NSInteger)targetWindow.frame.size.height;
+                recordingWidth = physicalWindowWidth;
+                recordingHeight = physicalWindowHeight;
             } else {
                 NSLog(@"❌ Window ID %@ not found", windowId);
                 SCKFailScheduling();
@@ -1421,11 +1456,24 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             }
 
             if (targetDisplay) {
-                MRLog(@"🖥️ Recording display %u (%dx%d)",
-                      targetDisplay.displayID, (int)targetDisplay.width, (int)targetDisplay.height);
+                // Use physical pixel dimensions for Retina displays (not logical points)
+                CGDirectDisplayID displayID = targetDisplay.displayID;
+                NSInteger physicalWidth = (NSInteger)CGDisplayPixelsWide(displayID);
+                NSInteger physicalHeight = (NSInteger)CGDisplayPixelsHigh(displayID);
+                NSInteger logicalWidth = targetDisplay.width;
+                NSInteger logicalHeight = targetDisplay.height;
+
+                CGFloat scaleX = (logicalWidth > 0) ? (CGFloat)physicalWidth / (CGFloat)logicalWidth : 1.0;
+                CGFloat scaleY = (logicalHeight > 0) ? (CGFloat)physicalHeight / (CGFloat)logicalHeight : 1.0;
+                CGFloat scaleFactor = MAX(scaleX, scaleY);
+
+                MRLog(@"🖥️ Recording display %u: logical=%dx%d, physical=%ldx%ld, scale=%.2fx",
+                      displayID, (int)logicalWidth, (int)logicalHeight,
+                      (long)physicalWidth, (long)physicalHeight, scaleFactor);
+
                 filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
-                recordingWidth = targetDisplay.width;
-                recordingHeight = targetDisplay.height;
+                recordingWidth = physicalWidth;
+                recordingHeight = physicalHeight;
             } else {
                 NSLog(@"❌ No display available");
                 SCKFailScheduling();
@@ -1437,11 +1485,22 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             CGFloat cropWidth = [captureRect[@"width"] doubleValue];
             CGFloat cropHeight = [captureRect[@"height"] doubleValue];
             if (cropWidth > 0 && cropHeight > 0) {
-                MRLog(@"🔲 Crop area specified: %.0fx%.0f at (%.0f,%.0f)",
-                      cropWidth, cropHeight,
+                // Scale crop dimensions for Retina displays
+                CGFloat cropScaleFactor = 1.0;
+                if (targetDisplay) {
+                    NSInteger physW = (NSInteger)CGDisplayPixelsWide(targetDisplay.displayID);
+                    NSInteger physH = (NSInteger)CGDisplayPixelsHigh(targetDisplay.displayID);
+                    CGFloat scX = (targetDisplay.width > 0) ? (CGFloat)physW / (CGFloat)targetDisplay.width : 1.0;
+                    CGFloat scY = (targetDisplay.height > 0) ? (CGFloat)physH / (CGFloat)targetDisplay.height : 1.0;
+                    cropScaleFactor = MAX(scX, scY);
+                }
+                NSInteger physicalCropWidth = (NSInteger)(cropWidth * cropScaleFactor);
+                NSInteger physicalCropHeight = (NSInteger)(cropHeight * cropScaleFactor);
+                MRLog(@"🔲 Crop area: logical=%.0fx%.0f, physical=%ldx%ld, scale=%.2fx at (%.0f,%.0f)",
+                      cropWidth, cropHeight, (long)physicalCropWidth, (long)physicalCropHeight, cropScaleFactor,
                       [captureRect[@"x"] doubleValue], [captureRect[@"y"] doubleValue]);
-                recordingWidth = (NSInteger)cropWidth;
-                recordingHeight = (NSInteger)cropHeight;
+                recordingWidth = physicalCropWidth;
+                recordingHeight = physicalCropHeight;
             }
         }
 
