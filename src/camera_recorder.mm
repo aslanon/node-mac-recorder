@@ -526,6 +526,9 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
 
+    // A/V SYNC: Signal camera's first frame to release audio hold
+    MRSyncMarkCameraFirstFrame(timestamp);
+
     // Hold camera frames until we see audio so timelines stay aligned
     if (MRSyncShouldHoldVideoFrame(timestamp)) {
         return;
@@ -807,8 +810,8 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
         [session startRunning];
 
-        // Give session a brief moment to warm up
-        [NSThread sleepForTimeInterval:0.5];
+        // A/V SYNC FIX: Removed 500ms warmup delay that was causing lip sync issues.
+        // The delegate pattern starts writing on first frame, no warmup needed.
 
         if (self.stopInFlight || token != self.activeToken) {
             [session stopRunning];

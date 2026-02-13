@@ -18,6 +18,13 @@ static CMTime g_audioFirstTimestamp = kCMTimeInvalid;
 static CMTime g_alignmentDelta = kCMTimeInvalid;
 static double g_stopLimitSeconds = -1.0;
 
+// Bidirectional barrier: camera side
+static BOOL g_expectCamera = NO;
+static BOOL g_cameraReady = YES;
+static CMTime g_cameraFirstTimestamp = kCMTimeInvalid;
+static CMTime g_audioHoldFirstTimestamp = kCMTimeInvalid;
+static BOOL g_audioHoldLogged = NO;
+
 void MRSyncConfigure(BOOL expectAudio) {
     dispatch_sync(MRSyncQueue(), ^{
         g_expectAudio = expectAudio;
@@ -27,6 +34,12 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_audioFirstTimestamp = kCMTimeInvalid;
         g_alignmentDelta = kCMTimeInvalid;
         g_stopLimitSeconds = -1.0;
+        // Reset camera barrier state
+        g_expectCamera = NO;
+        g_cameraReady = YES;
+        g_cameraFirstTimestamp = kCMTimeInvalid;
+        g_audioHoldFirstTimestamp = kCMTimeInvalid;
+        g_audioHoldLogged = NO;
     });
 }
 
@@ -143,6 +156,93 @@ CMTime MRSyncAudioFirstTimestamp(void) {
         ts = g_audioFirstTimestamp;
     });
     return ts;
+}
+
+void MRSyncConfigureCamera(BOOL expectCamera) {
+    dispatch_sync(MRSyncQueue(), ^{
+        g_expectCamera = expectCamera;
+        g_cameraReady = expectCamera ? NO : YES;
+        g_cameraFirstTimestamp = kCMTimeInvalid;
+        g_audioHoldFirstTimestamp = kCMTimeInvalid;
+        g_audioHoldLogged = NO;
+    });
+    if (expectCamera) {
+        MRLog(@"🔄 A/V SYNC: Bidirectional barrier enabled - audio will wait for camera");
+    }
+}
+
+void MRSyncMarkCameraFirstFrame(CMTime timestamp) {
+    if (!CMTIME_IS_VALID(timestamp)) {
+        return;
+    }
+
+    __block BOOL logRelease = NO;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (g_cameraReady) {
+            return;
+        }
+        if (!CMTIME_IS_VALID(g_cameraFirstTimestamp)) {
+            g_cameraFirstTimestamp = timestamp;
+        }
+        g_cameraReady = YES;
+        g_audioHoldFirstTimestamp = kCMTimeInvalid;
+        g_audioHoldLogged = NO;
+        logRelease = YES;
+    });
+
+    if (logRelease) {
+        MRLog(@"🎥 A/V SYNC: Camera first frame received - releasing audio hold");
+    }
+}
+
+BOOL MRSyncShouldHoldAudioSample(CMTime timestamp) {
+    if (!CMTIME_IS_VALID(timestamp)) {
+        return NO;
+    }
+
+    __block BOOL shouldHold = NO;
+    __block BOOL logHold = NO;
+    __block BOOL logRelease = NO;
+
+    dispatch_sync(MRSyncQueue(), ^{
+        if (!g_expectCamera || g_cameraReady) {
+            shouldHold = NO;
+            return;
+        }
+
+        // Camera not yet ready - hold audio samples
+        if (!CMTIME_IS_VALID(g_audioHoldFirstTimestamp)) {
+            g_audioHoldFirstTimestamp = timestamp;
+            shouldHold = YES;
+            if (!g_audioHoldLogged) {
+                g_audioHoldLogged = YES;
+                logHold = YES;
+            }
+            return;
+        }
+
+        // Safety timeout: release after 1.0s even if camera hasn't started
+        CMTime elapsed = CMTimeSubtract(timestamp, g_audioHoldFirstTimestamp);
+        CMTime maxWait = CMTimeMakeWithSeconds(1.0, 600);
+        if (CMTIME_COMPARE_INLINE(elapsed, >, maxWait)) {
+            g_cameraReady = YES;
+            g_audioHoldFirstTimestamp = kCMTimeInvalid;
+            g_audioHoldLogged = NO;
+            shouldHold = NO;
+            logRelease = YES;
+            return;
+        }
+
+        shouldHold = YES;
+    });
+
+    if (logHold) {
+        MRLog(@"⏸️ A/V SYNC: Audio holding samples until camera produces first frame (max 1.0s)");
+    } else if (logRelease) {
+        MRLog(@"▶️ A/V SYNC: Audio hold released by timeout (camera not detected within 1.0s)");
+    }
+
+    return shouldHold;
 }
 
 void MRSyncSetStopLimitSeconds(double seconds) {

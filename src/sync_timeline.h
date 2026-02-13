@@ -26,6 +26,12 @@ CMTime MRSyncVideoAlignmentOffset(void);
 // Returns the first audio timestamp observed for the current session.
 CMTime MRSyncAudioFirstTimestamp(void);
 
+// Bidirectional camera-audio barrier: ensures both start writing from the
+// same wall-clock moment for perfect lip sync.
+void MRSyncConfigureCamera(BOOL expectCamera);
+void MRSyncMarkCameraFirstFrame(CMTime timestamp);
+BOOL MRSyncShouldHoldAudioSample(CMTime timestamp);
+
 // Optional hard stop limit (seconds) shared across capture components.
 void MRSyncSetStopLimitSeconds(double seconds);
 double MRSyncGetStopLimitSeconds(void);

@@ -476,6 +476,10 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     bool captureScreenAudio = captureSystemAudio || (screenCaptureSupportsMic && captureMicrophone);
     bool captureAnyAudio = captureScreenAudio || captureStandaloneMic;
     MRSyncConfigure(captureAnyAudio);
+    // A/V SYNC: Configure bidirectional barrier when camera is active
+    if (captureCamera) {
+        MRSyncConfigureCamera(YES);
+    }
     NSString *preferredAudioDeviceId = nil;
     if (captureSystemAudio && systemAudioDeviceId && [systemAudioDeviceId length] > 0) {
         preferredAudioDeviceId = systemAudioDeviceId;
@@ -619,27 +623,41 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     // Use ScreenCaptureKit with window exclusion and timeout protection
                     NSError *sckError = nil;
 
-                    // CRITICAL SYNC FIX: Start camera BEFORE ScreenCaptureKit
-                    // This allows camera warmup to happen in parallel with async ScreenCaptureKit init
+                    // A/V SYNC: Start camera non-blocking BEFORE ScreenCaptureKit
+                    // Camera warmup overlaps with async SCK initialization
                     if (captureCamera) {
-                        MRLog(@"🎥 Starting camera recording BEFORE ScreenCaptureKit (parallel warmup)");
-                        if (!startCameraWithConfirmation(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
+                        MRLog(@"🎥 Starting camera recording non-blocking (parallel with SCK init)");
+                        if (!startCameraIfRequested(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
                             MRLog(@"❌ Camera failed to start - aborting recording");
                             return Napi::Boolean::New(env, false);
                         }
                     }
 
-                    // Set timeout for ScreenCaptureKit initialization
-                    // Attempt to start ScreenCaptureKit with safety wrapper
+                    // Start SCK immediately - don't wait for camera confirmation
                     @try {
                         MRLog(@"🎯 SYNC: Starting ScreenCaptureKit recording");
                         if ([ScreenCaptureKitRecorder startRecordingWithConfiguration:sckConfig
                                                                              delegate:g_delegate
                                                                                 error:&sckError]) {
 
-                            // ScreenCaptureKit başlatma başarılı - validation yapmıyoruz
                             MRLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
                             MRLog(@"✅ SYNC: ScreenCaptureKit recording started successfully");
+
+                            // A/V SYNC: Wait for camera AFTER SCK started
+                            if (captureCamera) {
+                                if (!waitForCameraRecordingStart(8.0)) {
+                                    double cameraStartTs = currentCameraRecordingStartTime();
+                                    if (cameraStartTs > 0 || isCameraRecording()) {
+                                        MRLog(@"⚠️ Camera did not confirm start within 8.0s but appears running; continuing");
+                                    } else {
+                                        MRLog(@"❌ Camera did not signal recording start within 8.0s");
+                                        stopCameraRecording();
+                                        [ScreenCaptureKitRecorder stopRecording];
+                                        return Napi::Boolean::New(env, false);
+                                    }
+                                }
+                                MRLog(@"✅ Camera recording confirmed (started in parallel with SCK)");
+                            }
 
                             g_isRecording = true;
                             MRMarkRecordingStartTimestamp();
@@ -712,6 +730,15 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                    NSString* audioOutputPath,
                                                    double frameRate);
 
+            // A/V SYNC: Start camera non-blocking BEFORE AVFoundation
+            if (captureCamera) {
+                MRLog(@"🎥 Starting camera recording non-blocking (parallel with AVF init)");
+                if (!startCameraIfRequested(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
+                    MRLog(@"❌ Camera failed to start - aborting recording");
+                    return Napi::Boolean::New(env, false);
+                }
+            }
+
             MRLog(@"🎯 SYNC: Starting screen recording");
             bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect,
                                                       captureCursor, includeMicrophone, includeSystemAudio,
@@ -721,13 +748,20 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                 MRLog(@"🎥 RECORDING METHOD: AVFoundation");
                 MRLog(@"✅ SYNC: Screen recording started successfully");
 
+                // A/V SYNC: Wait for camera AFTER AVF started
                 if (captureCamera) {
-                    MRLog(@"🎥 Starting camera recording for AVFoundation fallback");
-                    if (!startCameraWithConfirmation(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
-                        MRLog(@"❌ Camera failed to start for AVFoundation - stopping");
-                        stopAVFoundationRecording();
-                        return Napi::Boolean::New(env, false);
+                    if (!waitForCameraRecordingStart(8.0)) {
+                        double cameraStartTs = currentCameraRecordingStartTime();
+                        if (cameraStartTs > 0 || isCameraRecording()) {
+                            MRLog(@"⚠️ Camera did not confirm start within 8.0s but appears running; continuing");
+                        } else {
+                            MRLog(@"❌ Camera did not signal recording start within 8.0s");
+                            stopCameraRecording();
+                            stopAVFoundationRecording();
+                            return Napi::Boolean::New(env, false);
+                        }
                     }
+                    MRLog(@"✅ Camera recording confirmed (started in parallel with AVF)");
                 }
 
                 // NOTE: Audio is handled internally by AVFoundation, no need for standalone audio

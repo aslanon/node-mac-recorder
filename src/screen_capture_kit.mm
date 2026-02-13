@@ -631,8 +631,14 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+
+    // A/V SYNC: Hold audio samples until camera produces first frame
+    if (MRSyncShouldHoldAudioSample(presentationTime)) {
+        return;
+    }
+
     MRSyncMarkAudioSample(presentationTime);
-    
+
     if (!g_audioWriterStarted) {
         if (![g_audioWriter startWriting]) {
             NSLog(@"❌ Audio writer failed to start: %@", g_audioWriter.error);

@@ -856,13 +856,7 @@ class MacRecorder extends EventEmitter {
 					} catch (_) {}
 					this.sessionTimestamp = sessionTimestamp;
 
-					// CURSOR SYNC FIX: Wait additional 300ms for first frames to start
-					// This ensures cursor tracking aligns with actual video timeline
-					// ScreenCaptureKit needs ~200-350ms to actually start capturing frames
-					// We wait 300ms to ensure cursor starts AFTER first video frame
-					console.log('⏳ CURSOR SYNC: Waiting 300ms for first video frames...');
-					await new Promise(r => setTimeout(r, 300));
-
+					// Native sync_timeline handles A/V alignment - no JS-level delay needed
 					const syncTimestamp = Date.now();
 					this.syncTimestamp = syncTimestamp;
 					this.recordingStartTime = syncTimestamp;

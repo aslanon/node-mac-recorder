@@ -336,8 +336,15 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     }
     
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+
+    // A/V SYNC: Hold audio samples until camera produces first frame
+    // This ensures both audio and camera files start from the same wall-clock moment
+    if (MRSyncShouldHoldAudioSample(timestamp)) {
+        return;
+    }
+
     MRSyncMarkAudioSample(timestamp);
-    
+
     if (!self.writerStarted) {
         if (![self.writer startWriting]) {
             NSLog(@"❌ Audio writer failed to start: %@", self.writer.error);
