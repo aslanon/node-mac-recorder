@@ -214,9 +214,9 @@ static void SCKQualityBitrateForDimensions(NSString *preset,
         minBitrate = 18 * 1000 * 1000;
         maxBitrate = 80 * 1000 * 1000;
     } else { // high/default - ULTRA quality
-        multiplier = 80;
-        minBitrate = 100 * 1000 * 1000;
-        maxBitrate = 400 * 1000 * 1000;
+        multiplier = 120;
+        minBitrate = 120 * 1000 * 1000;
+        maxBitrate = 600 * 1000 * 1000;
     }
 
     double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) * (double)multiplier;
@@ -783,7 +783,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     NSString *normalizedQuality = SCKNormalizeQualityPreset(g_qualityPreset);
     SCKQualityBitrateForDimensions(normalizedQuality, width, height, &bitrate, &bitrateMultiplier, &minBitrate, &maxBitrate);
 
-    NSNumber *qualityHint = @0.95;
+    NSNumber *qualityHint = @1.0;
     if ([normalizedQuality isEqualToString:@"medium"]) {
         qualityHint = @0.9;
     } else if ([normalizedQuality isEqualToString:@"low"]) {
@@ -1347,14 +1347,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             g_targetFPS = fps;
         } else {
             g_targetFPS = 60;
-        }
-
-        // CRITICAL ELECTRON FIX: Lower FPS to 30 when recording with camera
-        // This prevents resource conflicts and crashes when running both simultaneously
-        BOOL isCameraEnabled = captureCamera && [captureCamera boolValue];
-        if (isCameraEnabled && g_targetFPS > 30) {
-            MRLog(@"📹 Camera recording detected - lowering ScreenCaptureKit FPS from %ld to 30 for stability", (long)g_targetFPS);
-            g_targetFPS = 30;
         }
 
         MRLog(@"🎬 Starting PURE ScreenCaptureKit recording (NO AVFoundation)");
