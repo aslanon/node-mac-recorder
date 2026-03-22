@@ -496,7 +496,7 @@
     "python": "/usr/local/opt/python@3.13/bin/python3.13",
     "standalone_static_library": 1,
     "global_prefix": "/Users/onur/.nvm/versions/node/v24.5.0",
-    "local_prefix": "/Users/onur/codes/node-mac-recorder",
+    "local_prefix": "/Users/onur/codes/creavit.studio/node-mac-recorder",
     "globalconfig": "/Users/onur/.nvm/versions/node/v24.5.0/etc/npmrc",
     "userconfig": "/Users/onur/.npmrc",
     "init_module": "/Users/onur/.npm-init.js",

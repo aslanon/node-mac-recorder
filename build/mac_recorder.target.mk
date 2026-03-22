@@ -56,7 +56,7 @@ INCS_Debug := \
 	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
 	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
 	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
-	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
+	-I/Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api
 
 DEFS_Release := \
 	'-DNODE_GYP_MODULE_NAME=mac_recorder' \
@@ -110,7 +110,7 @@ INCS_Release := \
 	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/uv/include \
 	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/zlib \
 	-I/Users/onur/Library/Caches/node-gyp/24.5.0/deps/v8/include \
-	-I/Users/onur/codes/node-mac-recorder/node_modules/node-addon-api
+	-I/Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api
 
 OBJS := \
 	$(obj).target/$(TARGET)/src/mac_recorder.o \

@@ -1604,13 +1604,15 @@ class MacRecorder extends EventEmitter {
 											windowHeight: wh
 										};
 
-										// If this is a click event, mark click location
-										// Native eventType values: 'mousedown', 'mouseup', 'rightmousedown', 'rightmouseup'
+										// If this is a click/drag event, mark click location
+										// Native eventType values: 'mousedown', 'mouseup', 'drag', 'rightmousedown', 'rightmouseup', 'rightdrag'
 										const eventType = position.eventType || '';
 										if (eventType === 'mousedown' ||
 											eventType === 'mouseup' ||
+											eventType === 'drag' ||
 											eventType === 'rightmousedown' ||
-											eventType === 'rightmouseup') {
+											eventType === 'rightmouseup' ||
+											eventType === 'rightdrag') {
 											location.click = windowInfo.windowId;
 										}
 										break; // Found the window, stop searching

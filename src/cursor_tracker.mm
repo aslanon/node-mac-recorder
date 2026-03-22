@@ -360,10 +360,10 @@ static void InitializeCursorFingerprintMap(void) {
             AddCursorIfAvailable(@selector(dragLinkCursor), @"alias");
             AddCursorIfAvailable(@selector(resizeLeftRightCursor), @"col-resize");
             AddCursorIfAvailable(@selector(resizeUpDownCursor), @"row-resize");
-            AddCursorIfAvailableByName(@"resizeLeftCursor", @"w-resize");
-            AddCursorIfAvailableByName(@"resizeRightCursor", @"e-resize");
-            AddCursorIfAvailableByName(@"resizeUpCursor", @"n-resize");
-            AddCursorIfAvailableByName(@"resizeDownCursor", @"s-resize");
+            AddCursorIfAvailableByName(@"resizeLeftCursor", @"col-resize");
+            AddCursorIfAvailableByName(@"resizeRightCursor", @"col-resize");
+            AddCursorIfAvailableByName(@"resizeUpCursor", @"ns-resize");
+            AddCursorIfAvailableByName(@"resizeDownCursor", @"ns-resize");
             AddCursorIfAvailableByName(@"resizeNorthWestSouthEastCursor", @"nwse-resize");
             AddCursorIfAvailableByName(@"resizeNorthEastSouthWestCursor", @"nesw-resize");
             AddCursorIfAvailable(@selector(zoomInCursor), @"zoom-in");
@@ -994,10 +994,10 @@ static NSString* cursorTypeFromCursorName(NSString *value) {
             return @"nwse-resize";
         }
         if (horizontal) {
-            return @"ew-resize"; // Use ew-resize as primary horizontal
+            return @"col-resize"; // Desktop SVG var: col-resize
         }
         if (vertical) {
-            return @"ns-resize"; // Use ns-resize as primary vertical
+            return @"ns-resize"; // Desktop SVG var: ns-resize
         }
 
         // If contains "resize" but no specific direction, return generic resize
@@ -1332,34 +1332,35 @@ static NSString* cursorTypeFromSeed(int seed) {
         }
     }
     switch(seed) {
-        case 741324: return @"auto";
-        case 741336: return @"none";
-        case 741338: return @"context-menu";
+        // Desktop'ta SVG karşılığı olan tiplere normalize edilmiş seed map
+        case 741324: return @"default";      // auto → default
+        case 741336: return @"default";      // none → default (gizli cursor kayıtta default gösterilir)
+        case 741338: return @"default";      // context-menu → default (SVG yok)
         case 741339: return @"pointer";
         case 741341: return @"progress";
-        case 741343: return @"wait";
-        case 741345: return @"cell";
+        case 741343: return @"progress";     // wait → progress
+        case 741345: return @"crosshair";    // cell → crosshair (en yakın SVG)
         case 741347: return @"crosshair";
         case 741357: return @"text";
-        case 741359: return @"vertical-text";
+        case 741359: return @"text";         // vertical-text → text
         case 741361: return @"alias";
         case 741362: return @"copy";
-        case 741364: return @"move";
-        case 741368: return @"no-drop";
+        case 741364: return @"all-scroll";   // move → all-scroll
+        case 741368: return @"not-allowed";  // no-drop → not-allowed
         case 741370: return @"not-allowed";
         case 741381: return @"grab";
         case 741385: return @"grabbing";
         case 741389: return @"col-resize";
         case 741393: return @"row-resize";
-        case 741397: return @"n-resize";
-        case 741398: return @"e-resize";
-        case 741409: return @"s-resize";
-        case 741413: return @"w-resize";
-        case 741417: return @"ne-resize";
-        case 741418: return @"nw-resize";
-        case 741420: return @"se-resize";
-        case 741424: return @"sw-resize";
-        case 741426: return @"ew-resize";
+        case 741397: return @"ns-resize";    // n-resize → ns-resize
+        case 741398: return @"col-resize";   // e-resize → col-resize
+        case 741409: return @"ns-resize";    // s-resize → ns-resize
+        case 741413: return @"col-resize";   // w-resize → col-resize
+        case 741417: return @"nesw-resize";  // ne-resize → nesw-resize
+        case 741418: return @"nwse-resize";  // nw-resize → nwse-resize
+        case 741420: return @"nwse-resize";  // se-resize → nwse-resize
+        case 741424: return @"nesw-resize";  // sw-resize → nesw-resize
+        case 741426: return @"col-resize";   // ew-resize → col-resize
         case 741436: return @"ns-resize";
         case 741438: return @"nesw-resize";
         case 741442: return @"nwse-resize";
@@ -1787,6 +1788,71 @@ static NSString* detectSystemCursorType(void) {
     return cursorType;
 }
 
+// Desktop'ta SVG karşılığı olmayan cursor tiplerini desteklenen tiplere normalize et
+static NSString* normalizeCursorTypeForDesktop(NSString *cursorType) {
+    if (!cursorType || [cursorType length] == 0) {
+        return @"default";
+    }
+
+    // Desteklenen tipler — desktop/public/cursor/default/ dizinindeki SVG'lere karşılık gelir
+    static NSSet *supportedTypes = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        supportedTypes = [[NSSet alloc] initWithArray:@[
+            @"default", @"pointer", @"grabbing", @"text", @"grab",
+            @"alias", @"copy", @"not-allowed", @"help", @"progress",
+            @"crosshair", @"all-scroll", @"zoom-in", @"zoom-out",
+            @"row-resize", @"col-resize", @"ns-resize",
+            @"nwse-resize", @"nesw-resize"
+        ]];
+    });
+
+    if ([supportedTypes containsObject:cursorType]) {
+        return cursorType;
+    }
+
+    // Normalize edilmemiş tipleri en yakın desteklenen tipe eşle
+    if ([cursorType isEqualToString:@"auto"] || [cursorType isEqualToString:@"none"] ||
+        [cursorType isEqualToString:@"context-menu"]) {
+        return @"default";
+    }
+    if ([cursorType isEqualToString:@"wait"]) {
+        return @"progress";
+    }
+    if ([cursorType isEqualToString:@"cell"]) {
+        return @"crosshair";
+    }
+    if ([cursorType isEqualToString:@"vertical-text"]) {
+        return @"text";
+    }
+    if ([cursorType isEqualToString:@"move"]) {
+        return @"all-scroll";
+    }
+    if ([cursorType isEqualToString:@"no-drop"]) {
+        return @"not-allowed";
+    }
+    // Yönlü resize → iki yönlü resize
+    if ([cursorType isEqualToString:@"ew-resize"] ||
+        [cursorType isEqualToString:@"e-resize"] ||
+        [cursorType isEqualToString:@"w-resize"]) {
+        return @"col-resize";
+    }
+    if ([cursorType isEqualToString:@"n-resize"] ||
+        [cursorType isEqualToString:@"s-resize"]) {
+        return @"ns-resize";
+    }
+    if ([cursorType isEqualToString:@"ne-resize"] ||
+        [cursorType isEqualToString:@"sw-resize"]) {
+        return @"nesw-resize";
+    }
+    if ([cursorType isEqualToString:@"nw-resize"] ||
+        [cursorType isEqualToString:@"se-resize"]) {
+        return @"nwse-resize";
+    }
+
+    return @"default";
+}
+
 NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
@@ -1823,7 +1889,10 @@ NSString* getCursorType() {
         // Use cursorTypeFromNSCursor for detection (pointer equality + image-based)
         // DO NOT use accessibility detection as it's unreliable and causes false positives
         NSString *systemCursorType = detectSystemCursorType();
-        NSString *finalType = systemCursorType && [systemCursorType length] > 0 ? systemCursorType : @"default";
+        NSString *rawType = systemCursorType && [systemCursorType length] > 0 ? systemCursorType : @"default";
+
+        // Desktop SVG'lerine uyumlu tipe normalize et
+        NSString *finalType = normalizeCursorTypeForDesktop(rawType);
 
         // Only log when cursor type changes
         static NSString *lastLoggedType = nil;
@@ -1967,12 +2036,43 @@ void cursorTimerCallback() {
         if (!cursorType) {
             cursorType = @"default";
         }
+
+        // Mouse button state polling — event tap olmadığında click/drag tespiti
+        bool currentLeftMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonLeft);
+        bool currentRightMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight);
+
         NSString *eventType = @"move";
+
+        if (currentLeftMouseDown && !g_leftMouseDown) {
+            eventType = @"mousedown";
+            g_lastEventType = @"mousedown";
+        } else if (!currentLeftMouseDown && g_leftMouseDown) {
+            eventType = @"mouseup";
+            g_lastEventType = @"mouseup";
+        } else if (currentRightMouseDown && !g_rightMouseDown) {
+            eventType = @"rightmousedown";
+            g_lastEventType = @"rightmousedown";
+        } else if (!currentRightMouseDown && g_rightMouseDown) {
+            eventType = @"rightmouseup";
+            g_lastEventType = @"rightmouseup";
+        } else if (currentLeftMouseDown) {
+            eventType = @"drag";
+            g_lastEventType = @"drag";
+        } else if (currentRightMouseDown) {
+            eventType = @"rightdrag";
+            g_lastEventType = @"rightdrag";
+        } else {
+            eventType = @"move";
+            g_lastEventType = @"move";
+        }
+
+        g_leftMouseDown = currentLeftMouseDown;
+        g_rightMouseDown = currentRightMouseDown;
 
         if (!ShouldEmitCursorEvent(location, cursorType, eventType)) {
             return;
         }
-        
+
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
             @"x": @((int)location.x),
@@ -1982,7 +2082,7 @@ void cursorTimerCallback() {
             @"cursorType": cursorType,
             @"type": eventType
         };
-        
+
         // Direkt dosyaya yaz
         writeToFile(cursorInfo);
         RememberCursorEvent(location, cursorType, eventType);
@@ -2237,20 +2337,32 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         bool currentRightMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight);
         
         NSString *eventType = @"move";
-        
+
         // Mouse button state değişikliklerini tespit et
         if (currentLeftMouseDown && !g_leftMouseDown) {
+            // Sol tuş basıldı (geçiş: up → down)
             eventType = @"mousedown";
             g_lastEventType = @"mousedown";
         } else if (!currentLeftMouseDown && g_leftMouseDown) {
+            // Sol tuş bırakıldı (geçiş: down → up)
             eventType = @"mouseup";
             g_lastEventType = @"mouseup";
         } else if (currentRightMouseDown && !g_rightMouseDown) {
+            // Sağ tuş basıldı
             eventType = @"rightmousedown";
             g_lastEventType = @"rightmousedown";
         } else if (!currentRightMouseDown && g_rightMouseDown) {
+            // Sağ tuş bırakıldı
             eventType = @"rightmouseup";
             g_lastEventType = @"rightmouseup";
+        } else if (currentLeftMouseDown) {
+            // Sol tuş basılı tutuluyor — sürükleme
+            eventType = @"drag";
+            g_lastEventType = @"drag";
+        } else if (currentRightMouseDown) {
+            // Sağ tuş basılı tutuluyor
+            eventType = @"rightdrag";
+            g_lastEventType = @"rightdrag";
         } else {
             eventType = @"move";
             g_lastEventType = @"move";
