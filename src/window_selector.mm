@@ -56,6 +56,31 @@ static id g_screenKeyEventMonitor = nil;
 static NSTimer *g_screenTrackingTimer = nil;
 static NSInteger g_currentActiveScreenIndex = -1;
 
+static bool shouldAllowElectronWindows() {
+    NSString *flag = [[[NSProcessInfo processInfo] environment] objectForKey:@"CREAVIT_ALLOW_ELECTRON_WINDOWS"];
+    if (!flag) return false;
+
+    NSString *normalized = [[flag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [normalized isEqualToString:@"1"] ||
+           [normalized isEqualToString:@"true"] ||
+           [normalized isEqualToString:@"yes"] ||
+           [normalized isEqualToString:@"on"];
+}
+
+static bool shouldSkipSelectableWindowOwner(NSString *windowOwner) {
+    if (!windowOwner || [windowOwner length] == 0) return true;
+    if ([windowOwner isEqualToString:@"WindowServer"]) return true;
+    if ([windowOwner isEqualToString:@"Dock"]) return true;
+
+    if (!shouldAllowElectronWindows()) {
+        if ([windowOwner containsString:@"Electron"] || [windowOwner containsString:@"node"]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Record icon helpers
 static NSImage *CreateRecordIconImage(CGFloat size) {
     const CGFloat leadingInset = 24.0;
@@ -757,12 +782,7 @@ NSArray* getAllSelectableWindows() {
                 
                 // Skip system windows, dock, menu bar, etc.
                 if ([windowLayer intValue] != 0) continue; // Only normal windows
-                if (!windowOwner || [windowOwner length] == 0) continue;
-                if ([windowOwner isEqualToString:@"WindowServer"]) continue;
-                if ([windowOwner isEqualToString:@"Dock"]) continue;
-                
-                // Skip Electron windows (our own overlay)
-                if ([windowOwner containsString:@"Electron"] || [windowOwner containsString:@"node"]) continue;
+                if (shouldSkipSelectableWindowOwner(windowOwner)) continue;
                 
                 // Extract bounds
                 int x = [[bounds objectForKey:@"X"] intValue];
@@ -802,8 +822,7 @@ NSDictionary* getWindowUnderCursor(CGPoint point) {
         for (NSDictionary *window in g_allWindows) {
             NSString *appName = [window objectForKey:@"appName"];
             
-            // Skip Electron windows (our own overlay)
-            if (appName && ([appName containsString:@"Electron"] || [appName containsString:@"node"])) {
+            if (shouldSkipSelectableWindowOwner(appName)) {
                 continue;
             }
             

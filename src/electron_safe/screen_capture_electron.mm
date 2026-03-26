@@ -50,6 +50,30 @@ static void initializeSafeQueue() {
     initializeSafeQueue();
 }
 
++ (BOOL)shouldAllowElectronWindows {
+    NSString *flag = [[[NSProcessInfo processInfo] environment] objectForKey:@"CREAVIT_ALLOW_ELECTRON_WINDOWS"];
+    if (!flag) return NO;
+
+    NSString *normalized = [[flag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [normalized isEqualToString:@"1"] ||
+           [normalized isEqualToString:@"true"] ||
+           [normalized isEqualToString:@"yes"] ||
+           [normalized isEqualToString:@"on"];
+}
+
++ (BOOL)shouldSkipWindowOwner:(NSString *)appName {
+    if (!appName || appName.length == 0) return YES;
+    if ([appName containsString:@"WindowServer"] || [appName containsString:@"Dock"]) return YES;
+
+    if (![self shouldAllowElectronWindows]) {
+        if ([appName containsString:@"Electron"] || [appName containsString:@"node"]) {
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
 + (BOOL)startRecordingWithPath:(NSString *)outputPath options:(NSDictionary *)options {
     if (@available(macOS 12.3, *)) {
         return [self startRecordingModern:outputPath options:options];
@@ -432,8 +456,7 @@ static void initializeSafeQueue() {
                         
                         NSString *appName = window.owningApplication.applicationName ?: @"Unknown";
                         
-                        // Skip Electron windows (our overlay)
-                        if ([appName containsString:@"Electron"] || [appName containsString:@"node"]) continue;
+                        if ([self shouldSkipWindowOwner:appName]) continue;
                         
                         NSDictionary *windowInfo = @{
                             @"id": @(window.windowID),

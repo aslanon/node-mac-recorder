@@ -12,6 +12,30 @@ static void initializeWindowQueue() {
     });
 }
 
+static BOOL ShouldAllowElectronWindows(void) {
+    NSString *flag = [[[NSProcessInfo processInfo] environment] objectForKey:@"CREAVIT_ALLOW_ELECTRON_WINDOWS"];
+    if (!flag) return NO;
+
+    NSString *normalized = [[flag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [normalized isEqualToString:@"1"] ||
+           [normalized isEqualToString:@"true"] ||
+           [normalized isEqualToString:@"yes"] ||
+           [normalized isEqualToString:@"on"];
+}
+
+static BOOL ShouldSkipWindowOwner(NSString *appName) {
+    if (!appName || appName.length == 0) return YES;
+    if ([appName containsString:@"WindowServer"] || [appName containsString:@"Dock"]) return YES;
+
+    if (!ShouldAllowElectronWindows()) {
+        if ([appName containsString:@"Electron"] || [appName containsString:@"node"]) {
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
 // NAPI Function: Get Windows (Electron-safe)
 Napi::Value GetWindowsElectronSafe(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -38,11 +62,7 @@ Napi::Value GetWindowsElectronSafe(const Napi::CallbackInfo& info) {
                                 
                                 NSString *appName = window.owningApplication.applicationName ?: @"Unknown";
                                 
-                                // Skip Electron windows (our overlay) and system windows
-                                if ([appName containsString:@"Electron"] || 
-                                    [appName containsString:@"node"] ||
-                                    [appName containsString:@"WindowServer"] ||
-                                    [appName containsString:@"Dock"]) continue;
+                                if (ShouldSkipWindowOwner(appName)) continue;
                                 
                                 NSDictionary *windowInfo = @{
                                     @"id": @(window.windowID),
@@ -94,11 +114,7 @@ Napi::Value GetWindowsElectronSafe(const Napi::CallbackInfo& info) {
                             NSString *appName = (__bridge NSString*)ownerName;
                             NSString *windowTitle = windowName ? (__bridge NSString*)windowName : @"";
                             
-                            // Skip Electron windows and system windows
-                            if ([appName containsString:@"Electron"] || 
-                                [appName containsString:@"node"] ||
-                                [appName containsString:@"WindowServer"] ||
-                                [appName containsString:@"Dock"]) continue;
+                            if (ShouldSkipWindowOwner(appName)) continue;
                             
                             // Get window bounds
                             CGRect bounds = CGRectZero;
