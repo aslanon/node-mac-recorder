@@ -814,6 +814,10 @@ static bool g_leftMouseDown = false;
 static bool g_rightMouseDown = false;
 static NSString *g_lastEventType = @"move";
 
+// Text input (keyboard) tracking state
+static NSTimeInterval g_lastTextInputEmitTime = 0; // Throttle: son textInput event zamanı
+static const NSTimeInterval TEXT_INPUT_THROTTLE_MS = 50; // Min 50ms aralık (20 FPS)
+
 // Accessibility tabanlı cursor tip tespiti
 static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
     @autoreleasepool {
@@ -1942,6 +1946,125 @@ void writeToFile(NSDictionary *cursorData) {
     }
 }
 
+// Text input event: Klavye basıldığında focused text field'in caret pozisyonunu yakala
+static void emitTextInputEvent(NSTimeInterval timestamp, NSTimeInterval unixTimeMs, CGPoint mouseLocation) {
+    // Throttle: Çok sık emit etme (performans için)
+    if (unixTimeMs - g_lastTextInputEmitTime < TEXT_INPUT_THROTTLE_MS) {
+        return;
+    }
+
+    @autoreleasepool {
+        @try {
+            AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+            if (!systemWide) return;
+
+            AXUIElementRef focusedElement = NULL;
+            AXError focusErr = AXUIElementCopyAttributeValue(
+                systemWide, kAXFocusedUIElementAttribute, (CFTypeRef *)&focusedElement);
+
+            if (focusErr != kAXErrorSuccess || !focusedElement) {
+                CFRelease(systemWide);
+                return;
+            }
+
+            // Focused element text field mi kontrol et
+            NSString *role = CopyAttributeString(focusedElement, kAXRoleAttribute);
+            BOOL isEditable = NO;
+            CopyAttributeBoolean(focusedElement, CFSTR("AXEditable"), &isEditable);
+
+            BOOL isTextField = StringEqualsAny(role, @[
+                @"AXTextField", @"AXTextArea", @"AXTextView",
+                @"AXTextEditor", @"AXSearchField",
+                @"AXComboBox"
+            ]) || isEditable;
+
+            if (!isTextField) {
+                CFRelease(focusedElement);
+                CFRelease(systemWide);
+                return;
+            }
+
+            // Input frame bilgisini al (AXPosition + AXSize)
+            CGPoint inputOrigin = CGPointZero;
+            CGSize inputSize = CGSizeZero;
+            AXValueRef positionValue = NULL;
+            AXValueRef sizeValue = NULL;
+
+            AXUIElementCopyAttributeValue(focusedElement, kAXPositionAttribute, (CFTypeRef *)&positionValue);
+            AXUIElementCopyAttributeValue(focusedElement, kAXSizeAttribute, (CFTypeRef *)&sizeValue);
+
+            if (positionValue) {
+                AXValueGetValue(positionValue, kAXValueTypeCGPoint, &inputOrigin);
+                CFRelease(positionValue);
+            }
+            if (sizeValue) {
+                AXValueGetValue(sizeValue, kAXValueTypeCGSize, &inputSize);
+                CFRelease(sizeValue);
+            }
+
+            // Caret pozisyonunu al (AXSelectedTextRange → AXBoundsForRange)
+            CGPoint caretPos = CGPointMake(inputOrigin.x, inputOrigin.y);
+            BOOL hasCaretPos = NO;
+
+            CFTypeRef selectedRangeValue = NULL;
+            AXError rangeErr = AXUIElementCopyAttributeValue(
+                focusedElement, CFSTR("AXSelectedTextRange"), &selectedRangeValue);
+
+            if (rangeErr == kAXErrorSuccess && selectedRangeValue) {
+                CFTypeRef boundsValue = NULL;
+                AXError boundsErr = AXUIElementCopyParameterizedAttributeValue(
+                    focusedElement, CFSTR("AXBoundsForRange"),
+                    selectedRangeValue, &boundsValue);
+
+                if (boundsErr == kAXErrorSuccess && boundsValue) {
+                    CGRect caretBounds = CGRectZero;
+                    if (AXValueGetValue((AXValueRef)boundsValue, kAXValueTypeCGRect, &caretBounds)) {
+                        // Caret'in dikey ortası
+                        caretPos = CGPointMake(
+                            caretBounds.origin.x,
+                            caretBounds.origin.y + caretBounds.size.height / 2.0
+                        );
+                        hasCaretPos = YES;
+                    }
+                    CFRelease(boundsValue);
+                }
+                CFRelease(selectedRangeValue);
+            }
+
+            // Caret alınamazsa input frame'in sol ortasını kullan
+            if (!hasCaretPos) {
+                caretPos = CGPointMake(inputOrigin.x + 4, inputOrigin.y + inputSize.height / 2.0);
+            }
+
+            // textInput event'i oluştur ve dosyaya yaz
+            NSDictionary *textInputInfo = @{
+                @"x": @((int)mouseLocation.x),
+                @"y": @((int)mouseLocation.y),
+                @"timestamp": @(timestamp),
+                @"unixTimeMs": @(unixTimeMs),
+                @"cursorType": @"text",
+                @"type": @"textInput",
+                @"caretX": @((int)caretPos.x),
+                @"caretY": @((int)caretPos.y),
+                @"inputFrame": @{
+                    @"x": @((int)inputOrigin.x),
+                    @"y": @((int)inputOrigin.y),
+                    @"width": @((int)inputSize.width),
+                    @"height": @((int)inputSize.height)
+                }
+            };
+
+            writeToFile(textInputInfo);
+            g_lastTextInputEmitTime = unixTimeMs;
+
+            CFRelease(focusedElement);
+            CFRelease(systemWide);
+        } @catch (NSException *exception) {
+            // Accessibility hata verirse sessizce devam et
+        }
+    }
+}
+
 // Event callback for mouse events
 CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
     @autoreleasepool {
@@ -1982,6 +2105,10 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             case kCGEventOtherMouseDragged:
                 eventType = @"drag";
                 break;
+            case kCGEventKeyDown:
+                // Klavye event'i — text caret tracking için
+                emitTextInputEvent(timestamp, unixTimeMs, location);
+                return event; // Mouse event olarak işleme, ayrı handle edildi
             case kCGEventMouseMoved:
             default:
                 eventType = @"move";
@@ -1991,7 +2118,7 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         if (!ShouldEmitCursorEvent(location, cursorType, eventType)) {
             return event;
         }
-        
+
         // Cursor data oluştur
         NSDictionary *cursorInfo = @{
             @"x": @((int)location.x),
@@ -2001,7 +2128,7 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
             @"cursorType": cursorType,
             @"type": eventType
         };
-        
+
         // Direkt dosyaya yaz
         writeToFile(cursorInfo);
         RememberCursorEvent(location, cursorType, eventType);
@@ -2140,6 +2267,7 @@ void cleanupCursorTracking() {
     g_lastDetectedCursorType = nil;
     g_cursorTypeCounter = 0;
     g_isFirstWrite = true;
+    g_lastTextInputEmitTime = 0;
     ResetCursorEventHistory();
 }
 
@@ -2180,7 +2308,7 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
         g_trackingStartTime = [NSDate date];
         ResetCursorEventHistory();
         
-        // Create event tap for mouse events
+        // Create event tap for mouse + keyboard events
         CGEventMask eventMask = (CGEventMaskBit(kCGEventLeftMouseDown) |
                                 CGEventMaskBit(kCGEventLeftMouseUp) |
                                 CGEventMaskBit(kCGEventRightMouseDown) |
@@ -2190,7 +2318,8 @@ Napi::Value StartCursorTracking(const Napi::CallbackInfo& info) {
                                 CGEventMaskBit(kCGEventMouseMoved) |
                                 CGEventMaskBit(kCGEventLeftMouseDragged) |
                                 CGEventMaskBit(kCGEventRightMouseDragged) |
-                                CGEventMaskBit(kCGEventOtherMouseDragged));
+                                CGEventMaskBit(kCGEventOtherMouseDragged) |
+                                CGEventMaskBit(kCGEventKeyDown));
         
         bool eventTapActive = false;
         g_eventTap = CGEventTapCreate(kCGSessionEventTap,
