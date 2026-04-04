@@ -2164,6 +2164,13 @@ void cursorTimerCallback() {
             cursorType = @"default";
         }
 
+        // Timer-only mod: CGEventTap yokken kCGEventKeyDown gelmez; caret satırları hiç yazılmazdı.
+        // I-beam görünürken AX ile periyodik textInput üret (emitTextInputEvent içinde throttle var).
+        if ([cursorType isEqualToString:@"text"] ||
+            [cursorType isEqualToString:@"vertical-text"]) {
+            emitTextInputEvent(timestamp, unixTimeMs, location);
+        }
+
         // Mouse button state polling — event tap olmadığında click/drag tespiti
         bool currentLeftMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonLeft);
         bool currentRightMouseDown = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight);
