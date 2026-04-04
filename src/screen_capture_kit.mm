@@ -342,17 +342,23 @@ static void FinishWriter(AVAssetWriter *writer, AVAssetWriterInput *input) {
     if (!writer) {
         return;
     }
-    
-    if (input) {
+
+    // markAsFinished sadece AVAssetWriterStatusWriting (1) durumunda çağrılabilir
+    // Status 0 (Unknown) veya diğer durumlarda crash eder
+    if (input && writer.status == AVAssetWriterStatusWriting) {
         [input markAsFinished];
     }
-    
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    [writer finishWritingWithCompletionHandler:^{
-        dispatch_semaphore_signal(semaphore);
-    }];
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
-    dispatch_semaphore_wait(semaphore, timeout);
+
+    if (writer.status == AVAssetWriterStatusWriting) {
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        [writer finishWritingWithCompletionHandler:^{
+            dispatch_semaphore_signal(semaphore);
+        }];
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
+        dispatch_semaphore_wait(semaphore, timeout);
+    } else if (writer.status == AVAssetWriterStatusFailed) {
+        NSLog(@"⚠️ Writer already failed: %@", writer.error);
+    }
 }
 
 static void CleanupWriters(void) {
@@ -373,10 +379,10 @@ static void CleanupWriters(void) {
     }
     
     if (g_audioWriter) {
-        if (g_systemAudioInput) {
+        if (g_systemAudioInput && g_audioWriter.status == AVAssetWriterStatusWriting) {
             [g_systemAudioInput markAsFinished];
         }
-        if (g_microphoneAudioInput) {
+        if (g_microphoneAudioInput && g_audioWriter.status == AVAssetWriterStatusWriting) {
             [g_microphoneAudioInput markAsFinished];
         }
         FinishWriter(g_audioWriter, nil);

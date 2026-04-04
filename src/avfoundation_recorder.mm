@@ -502,7 +502,8 @@ extern "C" bool stopAVFoundationRecording() {
         
         // Finish writing with null checks
         AVAssetWriterInput *writerInput = g_avVideoInput;
-        if (writerInput) {
+        AVAssetWriter *writerRef = g_avWriter;
+        if (writerInput && writerRef && writerRef.status == AVAssetWriterStatusWriting) {
             [writerInput markAsFinished];
         }
         
