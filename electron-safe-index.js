@@ -1,6 +1,7 @@
 const { EventEmitter } = require("events");
 const path = require("path");
 const fs = require("fs");
+const cursorCapturePolling = require("./lib/cursorCapture/polling");
 
 // Electron-safe native module loading
 let electronSafeNativeBinding;
@@ -40,6 +41,17 @@ class ElectronSafeMacRecorder extends EventEmitter {
 		this.outputPath = null;
 		this.recordingTimer = null;
 		this.recordingStartTime = null;
+
+		this.cursorCaptureInterval = null;
+		this.cursorCaptureFile = null;
+		this.cursorCaptureStartTime = null;
+		this.cursorCaptureFirstWrite = true;
+		this.lastCapturedData = null;
+		this.cursorDisplayInfo = null;
+		this.recordingDisplayInfo = null;
+		this.cursorCaptureSessionTimestamp = null;
+		this.sessionTimestamp = null;
+		this.syncTimestamp = null;
 
 		this.options = {
 			includeMicrophone: false,
@@ -85,10 +97,8 @@ class ElectronSafeMacRecorder extends EventEmitter {
 			throw new Error("Output path is required");
 		}
 
-		// Update options
 		this.setOptions(options);
 
-		// Ensure output directory exists
 		const outputDir = path.dirname(outputPath);
 		if (!fs.existsSync(outputDir)) {
 			fs.mkdirSync(outputDir, { recursive: true });
@@ -96,63 +106,123 @@ class ElectronSafeMacRecorder extends EventEmitter {
 
 		this.outputPath = outputPath;
 
-		return new Promise((resolve, reject) => {
-			try {
-				console.log("🎬 Starting Electron-safe recording...");
-				console.log("📁 Output path:", outputPath);
-				console.log("⚙️ Options:", this.options);
+		console.log("🎬 Starting Electron-safe recording...");
+		console.log("📁 Output path:", outputPath);
+		console.log("⚙️ Options:", this.options);
 
-				// Call native function with timeout protection
-				const startTimeout = setTimeout(() => {
-					this.isRecording = false;
-					reject(new Error("Recording start timeout - Electron protection"));
-				}, 10000); // 10 second timeout
+		const startTimeout = setTimeout(() => {
+			this.isRecording = false;
+		}, 10000);
 
-				const success = electronSafeNativeBinding.startRecording(
-					outputPath,
-					this.options
-				);
-				clearTimeout(startTimeout);
+		let success = false;
+		try {
+			success = electronSafeNativeBinding.startRecording(
+				outputPath,
+				this.options,
+			);
+		} finally {
+			clearTimeout(startTimeout);
+		}
 
-				if (success) {
-					this.isRecording = true;
-					this.recordingStartTime = Date.now();
+		if (!success) {
+			console.error("❌ Failed to start Electron-safe recording");
+			throw new Error("Failed to start recording - check permissions");
+		}
 
-					// Start progress timer
-					this.recordingTimer = setInterval(() => {
-						const elapsed = Math.floor(
-							(Date.now() - this.recordingStartTime) / 1000
-						);
-						this.emit("timeUpdate", elapsed);
-					}, 1000);
+		this.isRecording = true;
+		this.recordingStartTime = Date.now();
 
-					// Emit started event
-					setTimeout(() => {
-						this.emit("recordingStarted", {
-							outputPath: this.outputPath,
-							timestamp: this.recordingStartTime,
-							options: this.options,
-							electronSafe: true,
-						});
-					}, 100);
+		this.recordingTimer = setInterval(() => {
+			const elapsed = Math.floor(
+				(Date.now() - this.recordingStartTime) / 1000,
+			);
+			this.emit("timeUpdate", elapsed);
+		}, 1000);
 
-					this.emit("started", this.outputPath);
-					console.log("✅ Electron-safe recording started successfully");
-					resolve(this.outputPath);
-				} else {
-					console.error("❌ Failed to start Electron-safe recording");
-					reject(new Error("Failed to start recording - check permissions"));
-				}
-			} catch (error) {
-				console.error("❌ Exception during recording start:", error);
-				this.isRecording = false;
-				if (this.recordingTimer) {
-					clearInterval(this.recordingTimer);
-					this.recordingTimer = null;
-				}
-				reject(error);
+		const sessionTs =
+			options.sessionTimestamp ||
+			this.sessionTimestamp ||
+			this.recordingStartTime;
+		this.sessionTimestamp = sessionTs;
+		const cursorFilePath = path.join(
+			outputDir,
+			`temp_cursor_${sessionTs}.json`,
+		);
+
+		let recordingDisplayInfo = null;
+		try {
+			const displays = await this.getDisplays();
+			const did = this.options.displayId;
+			let target = null;
+			if (did != null && did !== undefined) {
+				target = displays.find((d) => d.id === did);
 			}
-		});
+			if (!target) {
+				target = displays.find((d) => d.isPrimary) || displays[0];
+			}
+			if (target) {
+				recordingDisplayInfo = {
+					displayId: target.id,
+					x: target.x || 0,
+					y: target.y || 0,
+					width: target.width,
+					height: target.height,
+					logicalWidth: target.width,
+					logicalHeight: target.height,
+				};
+			}
+		} catch {
+			recordingDisplayInfo = null;
+		}
+		this.recordingDisplayInfo = recordingDisplayInfo;
+
+		const syncTimestamp = Date.now();
+		this.syncTimestamp = syncTimestamp;
+
+		try {
+			await cursorCapturePolling.startCursorCapture(
+				this,
+				electronSafeNativeBinding,
+				cursorFilePath,
+				{
+					videoRelative: !!recordingDisplayInfo,
+					displayInfo: recordingDisplayInfo,
+					recordingType: this.options.windowId
+						? "window"
+						: this.options.captureArea
+							? "area"
+							: "display",
+					captureArea: this.options.captureArea || null,
+					windowId: this.options.windowId || null,
+					startTimestamp: syncTimestamp,
+				},
+			);
+		} catch (cursorError) {
+			console.warn(
+				"⚠️ Cursor tracking failed to start:",
+				cursorError.message,
+			);
+		}
+
+		const startPayloadTs = this.syncTimestamp || this.recordingStartTime;
+		const fileTimestampPayload = this.sessionTimestamp;
+
+		setTimeout(() => {
+			this.emit("recordingStarted", {
+				outputPath: this.outputPath,
+				timestamp: startPayloadTs,
+				options: this.options,
+				electronSafe: true,
+				cursorOutputPath: cursorFilePath,
+				sessionTimestamp: fileTimestampPayload,
+				syncTimestamp: startPayloadTs,
+				fileTimestamp: fileTimestampPayload,
+			});
+		}, 100);
+
+		this.emit("started", this.outputPath);
+		console.log("✅ Electron-safe recording started successfully");
+		return this.outputPath;
 	}
 
 	/**
@@ -163,64 +233,66 @@ class ElectronSafeMacRecorder extends EventEmitter {
 			throw new Error("No recording in progress");
 		}
 
-		return new Promise((resolve, reject) => {
-			try {
-				console.log("🛑 Stopping Electron-safe recording...");
+		try {
+			console.log("🛑 Stopping Electron-safe recording...");
 
-				// Call native function with timeout protection
-				const stopTimeout = setTimeout(() => {
-					this.isRecording = false;
-					if (this.recordingTimer) {
-						clearInterval(this.recordingTimer);
-						this.recordingTimer = null;
-					}
-					reject(new Error("Recording stop timeout - forced cleanup"));
-				}, 10000); // 10 second timeout
-
-				const success = electronSafeNativeBinding.stopRecording();
-				clearTimeout(stopTimeout);
-
-				// Always cleanup
-				this.isRecording = false;
-				if (this.recordingTimer) {
-					clearInterval(this.recordingTimer);
-					this.recordingTimer = null;
+			if (this.cursorCaptureInterval) {
+				try {
+					await cursorCapturePolling.stopCursorCapture(this);
+				} catch (cursorErr) {
+					console.warn(
+						"⚠️ Cursor capture stop:",
+						cursorErr.message,
+					);
 				}
-
-				const result = {
-					code: success ? 0 : 1,
-					outputPath: this.outputPath,
-					electronSafe: true,
-				};
-
-				this.emit("stopped", result);
-
-				if (success) {
-					// Check if file exists
-					setTimeout(() => {
-						if (fs.existsSync(this.outputPath)) {
-							this.emit("completed", this.outputPath);
-							console.log("✅ Recording completed successfully");
-						} else {
-							console.warn("⚠️ Recording completed but file not found");
-						}
-					}, 1000);
-				}
-
-				resolve(result);
-			} catch (error) {
-				console.error("❌ Exception during recording stop:", error);
-
-				// Force cleanup
-				this.isRecording = false;
-				if (this.recordingTimer) {
-					clearInterval(this.recordingTimer);
-					this.recordingTimer = null;
-				}
-
-				reject(error);
 			}
-		});
+
+			const stopTimeout = setTimeout(() => {
+				this.isRecording = false;
+				if (this.recordingTimer) {
+					clearInterval(this.recordingTimer);
+					this.recordingTimer = null;
+				}
+			}, 10000);
+
+			const success = electronSafeNativeBinding.stopRecording();
+			clearTimeout(stopTimeout);
+
+			this.isRecording = false;
+			if (this.recordingTimer) {
+				clearInterval(this.recordingTimer);
+				this.recordingTimer = null;
+			}
+
+			const result = {
+				code: success ? 0 : 1,
+				outputPath: this.outputPath,
+				electronSafe: true,
+			};
+
+			this.emit("stopped", result);
+
+			if (success) {
+				setTimeout(() => {
+					if (fs.existsSync(this.outputPath)) {
+						this.emit("completed", this.outputPath);
+						console.log("✅ Recording completed successfully");
+					} else {
+						console.warn("⚠️ Recording completed but file not found");
+					}
+				}, 1000);
+			}
+
+			return result;
+		} catch (error) {
+			console.error("❌ Exception during recording stop:", error);
+			this.isRecording = false;
+			if (this.recordingTimer) {
+				clearInterval(this.recordingTimer);
+				this.recordingTimer = null;
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -378,6 +450,26 @@ class ElectronSafeMacRecorder extends EventEmitter {
 			console.error("❌ Exception getting audio devices:", error);
 			return [];
 		}
+	}
+
+	async startCursorCapture(intervalOrFilepath, options = {}) {
+		if (!loadElectronSafeModule()) {
+			throw new Error("Failed to load Electron-safe native module");
+		}
+		return cursorCapturePolling.startCursorCapture(
+			this,
+			electronSafeNativeBinding,
+			intervalOrFilepath,
+			options,
+		);
+	}
+
+	async stopCursorCapture() {
+		loadElectronSafeModule();
+		if (!electronSafeNativeBinding) {
+			return false;
+		}
+		return cursorCapturePolling.stopCursorCapture(this);
 	}
 
 	/**

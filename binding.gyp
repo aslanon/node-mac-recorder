@@ -11,6 +11,7 @@
         "src/audio_recorder.mm",
         "src/audio_mixer.mm",
         "src/cursor_tracker.mm",
+        "src/text_input_ax_snapshot.mm",
         "src/window_selector.mm"
       ],
       "include_dirs": [

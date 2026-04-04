@@ -2,6 +2,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <AppKit/AppKit.h>
 #import "../logging.h"
+#import "../text_input_ax_snapshot.h"
 
 // Thread-safe cursor tracking for Electron
 static dispatch_queue_t g_cursorQueue = nil;
@@ -92,12 +93,45 @@ Napi::Value GetCursorPositionElectronSafe(const Napi::CallbackInfo& info) {
     }
 }
 
+static Napi::Value DictToNapiTextInputSnapshotElectron(Napi::Env env, NSDictionary *snap) {
+    Napi::Object o = Napi::Object::New(env);
+    NSNumber *cx = snap[@"caretX"];
+    NSNumber *cy = snap[@"caretY"];
+    o.Set("caretX", Napi::Number::New(env, cx ? [cx doubleValue] : 0));
+    o.Set("caretY", Napi::Number::New(env, cy ? [cy doubleValue] : 0));
+    NSDictionary *frame = snap[@"inputFrame"];
+    Napi::Object fo = Napi::Object::New(env);
+    if ([frame isKindOfClass:[NSDictionary class]]) {
+        fo.Set("x", Napi::Number::New(env, [frame[@"x"] doubleValue]));
+        fo.Set("y", Napi::Number::New(env, [frame[@"y"] doubleValue]));
+        fo.Set("width", Napi::Number::New(env, [frame[@"width"] doubleValue]));
+        fo.Set("height", Napi::Number::New(env, [frame[@"height"] doubleValue]));
+    }
+    o.Set("inputFrame", fo);
+    return o;
+}
+
+Napi::Value GetTextInputSnapshotElectronSafe(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    @try {
+        NSDictionary *snap = MRTextInputSnapshotDictionary();
+        if (!snap) {
+            return env.Null();
+        }
+        return DictToNapiTextInputSnapshotElectron(env, snap);
+    } @catch (NSException *e) {
+        NSLog(@"❌ getTextInputSnapshot: %@", e.reason);
+        return env.Null();
+    }
+}
+
 // Initialize cursor tracker module
 Napi::Object InitCursorTrackerElectron(Napi::Env env, Napi::Object exports) {
     @try {
         initializeCursorQueue();
         
         exports.Set("getCursorPosition", Napi::Function::New(env, GetCursorPositionElectronSafe));
+        exports.Set("getTextInputSnapshot", Napi::Function::New(env, GetTextInputSnapshotElectronSafe));
         
         MRLog(@"✅ Electron-safe cursor tracker initialized");
         return exports;

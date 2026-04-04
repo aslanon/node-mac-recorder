@@ -7,6 +7,7 @@
 #import <Accessibility/Accessibility.h>
 #import <dispatch/dispatch.h>
 #import "logging.h"
+#import "text_input_ax_snapshot.h"
 #include <vector>
 #include <math.h>
 
@@ -1948,125 +1949,25 @@ void writeToFile(NSDictionary *cursorData) {
 
 // Text input event: Klavye basıldığında focused text field'in caret pozisyonunu yakala
 static void emitTextInputEvent(NSTimeInterval timestamp, NSTimeInterval unixTimeMs, CGPoint mouseLocation) {
-    // Throttle: Çok sık emit etme (performans için)
     if (unixTimeMs - g_lastTextInputEmitTime < TEXT_INPUT_THROTTLE_MS) {
         return;
     }
 
-    @autoreleasepool {
-        @try {
-            AXUIElementRef systemWide = AXUIElementCreateSystemWide();
-            if (!systemWide) return;
-
-            AXUIElementRef focusedElement = NULL;
-            AXError focusErr = AXUIElementCopyAttributeValue(
-                systemWide, kAXFocusedUIElementAttribute, (CFTypeRef *)&focusedElement);
-
-            if (focusErr != kAXErrorSuccess || !focusedElement) {
-                CFRelease(systemWide);
-                return;
-            }
-
-            NSString *role = CopyAttributeString(focusedElement, kAXRoleAttribute);
-            BOOL isEditable = NO;
-            CopyAttributeBoolean(focusedElement, CFSTR("AXEditable"), &isEditable);
-
-            CFTypeRef selectedRangeValue = NULL;
-            AXError rangeProbeErr = AXUIElementCopyAttributeValue(
-                focusedElement, CFSTR("AXSelectedTextRange"), (CFTypeRef *)&selectedRangeValue);
-            BOOL hasTextRange = (rangeProbeErr == kAXErrorSuccess && selectedRangeValue != NULL);
-
-            // Electron/Chromium: gerçek yazma genelde AXSelectedTextRange ile gelir; AXWebArea tek başına tüm sayfa olabilir.
-            BOOL isStandardTextRole = StringEqualsAny(role, @[
-                @"AXTextField", @"AXTextArea", @"AXTextView",
-                @"AXTextEditor", @"AXSearchField",
-                @"AXComboBox"
-            ]);
-            BOOL isWebAreaWithCaret = [role isEqualToString:@"AXWebArea"] && hasTextRange;
-            BOOL isTextField = isStandardTextRole || isEditable || isWebAreaWithCaret || hasTextRange;
-
-            if (!isTextField) {
-                if (selectedRangeValue) CFRelease(selectedRangeValue);
-                CFRelease(focusedElement);
-                CFRelease(systemWide);
-                return;
-            }
-
-            // Input frame bilgisini al (AXPosition + AXSize)
-            CGPoint inputOrigin = CGPointZero;
-            CGSize inputSize = CGSizeZero;
-            AXValueRef positionValue = NULL;
-            AXValueRef sizeValue = NULL;
-
-            AXUIElementCopyAttributeValue(focusedElement, kAXPositionAttribute, (CFTypeRef *)&positionValue);
-            AXUIElementCopyAttributeValue(focusedElement, kAXSizeAttribute, (CFTypeRef *)&sizeValue);
-
-            if (positionValue) {
-                AXValueGetValue(positionValue, kAXValueTypeCGPoint, &inputOrigin);
-                CFRelease(positionValue);
-            }
-            if (sizeValue) {
-                AXValueGetValue(sizeValue, kAXValueTypeCGSize, &inputSize);
-                CFRelease(sizeValue);
-            }
-
-            // Caret pozisyonunu al (AXSelectedTextRange → AXBoundsForRange)
-            CGPoint caretPos = CGPointMake(inputOrigin.x, inputOrigin.y);
-            BOOL hasCaretPos = NO;
-
-            if (selectedRangeValue) {
-                CFTypeRef boundsValue = NULL;
-                AXError boundsErr = AXUIElementCopyParameterizedAttributeValue(
-                    focusedElement, CFSTR("AXBoundsForRange"),
-                    selectedRangeValue, &boundsValue);
-
-                if (boundsErr == kAXErrorSuccess && boundsValue) {
-                    CGRect caretBounds = CGRectZero;
-                    if (AXValueGetValue((AXValueRef)boundsValue, kAXValueTypeCGRect, &caretBounds)) {
-                        caretPos = CGPointMake(
-                            caretBounds.origin.x,
-                            caretBounds.origin.y + caretBounds.size.height / 2.0
-                        );
-                        hasCaretPos = YES;
-                    }
-                    CFRelease(boundsValue);
-                }
-                CFRelease(selectedRangeValue);
-                selectedRangeValue = NULL;
-            }
-
-            // Caret alınamazsa input frame'in sol ortasını kullan
-            if (!hasCaretPos) {
-                caretPos = CGPointMake(inputOrigin.x + 4, inputOrigin.y + inputSize.height / 2.0);
-            }
-
-            // textInput event'i oluştur ve dosyaya yaz
-            NSDictionary *textInputInfo = @{
-                @"x": @((int)mouseLocation.x),
-                @"y": @((int)mouseLocation.y),
-                @"timestamp": @(timestamp),
-                @"unixTimeMs": @(unixTimeMs),
-                @"cursorType": @"text",
-                @"type": @"textInput",
-                @"caretX": @((int)caretPos.x),
-                @"caretY": @((int)caretPos.y),
-                @"inputFrame": @{
-                    @"x": @((int)inputOrigin.x),
-                    @"y": @((int)inputOrigin.y),
-                    @"width": @((int)inputSize.width),
-                    @"height": @((int)inputSize.height)
-                }
-            };
-
-            writeToFile(textInputInfo);
-            g_lastTextInputEmitTime = unixTimeMs;
-
-            CFRelease(focusedElement);
-            CFRelease(systemWide);
-        } @catch (NSException *exception) {
-            // Accessibility hata verirse sessizce devam et
-        }
+    NSDictionary *snap = MRTextInputSnapshotDictionary();
+    if (!snap) {
+        return;
     }
+
+    NSMutableDictionary *textInputInfo = [NSMutableDictionary dictionaryWithDictionary:snap];
+    textInputInfo[@"x"] = @((int)mouseLocation.x);
+    textInputInfo[@"y"] = @((int)mouseLocation.y);
+    textInputInfo[@"timestamp"] = @(timestamp);
+    textInputInfo[@"unixTimeMs"] = @(unixTimeMs);
+    textInputInfo[@"cursorType"] = @"text";
+    textInputInfo[@"type"] = @"textInput";
+
+    writeToFile(textInputInfo);
+    g_lastTextInputEmitTime = unixTimeMs;
 }
 
 // Event callback for mouse events
@@ -2677,6 +2578,33 @@ Napi::Value GetCursorDebugInfo(const Napi::CallbackInfo& info) {
     }
 }
 
+static Napi::Value DictToNapiTextInputSnapshot(Napi::Env env, NSDictionary *snap) {
+    Napi::Object o = Napi::Object::New(env);
+    NSNumber *cx = snap[@"caretX"];
+    NSNumber *cy = snap[@"caretY"];
+    o.Set("caretX", Napi::Number::New(env, cx ? [cx doubleValue] : 0));
+    o.Set("caretY", Napi::Number::New(env, cy ? [cy doubleValue] : 0));
+    NSDictionary *frame = snap[@"inputFrame"];
+    Napi::Object fo = Napi::Object::New(env);
+    if ([frame isKindOfClass:[NSDictionary class]]) {
+        fo.Set("x", Napi::Number::New(env, [frame[@"x"] doubleValue]));
+        fo.Set("y", Napi::Number::New(env, [frame[@"y"] doubleValue]));
+        fo.Set("width", Napi::Number::New(env, [frame[@"width"] doubleValue]));
+        fo.Set("height", Napi::Number::New(env, [frame[@"height"] doubleValue]));
+    }
+    o.Set("inputFrame", fo);
+    return o;
+}
+
+static Napi::Value GetTextInputSnapshot(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NSDictionary *snap = MRTextInputSnapshotDictionary();
+    if (!snap) {
+        return env.Null();
+    }
+    return DictToNapiTextInputSnapshot(env, snap);
+}
+
 // Export functions
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports) {
     exports.Set("startCursorTracking", Napi::Function::New(env, StartCursorTracking));
@@ -2684,6 +2612,7 @@ Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports) {
     exports.Set("getCursorPosition", Napi::Function::New(env, GetCursorPosition));
     exports.Set("getCursorTrackingStatus", Napi::Function::New(env, GetCursorTrackingStatus));
     exports.Set("getCursorDebugInfo", Napi::Function::New(env, GetCursorDebugInfo));
+    exports.Set("getTextInputSnapshot", Napi::Function::New(env, GetTextInputSnapshot));
 
     return exports;
 } 

@@ -7,6 +7,7 @@
         "src/electron_safe/screen_capture_electron.mm",
         "src/electron_safe/audio_capture_electron.mm",
         "src/electron_safe/cursor_tracker_electron.mm",
+        "src/text_input_ax_snapshot.mm",
         "src/electron_safe/window_selector_electron.mm"
       ],
       "include_dirs": [
