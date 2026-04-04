@@ -1967,18 +1967,26 @@ static void emitTextInputEvent(NSTimeInterval timestamp, NSTimeInterval unixTime
                 return;
             }
 
-            // Focused element text field mi kontrol et
             NSString *role = CopyAttributeString(focusedElement, kAXRoleAttribute);
             BOOL isEditable = NO;
             CopyAttributeBoolean(focusedElement, CFSTR("AXEditable"), &isEditable);
 
-            BOOL isTextField = StringEqualsAny(role, @[
+            CFTypeRef selectedRangeValue = NULL;
+            AXError rangeProbeErr = AXUIElementCopyAttributeValue(
+                focusedElement, CFSTR("AXSelectedTextRange"), (CFTypeRef *)&selectedRangeValue);
+            BOOL hasTextRange = (rangeProbeErr == kAXErrorSuccess && selectedRangeValue != NULL);
+
+            // Electron/Chromium: gerçek yazma genelde AXSelectedTextRange ile gelir; AXWebArea tek başına tüm sayfa olabilir.
+            BOOL isStandardTextRole = StringEqualsAny(role, @[
                 @"AXTextField", @"AXTextArea", @"AXTextView",
                 @"AXTextEditor", @"AXSearchField",
                 @"AXComboBox"
-            ]) || isEditable;
+            ]);
+            BOOL isWebAreaWithCaret = [role isEqualToString:@"AXWebArea"] && hasTextRange;
+            BOOL isTextField = isStandardTextRole || isEditable || isWebAreaWithCaret || hasTextRange;
 
             if (!isTextField) {
+                if (selectedRangeValue) CFRelease(selectedRangeValue);
                 CFRelease(focusedElement);
                 CFRelease(systemWide);
                 return;
@@ -2006,11 +2014,7 @@ static void emitTextInputEvent(NSTimeInterval timestamp, NSTimeInterval unixTime
             CGPoint caretPos = CGPointMake(inputOrigin.x, inputOrigin.y);
             BOOL hasCaretPos = NO;
 
-            CFTypeRef selectedRangeValue = NULL;
-            AXError rangeErr = AXUIElementCopyAttributeValue(
-                focusedElement, CFSTR("AXSelectedTextRange"), &selectedRangeValue);
-
-            if (rangeErr == kAXErrorSuccess && selectedRangeValue) {
+            if (selectedRangeValue) {
                 CFTypeRef boundsValue = NULL;
                 AXError boundsErr = AXUIElementCopyParameterizedAttributeValue(
                     focusedElement, CFSTR("AXBoundsForRange"),
@@ -2019,7 +2023,6 @@ static void emitTextInputEvent(NSTimeInterval timestamp, NSTimeInterval unixTime
                 if (boundsErr == kAXErrorSuccess && boundsValue) {
                     CGRect caretBounds = CGRectZero;
                     if (AXValueGetValue((AXValueRef)boundsValue, kAXValueTypeCGRect, &caretBounds)) {
-                        // Caret'in dikey ortası
                         caretPos = CGPointMake(
                             caretBounds.origin.x,
                             caretBounds.origin.y + caretBounds.size.height / 2.0
@@ -2029,6 +2032,7 @@ static void emitTextInputEvent(NSTimeInterval timestamp, NSTimeInterval unixTime
                     CFRelease(boundsValue);
                 }
                 CFRelease(selectedRangeValue);
+                selectedRangeValue = NULL;
             }
 
             // Caret alınamazsa input frame'in sol ortasını kullan
