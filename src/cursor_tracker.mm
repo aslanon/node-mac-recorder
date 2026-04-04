@@ -2091,6 +2091,23 @@ CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
         // Event tipini belirle
         switch (type) {
             case kCGEventLeftMouseDown:
+                eventType = @"mousedown";
+                // Odak/caret çoğu uygulamada tıklamadan hemen sonra oluşur; kısa gecikmeyle AX caret yaz.
+                // (Sadece tuşta emit edilince ilk tıkta timeline'da textInput olmuyordu.)
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.028 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (!g_isCursorTracking || !g_trackingStartTime || !g_fileHandle) return;
+                    NSDate *now = [NSDate date];
+                    NSTimeInterval ts = [now timeIntervalSinceDate:g_trackingStartTime] * 1000.0;
+                    NSTimeInterval unixMs = [now timeIntervalSince1970] * 1000.0;
+                    CGPoint loc = CGPointZero;
+                    CGEventRef posEv = CGEventCreate(NULL);
+                    if (posEv) {
+                        loc = CGEventGetLocation(posEv);
+                        CFRelease(posEv);
+                    }
+                    emitTextInputEvent(ts, unixMs, loc);
+                });
+                break;
             case kCGEventRightMouseDown:
             case kCGEventOtherMouseDown:
                 eventType = @"mousedown";
