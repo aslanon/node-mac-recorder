@@ -13,9 +13,12 @@ static void initializeWindowQueue() {
 }
 
 static BOOL ShouldAllowElectronWindows(void) {
-    NSString *flag = [[[NSProcessInfo processInfo] environment] objectForKey:@"CREAVIT_ALLOW_ELECTRON_WINDOWS"];
-    if (!flag) return NO;
+    // NSProcessInfo.environment snapshot'lanır ve runtime'da process.env değişikliklerini yansıtmaz.
+    // getenv() libc üzerinden her seferinde güncel değeri okur — menüden toggle'lanabilsin diye.
+    const char *raw = getenv("CREAVIT_ALLOW_ELECTRON_WINDOWS");
+    if (!raw) return NO;
 
+    NSString *flag = [NSString stringWithUTF8String:raw];
     NSString *normalized = [[flag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     return [normalized isEqualToString:@"1"] ||
            [normalized isEqualToString:@"true"] ||

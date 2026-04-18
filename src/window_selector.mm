@@ -57,9 +57,12 @@ static NSTimer *g_screenTrackingTimer = nil;
 static NSInteger g_currentActiveScreenIndex = -1;
 
 static bool shouldAllowElectronWindows() {
-    NSString *flag = [[[NSProcessInfo processInfo] environment] objectForKey:@"CREAVIT_ALLOW_ELECTRON_WINDOWS"];
-    if (!flag) return false;
+    // NSProcessInfo.environment snapshot'lanır ve runtime değişikliklerini yansıtmaz.
+    // getenv() ile process.env güncellemelerini her seferinde okuyoruz.
+    const char *raw = getenv("CREAVIT_ALLOW_ELECTRON_WINDOWS");
+    if (!raw) return false;
 
+    NSString *flag = [NSString stringWithUTF8String:raw];
     NSString *normalized = [[flag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     return [normalized isEqualToString:@"1"] ||
            [normalized isEqualToString:@"true"] ||
