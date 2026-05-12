@@ -61,15 +61,17 @@ Napi::Value GetWindowsElectronSafe(const Napi::CallbackInfo& info) {
                             for (SCWindow *window in content.windows) {
                                 // Filter out system and small windows
                                 if (window.frame.size.width < 50 || window.frame.size.height < 50) continue;
-                                if (!window.title || window.title.length == 0) continue;
-                                
+
                                 NSString *appName = window.owningApplication.applicationName ?: @"Unknown";
-                                
+
                                 if (ShouldSkipWindowOwner(appName)) continue;
-                                
+
+                                // Fallback: frameless Electron pencereleri kCGWindowName/title döndürmez
+                                NSString *displayTitle = (window.title && window.title.length > 0) ? window.title : appName;
+
                                 NSDictionary *windowInfo = @{
                                     @"id": @(window.windowID),
-                                    @"name": window.title,
+                                    @"name": displayTitle,
                                     @"appName": appName,
                                     @"bundleId": window.owningApplication.bundleIdentifier ?: @"",
                                     @"x": @((int)window.frame.origin.x),
@@ -116,7 +118,9 @@ Napi::Value GetWindowsElectronSafe(const Napi::CallbackInfo& info) {
                             
                             NSString *appName = (__bridge NSString*)ownerName;
                             NSString *windowTitle = windowName ? (__bridge NSString*)windowName : @"";
-                            
+                            // Fallback: frameless Electron pencereleri kCGWindowName döndürmez
+                            if (windowTitle.length == 0) windowTitle = appName;
+
                             if (ShouldSkipWindowOwner(appName)) continue;
                             
                             // Get window bounds

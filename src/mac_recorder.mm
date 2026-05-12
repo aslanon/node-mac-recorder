@@ -1042,6 +1042,12 @@ Napi::Value GetWindows(const Napi::CallbackInfo& info) {
                 CGRectMakeWithDictionaryRepresentation(boundsRef, &bounds);
             }
             
+            // Fallback: frameless Electron pencereleri kCGWindowName döndürmez,
+            // bu durumda appName'i kullan ki pencere listede görünsün.
+            if (windowName.empty() && !appName.empty()) {
+                windowName = appName;
+            }
+
             // Skip windows without name or very small windows
             if (windowName.empty() || bounds.size.width < 50 || bounds.size.height < 50) {
                 continue;
