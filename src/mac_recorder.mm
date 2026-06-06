@@ -21,7 +21,8 @@ extern "C" {
                                    bool includeSystemAudio,
                                    NSString* audioDeviceId,
                                    NSString* audioOutputPath,
-                                   double frameRate);
+                                   double frameRate,
+                                   NSString* qualityPreset);
     bool stopAVFoundationRecording();
     bool isAVFoundationRecording();
     NSString* getAVFoundationAudioPath();
@@ -728,7 +729,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                                                    bool includeSystemAudio,
                                                    NSString* audioDeviceId,
                                                    NSString* audioOutputPath,
-                                                   double frameRate);
+                                                   double frameRate,
+                                                   NSString* qualityPreset);
 
             // A/V SYNC: Start camera non-blocking BEFORE AVFoundation
             if (captureCamera) {
@@ -742,7 +744,8 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
             MRLog(@"🎯 SYNC: Starting screen recording");
             bool avResult = startAVFoundationRecording(outputPath, displayID, windowID, captureRect,
                                                       captureCursor, includeMicrophone, includeSystemAudio,
-                                                      audioDeviceId, audioOutputPath, frameRate);
+                                                      audioDeviceId, audioOutputPath, frameRate,
+                                                      qualityPreset ?: @"high");
 
             if (avResult) {
                 MRLog(@"🎥 RECORDING METHOD: AVFoundation");
