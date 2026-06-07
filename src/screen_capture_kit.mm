@@ -165,6 +165,7 @@ static NSInteger g_targetFPS = 60;
 static NSString *g_qualityPreset = @"high";
 static NSInteger g_frameCount = 0;
 static CFAbsoluteTime g_firstFrameTime = 0;
+static const NSInteger kSCKHighQualityVideoBitrate = 50 * 1000 * 1000;
 
 // Quality helpers
 static NSString *SCKNormalizeQualityPreset(id preset) {
@@ -213,10 +214,10 @@ static void SCKQualityBitrateForDimensions(NSString *preset,
         multiplier = 18;
         minBitrate = 18 * 1000 * 1000;
         maxBitrate = 80 * 1000 * 1000;
-    } else { // high/default - ULTRA quality
-        multiplier = 120;
-        minBitrate = 120 * 1000 * 1000;
-        maxBitrate = 600 * 1000 * 1000;
+    } else { // high/default - fixed high-quality H.264 target
+        multiplier = 0;
+        minBitrate = kSCKHighQualityVideoBitrate;
+        maxBitrate = kSCKHighQualityVideoBitrate;
     }
 
     double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) * (double)multiplier;
@@ -777,58 +778,39 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     NSString *normalizedQuality = SCKNormalizeQualityPreset(g_qualityPreset);
-    BOOL useProRes = [normalizedQuality isEqualToString:@"high"];
+    NSInteger bitrate = 0;
+    NSInteger minBitrate = 0;
+    NSInteger maxBitrate = 0;
+    SCKQualityBitrateForDimensions(normalizedQuality, width, height, &bitrate, NULL, &minBitrate, &maxBitrate);
 
-    NSDictionary *videoSettings = nil;
+    NSNumber *qualityHint = [normalizedQuality isEqualToString:@"high"] ? @1.0 : ([normalizedQuality isEqualToString:@"medium"] ? @0.9 : @0.85);
 
-    if (useProRes) {
-        // Screen Studio-style: ProRes 422 HQ — intra-frame, visually lossless,
-        // hardware-accelerated on Apple Silicon. Best for editor scrubbing & high-zoom clarity.
-        MRLog(@"🎬 Screen encoder (high): %ldx%ld, codec=ProRes 422 HQ",
-              (long)width, (long)height);
+    MRLog(@"🎬 Screen encoder (%@): %ldx%ld, codec=H.264 High Profile, bitrate=%.2fMbps (min=%ldMbps max=%ldMbps)",
+          normalizedQuality,
+          (long)width,
+          (long)height,
+          bitrate / (1000.0 * 1000.0),
+          (long)(minBitrate / (1000 * 1000)),
+          (long)(maxBitrate / (1000 * 1000)));
 
-        videoSettings = @{
-            AVVideoCodecKey: AVVideoCodecTypeAppleProRes422HQ,
-            AVVideoWidthKey: @(width),
-            AVVideoHeightKey: @(height)
-        };
-    } else {
-        NSInteger bitrate = 0;
-        NSInteger bitrateMultiplier = 0;
-        NSInteger minBitrate = 0;
-        NSInteger maxBitrate = 0;
-        SCKQualityBitrateForDimensions(normalizedQuality, width, height, &bitrate, &bitrateMultiplier, &minBitrate, &maxBitrate);
+    NSDictionary *compressionProps = @{
+        AVVideoAverageBitRateKey: @(bitrate),
+        AVVideoMaxKeyFrameIntervalKey: @(MAX(1, g_targetFPS)),
+        AVVideoAllowFrameReorderingKey: @YES,
+        AVVideoExpectedSourceFrameRateKey: @(MAX(1, g_targetFPS)),
+        AVVideoQualityKey: qualityHint,
+        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+        AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
+        AVVideoAverageNonDroppableFrameRateKey: @(MAX(1, g_targetFPS)),
+        AVVideoMaxKeyFrameIntervalDurationKey: @(1.0)
+    };
 
-        NSNumber *qualityHint = [normalizedQuality isEqualToString:@"medium"] ? @0.9 : @0.85;
-
-        MRLog(@"🎬 Screen encoder (%@): %ldx%ld, codec=H.264, multiplier=%ld, bitrate=%.2fMbps (min=%ldMbps max=%ldMbps)",
-              normalizedQuality,
-              (long)width,
-              (long)height,
-              (long)bitrateMultiplier,
-              bitrate / (1000.0 * 1000.0),
-              (long)(minBitrate / (1000 * 1000)),
-              (long)(maxBitrate / (1000 * 1000)));
-
-        NSDictionary *compressionProps = @{
-            AVVideoAverageBitRateKey: @(bitrate),
-            AVVideoMaxKeyFrameIntervalKey: @(MAX(1, g_targetFPS)),
-            AVVideoAllowFrameReorderingKey: @YES,
-            AVVideoExpectedSourceFrameRateKey: @(MAX(1, g_targetFPS)),
-            AVVideoQualityKey: qualityHint,
-            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-            AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
-            AVVideoAverageNonDroppableFrameRateKey: @(MAX(1, g_targetFPS)),
-            AVVideoMaxKeyFrameIntervalDurationKey: @(1.0)
-        };
-
-        videoSettings = @{
-            AVVideoCodecKey: AVVideoCodecTypeH264,
-            AVVideoWidthKey: @(width),
-            AVVideoHeightKey: @(height),
-            AVVideoCompressionPropertiesKey: compressionProps
-        };
-    }
+    NSDictionary *videoSettings = @{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoCompressionPropertiesKey: compressionProps
+    };
     
     g_videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
     g_videoInput.expectsMediaDataInRealTime = YES;

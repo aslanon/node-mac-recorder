@@ -25,6 +25,7 @@ static int64_t g_avFrameNumber = 0;
 static CMTime g_avStartTime;
 static void* g_avAudioRecorder = nil;
 static NSString* g_avAudioOutputPath = nil;
+static const NSInteger kAVFoundationHighQualityVideoBitrate = 50 * 1000 * 1000;
 
 // AVFoundation screen recording implementation
 extern "C" bool startAVFoundationRecording(const std::string& outputPath,
@@ -133,52 +134,52 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                 normalizedQuality = @"high";
             }
         }
-        BOOL useProRes = [normalizedQuality isEqualToString:@"high"];
-
         double fps = requestedFrameRate > 0 ? requestedFrameRate : 60.0;
         if (fps < 1.0) fps = 1.0;
         if (fps > 120.0) fps = 120.0;
 
-        NSDictionary *videoSettings = nil;
-        if (useProRes) {
-            MRLog(@"🎬 AVFoundation encoder (high): %dx%d, codec=ProRes 422 HQ",
-                  (int)recordingSize.width, (int)recordingSize.height);
-            videoSettings = @{
-                AVVideoCodecKey: AVVideoCodecTypeAppleProRes422HQ,
-                AVVideoWidthKey: @((int)recordingSize.width),
-                AVVideoHeightKey: @((int)recordingSize.height)
-            };
-        } else {
-            NSString *codecKey = AVVideoCodecTypeH264;
-            NSInteger multiplier = [normalizedQuality isEqualToString:@"medium"] ? 18 : 10;
-            NSInteger minBitrate = [normalizedQuality isEqualToString:@"medium"] ? (18 * 1000 * 1000) : (10 * 1000 * 1000);
-            NSInteger maxBitrate = [normalizedQuality isEqualToString:@"medium"] ? (80 * 1000 * 1000) : (45 * 1000 * 1000);
-            NSInteger bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
+        NSString *codecKey = AVVideoCodecTypeH264;
+        NSInteger bitrate = kAVFoundationHighQualityVideoBitrate;
+        NSNumber *qualityHint = @1.0;
+
+        if ([normalizedQuality isEqualToString:@"low"]) {
+            NSInteger multiplier = 10;
+            NSInteger minBitrate = 10 * 1000 * 1000;
+            NSInteger maxBitrate = 45 * 1000 * 1000;
+            bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
             bitrate = MAX(bitrate, minBitrate);
             bitrate = MIN(bitrate, maxBitrate);
-            NSNumber *qualityHint = [normalizedQuality isEqualToString:@"medium"] ? @0.9 : @0.85;
-
-            MRLog(@"🎬 AVFoundation encoder (%@): %dx%d, codec=H.264, bitrate=%.2fMbps",
-                  normalizedQuality,
-                  (int)recordingSize.width,
-                  (int)recordingSize.height,
-                  bitrate / (1000.0 * 1000.0));
-
-            videoSettings = @{
-                AVVideoCodecKey: codecKey,
-                AVVideoWidthKey: @((int)recordingSize.width),
-                AVVideoHeightKey: @((int)recordingSize.height),
-                AVVideoCompressionPropertiesKey: @{
-                    AVVideoAverageBitRateKey: @(bitrate),
-                    AVVideoMaxKeyFrameIntervalKey: @((int)fps),
-                    AVVideoAllowFrameReorderingKey: @YES,
-                    AVVideoExpectedSourceFrameRateKey: @((int)fps),
-                    AVVideoQualityKey: qualityHint,
-                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                    AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
-                }
-            };
+            qualityHint = @0.85;
+        } else if ([normalizedQuality isEqualToString:@"medium"]) {
+            NSInteger multiplier = 18;
+            NSInteger minBitrate = 18 * 1000 * 1000;
+            NSInteger maxBitrate = 80 * 1000 * 1000;
+            bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
+            bitrate = MAX(bitrate, minBitrate);
+            bitrate = MIN(bitrate, maxBitrate);
+            qualityHint = @0.9;
         }
+
+        MRLog(@"🎬 AVFoundation encoder (%@): %dx%d, codec=H.264 High Profile, bitrate=%.2fMbps",
+              normalizedQuality,
+              (int)recordingSize.width,
+              (int)recordingSize.height,
+              bitrate / (1000.0 * 1000.0));
+
+        NSDictionary *videoSettings = @{
+            AVVideoCodecKey: codecKey,
+            AVVideoWidthKey: @((int)recordingSize.width),
+            AVVideoHeightKey: @((int)recordingSize.height),
+            AVVideoCompressionPropertiesKey: @{
+                AVVideoAverageBitRateKey: @(bitrate),
+                AVVideoMaxKeyFrameIntervalKey: @((int)fps),
+                AVVideoAllowFrameReorderingKey: @YES,
+                AVVideoExpectedSourceFrameRateKey: @((int)fps),
+                AVVideoQualityKey: qualityHint,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
+            }
+        };
         
         // Create video input
         g_avVideoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
