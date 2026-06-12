@@ -805,10 +805,21 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         AVVideoMaxKeyFrameIntervalDurationKey: @(1.0)
     };
 
+    // Renk etiketleri: kayıt sRGB uzayında yakalanıyor (streamConfig.colorSpaceName),
+    // BT.709 olarak etiketle ki Chromium/QuickTime decode'da doğru yorumlasın.
+    // Etiket olmadan player'lar tahmin yürütüyor ve renkler soluk/kaymış görünüyordu.
+    // Bitrate/boyut maliyeti sıfırdır.
+    NSDictionary *colorProps = @{
+        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+        AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
+    };
+
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @(width),
         AVVideoHeightKey: @(height),
+        AVVideoColorPropertiesKey: colorProps,
         AVVideoCompressionPropertiesKey: compressionProps
     };
     
@@ -1533,6 +1544,12 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             // Make stream opaque to avoid alpha channel overhead
             streamConfig.shouldBeOpaque = YES;
             MRLog(@"🎯 Using SCCaptureResolutionBest + shouldBeOpaque for maximum quality (macOS 14+)");
+        }
+        if (@available(macOS 13.0, *)) {
+            // Frame'leri bilinen bir renk uzayında (sRGB) iste; encoder tarafında
+            // BT.709 etiketiyle birlikte uçtan uca tutarlı renk sağlar.
+            // Aksi halde P3 ekranlarda display-native, etiketsiz piksel gelir.
+            streamConfig.colorSpaceName = kCGColorSpaceSRGB;
         }
 
         BOOL shouldCaptureMic = includeMicrophone ? [includeMicrophone boolValue] : NO;
