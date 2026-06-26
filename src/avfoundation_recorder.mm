@@ -25,7 +25,7 @@ static int64_t g_avFrameNumber = 0;
 static CMTime g_avStartTime;
 static void* g_avAudioRecorder = nil;
 static NSString* g_avAudioOutputPath = nil;
-static const NSInteger kAVFoundationHighQualityVideoBitrate = 50 * 1000 * 1000;
+static const NSInteger kAVFoundationHighQualityVideoBitrate = 100 * 1000 * 1000;
 
 // AVFoundation screen recording implementation
 extern "C" bool startAVFoundationRecording(const std::string& outputPath,
@@ -158,6 +158,14 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             bitrate = MAX(bitrate, minBitrate);
             bitrate = MIN(bitrate, maxBitrate);
             qualityHint = @0.9;
+        } else { // high - çözünürlüğe DUYARLI yüksek kalite (eski sabit 50 Mbps yerine)
+            NSInteger multiplier = 32; // ~0.53 bpp @60fps
+            NSInteger minBitrate = kAVFoundationHighQualityVideoBitrate; // 100 Mbps taban
+            NSInteger maxBitrate = 200 * 1000 * 1000;                    // 200 Mbps tavan
+            bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
+            bitrate = MAX(bitrate, minBitrate);
+            bitrate = MIN(bitrate, maxBitrate);
+            qualityHint = @1.0;
         }
 
         MRLog(@"🎬 AVFoundation encoder (%@): %dx%d, codec=H.264 High Profile, bitrate=%.2fMbps",

@@ -165,7 +165,7 @@ static NSInteger g_targetFPS = 60;
 static NSString *g_qualityPreset = @"high";
 static NSInteger g_frameCount = 0;
 static CFAbsoluteTime g_firstFrameTime = 0;
-static const NSInteger kSCKHighQualityVideoBitrate = 50 * 1000 * 1000;
+static const NSInteger kSCKHighQualityVideoBitrate = 100 * 1000 * 1000;
 
 // Quality helpers
 static NSString *SCKNormalizeQualityPreset(id preset) {
@@ -214,10 +214,12 @@ static void SCKQualityBitrateForDimensions(NSString *preset,
         multiplier = 18;
         minBitrate = 18 * 1000 * 1000;
         maxBitrate = 80 * 1000 * 1000;
-    } else { // high/default - fixed high-quality H.264 target
-        multiplier = 0;
-        minBitrate = kSCKHighQualityVideoBitrate;
-        maxBitrate = kSCKHighQualityVideoBitrate;
+    } else { // high/default - çözünürlüğe DUYARLI yüksek kalite
+        // Eski hali sabit 50 Mbps idi: Retina/4K kayıtta çok düşük (hatta medium
+        // yüksek çözünürlükte high'ı geçebiliyordu). Artık çözünürlükle ölçeklenir.
+        multiplier = 32; // ~0.53 bpp @60fps
+        minBitrate = kSCKHighQualityVideoBitrate; // 100 Mbps taban
+        maxBitrate = 200 * 1000 * 1000;           // 200 Mbps tavan (realtime güvenli)
     }
 
     double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) * (double)multiplier;
