@@ -65,6 +65,9 @@ class MacRecorder extends EventEmitter {
 		this.syncTimestamp = null;
 		this.audioCaptureFile = null;
 		this.audioCaptureActive = false;
+		// Keyboard (shortcut) capture variables
+		this.keyboardCaptureFile = null;
+		this.keyboardCaptureActive = false;
 
 		this.options = {
 			includeMicrophone: false, // Default olarak mikrofon kapalı
@@ -747,6 +750,7 @@ class MacRecorder extends EventEmitter {
 				this.outputPath = outputPath;
 
 				const cursorFilePath = path.join(outputDir, `temp_cursor_${sessionTimestamp}.json`);
+				const keyboardFilePath = path.join(outputDir, `temp_keyboard_${sessionTimestamp}.json`);
 				// CRITICAL FIX: Use .mov extension for camera (native recorder uses .mov, not .webm)
 				let cameraFilePath =
 					this.options.captureCamera === true
@@ -880,6 +884,16 @@ class MacRecorder extends EventEmitter {
 						console.warn('⚠️ Cursor tracking failed to start:', cursorError.message);
 						// Continue with recording even if cursor fails - don't stop native recording
 					}
+
+					// Klavye kısayolu yakalama (cursor ile AYNI zaman referansı)
+					try {
+						console.log('⌨️  SYNC: Starting keyboard shortcut capture at timestamp:', syncTimestamp);
+						await this.startKeyboardCapture(keyboardFilePath, { startTimestamp: syncTimestamp });
+						console.log('✅ SYNC: Keyboard shortcut capture started successfully');
+					} catch (keyboardError) {
+						console.warn('⚠️ Keyboard capture failed to start:', keyboardError.message);
+						// Klavye başlamazsa kayıt devam etsin
+					}
 				}
 
 				if (success) {
@@ -983,6 +997,7 @@ class MacRecorder extends EventEmitter {
 							cameraOutputPath: this.cameraCaptureFile || null,
 							audioOutputPath: this.audioCaptureFile || null,
 							cursorOutputPath: cursorFilePath,
+								keyboardOutputPath: this.keyboardCaptureFile || keyboardFilePath,
 							sessionTimestamp: fileTimestampPayload,
 							syncTimestamp: startTimestampPayload,
 							fileTimestamp: fileTimestampPayload,
@@ -1003,6 +1018,7 @@ class MacRecorder extends EventEmitter {
 							cameraOutputPath: this.cameraCaptureFile || null,
 							audioOutputPath: this.audioCaptureFile || null,
 							cursorOutputPath: cursorFilePath,
+								keyboardOutputPath: this.keyboardCaptureFile || keyboardFilePath,
 							sessionTimestamp: fileTimestampPayload,
 							syncTimestamp: startTimestampPayload,
 							fileTimestamp: fileTimestampPayload,
@@ -1026,6 +1042,7 @@ class MacRecorder extends EventEmitter {
 						cameraOutputPath: this.cameraCaptureFile || null,
 						audioOutputPath: this.audioCaptureFile || null,
 						cursorOutputPath: cursorFilePath,
+								keyboardOutputPath: this.keyboardCaptureFile || keyboardFilePath,
 						sessionTimestamp: fileTimestampPayload,
 						syncTimestamp: startTimestampPayload,
 						fileTimestamp: fileTimestampPayload,
@@ -1104,6 +1121,17 @@ class MacRecorder extends EventEmitter {
 						console.log('✅ SYNC: Cursor tracking stopped');
 					} catch (cursorError) {
 						console.warn('⚠️ Cursor tracking failed to stop:', cursorError.message);
+					}
+				}
+
+				// Klavye kısayolu yakalamayı durdur (instant)
+				if (this.keyboardCaptureActive) {
+					try {
+						console.log('🛑 SYNC: Stopping keyboard shortcut capture');
+						await this.stopKeyboardCapture();
+						console.log('✅ SYNC: Keyboard shortcut capture stopped');
+					} catch (keyboardError) {
+						console.warn('⚠️ Keyboard capture failed to stop:', keyboardError.message);
 					}
 				}
 
@@ -1699,6 +1727,66 @@ class MacRecorder extends EventEmitter {
 				reject(error);
 			}
 		});
+	}
+
+	/**
+	 * Klavye kısayolu (shortcut) yakalamayı başlatır.
+	 * Native CGEventTap keyDown olaylarını dinler; yalnızca ⌘/⌃/⌥ modifier'lı
+	 * basımları zaman damgalı JSON olarak dosyaya yazar (gizlilik: düz yazım kaydedilmez).
+	 * @param {string} filepath - Keyboard data JSON dosya yolu
+	 * @param {Object} options
+	 * @param {number} options.startTimestamp - Cursor/video ile hizalamak için başlangıç zamanı (ms)
+	 */
+	async startKeyboardCapture(filepath, options = {}) {
+		if (typeof filepath !== "string" || !filepath) {
+			throw new Error("Keyboard capture filepath (string) required");
+		}
+		if (
+			!nativeBinding ||
+			typeof nativeBinding.startKeyboardTracking !== "function"
+		) {
+			// Eski native binary — sessizce atla
+			throw new Error("Native keyboard tracking not available in this build");
+		}
+		if (this.keyboardCaptureActive) {
+			throw new Error("Keyboard capture is already running");
+		}
+
+		const startTimestamp = Number(options.startTimestamp) || Date.now();
+		const started = nativeBinding.startKeyboardTracking(filepath, startTimestamp);
+		if (!started) {
+			throw new Error(
+				"Failed to start keyboard tracking (Accessibility permission may be required)"
+			);
+		}
+
+		this.keyboardCaptureFile = filepath;
+		this.keyboardCaptureActive = true;
+		this.emit("keyboardCaptureStarted", filepath);
+		return true;
+	}
+
+	/**
+	 * Klavye kısayolu yakalamayı durdurur ve JSON dosyasını kapatır.
+	 */
+	async stopKeyboardCapture() {
+		if (
+			!nativeBinding ||
+			typeof nativeBinding.stopKeyboardTracking !== "function"
+		) {
+			this.keyboardCaptureActive = false;
+			return false;
+		}
+		if (!this.keyboardCaptureActive) {
+			return false;
+		}
+		try {
+			nativeBinding.stopKeyboardTracking();
+		} finally {
+			this.keyboardCaptureActive = false;
+			this.emit("keyboardCaptureStopped");
+		}
+		return true;
 	}
 
 	/**

@@ -48,7 +48,10 @@ extern "C" {
 // Cursor tracker function declarations
 Napi::Object InitCursorTracker(Napi::Env env, Napi::Object exports);
 
-// Window selector function declarations  
+// Keyboard (shortcut) tracker function declarations
+Napi::Object InitKeyboardTracker(Napi::Env env, Napi::Object exports);
+
+// Window selector function declarations
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
 
 // Window selector overlay functions (external)
@@ -1717,7 +1720,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     
     // Initialize cursor tracker
     InitCursorTracker(env, exports);
-    
+
+    // Initialize keyboard (shortcut) tracker
+    InitKeyboardTracker(env, exports);
+
     // Initialize window selector
     InitWindowSelector(env, exports);
     
