@@ -891,6 +891,8 @@ class MacRecorder extends EventEmitter {
 					// bir zaman kaymasi olarak kalir. Native gercek video baslangicini
 					// biliyor; okuyup sakla ki stop'ta cursor JSON'una yazabilelim.
 					this.videoStartTimestamp = 0;
+					// Onceki kayittan kalan referans sizmasin
+					this.timelineStartTimestamp = 0;
 					try {
 						const nativeVideoStart =
 							typeof nativeBinding.getVideoStartTimestamp === 'function'
@@ -908,6 +910,28 @@ class MacRecorder extends EventEmitter {
 						console.warn('⚠️ SYNC: Video start timestamp read failed:', videoStartError.message);
 					}
 
+					// ZAMAN REFERANSI: cursor/klavye timeline'i VIDEONUN ilk karesine
+					// hizalanir, JS'in "kayit hazir" dedigi ana degil.
+					//
+					// NEDEN: syncTimestamp, yukaridaki hazir-olma dongusunden sonraki an.
+					// Bu an ile videonun gercek t=0'i arasindaki fark, baslatma hizina
+					// gore DEGISIYOR (ornegin ScreenCaptureKit isitilmissa video cok daha
+					// erken basliyor). Cursor bu degisken ana baglanirsa her kayitta
+					// farkli bir kayma olusuyor ve editordeki telafi 1sn limitine
+					// takilabiliyor. Videonun kendi baslangicini referans alinca fark
+					// yapisal olarak sifir olur; hizlanma senkronu bozmaz.
+					const timelineStartTimestamp =
+						this.videoStartTimestamp > 0
+							? this.videoStartTimestamp
+							: syncTimestamp;
+					this.timelineStartTimestamp = timelineStartTimestamp;
+
+					if (timelineStartTimestamp !== syncTimestamp) {
+						console.log(
+							`🎯 SYNC: Timeline referansi video ilk karesine cekildi (${(syncTimestamp - timelineStartTimestamp).toFixed(0)}ms geri)`
+						);
+					}
+
 					const standardCursorOptions = {
 						videoRelative: true,
 						displayInfo: this.recordingDisplayInfo,
@@ -915,11 +939,11 @@ class MacRecorder extends EventEmitter {
 									  this.options.captureArea ? 'area' : 'display',
 						captureArea: this.options.captureArea,
 						windowId: this.options.windowId,
-						startTimestamp: syncTimestamp // Align cursor timeline to actual start
+						startTimestamp: timelineStartTimestamp
 					};
 
 					try {
-						console.log('🎯 SYNC: Starting cursor tracking at timestamp:', syncTimestamp);
+						console.log('🎯 SYNC: Starting cursor tracking at timestamp:', timelineStartTimestamp);
 						await this.startCursorCapture(cursorFilePath, standardCursorOptions);
 						console.log('✅ SYNC: Cursor tracking started successfully');
 					} catch (cursorError) {
@@ -929,8 +953,8 @@ class MacRecorder extends EventEmitter {
 
 					// Klavye kısayolu yakalama (cursor ile AYNI zaman referansı)
 					try {
-						console.log('⌨️  SYNC: Starting keyboard shortcut capture at timestamp:', syncTimestamp);
-						await this.startKeyboardCapture(keyboardFilePath, { startTimestamp: syncTimestamp });
+						console.log('⌨️  SYNC: Starting keyboard shortcut capture at timestamp:', timelineStartTimestamp);
+						await this.startKeyboardCapture(keyboardFilePath, { startTimestamp: timelineStartTimestamp });
 						console.log('✅ SYNC: Keyboard shortcut capture started successfully');
 					} catch (keyboardError) {
 						console.warn('⚠️ Keyboard capture failed to start:', keyboardError.message);
@@ -1021,7 +1045,8 @@ class MacRecorder extends EventEmitter {
 
 					// Native kayıt gerçekten başladığını kontrol etmek için polling başlat
 					let recordingStartedEmitted = false;
-					const checkRecordingStatus = setInterval(() => {
+					let checkRecordingStatus = null;
+					const pollRecordingStatus = () => {
 						try {
 							const nativeStatus = nativeBinding.getRecordingStatus();
 							if (nativeStatus && !recordingStartedEmitted) {
@@ -1067,8 +1092,10 @@ class MacRecorder extends EventEmitter {
 						});
 							}
 						}
-					}, 50); // Her 50ms kontrol et
-					
+					};
+
+					checkRecordingStatus = setInterval(pollRecordingStatus, 50);
+
 					// Timeout fallback - 5 saniye sonra hala başlamamışsa emit et
 					setTimeout(() => {
 						if (!recordingStartedEmitted) {
@@ -1700,12 +1727,30 @@ class MacRecorder extends EventEmitter {
 						}
 
 						// Add sync metadata to first event only
+						//
+						// KRITIK: `videoStartTime` SADECE native'in bildirdigi gercek video
+						// baslangici varsa yazilir. Onceden buraya `cursorCaptureSessionTimestamp`
+						// yaziliyordu; o videonun ilk karesi DEGIL, dosya adi icin uretilen
+						// oturum damgasi. Editor (cursorPlaybackTimeline) bu alani video t=0
+						// sanip birebir telafi uyguladigi icin cursor kayiyordu.
+						// Gercek deger yoksa alani hic yazmiyoruz -> editor heuristik
+						// hizalamaya duser, ki yanlis bir offset uygulamaktan iyidir.
 						if (this.cursorCaptureFirstWrite && this.cursorCaptureSessionTimestamp) {
-							cursorData._syncMetadata = {
-								videoStartTime: this.cursorCaptureSessionTimestamp,
-								cursorStartTime: this.cursorCaptureStartTime,
-								offsetMs: this.cursorCaptureStartTime - this.cursorCaptureSessionTimestamp
-							};
+							const knownVideoStart =
+								Number(this.videoStartTimestamp) > 0
+									? Number(this.videoStartTimestamp)
+									: null;
+
+							cursorData._syncMetadata = knownVideoStart
+								? {
+									videoStartTime: knownVideoStart,
+									cursorStartTime: this.cursorCaptureStartTime,
+									offsetMs: this.cursorCaptureStartTime - knownVideoStart,
+								}
+								: {
+									cursorStartTime: this.cursorCaptureStartTime,
+									sessionTimestamp: this.cursorCaptureSessionTimestamp,
+								};
 						}
 
 						// Sadece eventType değiştiğinde veya pozisyon değiştiğinde kaydet
@@ -1793,7 +1838,13 @@ class MacRecorder extends EventEmitter {
 	 */
 	_writeCursorSyncMetadata(cursorFilePath) {
 		const videoStartTime = Number(this.videoStartTimestamp);
-		const cursorStartTime = Number(this.syncTimestamp);
+		// Cursor timeline'inin GERCEK referansi. Video baslangici okunabildiyse
+		// timeline zaten ona hizalandi (delay 0); okunamadiysa syncTimestamp'e
+		// dusuldu. Burada varsayim yapmak yerine kullanilan degeri yaziyoruz,
+		// aksi halde editor var olmayan bir kaymayi telafi etmeye calisir.
+		const cursorStartTime = Number(
+			this.timelineStartTimestamp || this.syncTimestamp
+		);
 		if (
 			!Number.isFinite(videoStartTime) ||
 			videoStartTime <= 0 ||
