@@ -157,6 +157,24 @@ static void ApplyStartRecordButtonIcon(NSButton *button) {
     }
 }
 
+// CGWindow (sol-üst orijin) <-> Cocoa (sol-alt orijin) dönüşümünde referans yükseklik
+// DAİMA primary ekranın (screens[0]) yüksekliğidir. [NSScreen mainScreen] farenin/aktif
+// pencerenin bulunduğu ekranı döner; çok ekranlı kurulumda kullanılırsa highlight kayar.
+static CGFloat primaryScreenHeight() {
+    NSArray *screens = [NSScreen screens];
+    if ([screens count] == 0) return [[NSScreen mainScreen] frame].size.height;
+    return [[screens objectAtIndex:0] frame].size.height;
+}
+
+// Bir NSScreen frame'ini (Cocoa global) CGWindow koordinat uzayına çevirir
+static NSRect screenFrameInCGSpace(NSScreen *screen) {
+    NSRect f = [screen frame];
+    return NSMakeRect(f.origin.x,
+                      primaryScreenHeight() - NSMaxY(f),
+                      f.size.width,
+                      f.size.height);
+}
+
 // Forward declarations
 void cleanupWindowSelector();
 void updateOverlay();
@@ -234,7 +252,8 @@ void updateScreenOverlays();
     }
     
     // Draw highlight rectangle for the selected window
-    NSBezierPath *highlightPath = [NSBezierPath bezierPathWithRoundedRect:self.highlightFrame
+    // 1px stroke'un yarısı dışarı taşmasın diye 0.5px içeri al -> pencereye tam otursun
+    NSBezierPath *highlightPath = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.highlightFrame, 0.5, 0.5)
                                                                   xRadius:8.0
                                                                   yRadius:8.0];
     
@@ -852,9 +871,10 @@ void updateOverlay() {
         // Get current cursor position
         NSPoint mouseLocation = [NSEvent mouseLocation];
         // Convert from NSEvent coordinates (bottom-left) to CGWindow coordinates (top-left)
-        NSScreen *mainScreen = [NSScreen mainScreen];
-        CGFloat screenHeight = [mainScreen frame].size.height;
-        CGPoint globalPoint = CGPointMake(mouseLocation.x, screenHeight - mouseLocation.y);
+        // NOT: referans DAİMA primary ekran yüksekliği; mainScreen kullanılırsa imleç
+        // farklı bir ekrana geçtiğinde koordinat kayar ve yanlış pencere seçilir.
+        CGPoint globalPoint = CGPointMake(mouseLocation.x,
+                                          primaryScreenHeight() - mouseLocation.y);
         
         // Find window under cursor (no need to refresh g_allWindows frequently since windows can't move)
         NSDictionary *windowUnderCursor = getWindowUnderCursor(globalPoint);
@@ -961,27 +981,21 @@ void updateOverlay() {
             CGFloat windowCenterY = y + height / 2;
             
             for (NSScreen *screen in screens) {
-                NSRect screenFrame = [screen frame];
-                // Convert screen frame to CGWindow coordinates
-                CGFloat screenTop = screenFrame.origin.y + screenFrame.size.height;
-                CGFloat screenBottom = screenFrame.origin.y;
-                CGFloat screenLeft = screenFrame.origin.x;
-                CGFloat screenRight = screenFrame.origin.x + screenFrame.size.width;
-                
-                if (windowCenterX >= screenLeft && windowCenterX <= screenRight &&
-                    windowCenterY >= screenBottom && windowCenterY <= screenTop) {
+                // Pencere koordinatları CGWindow uzayında; ekran frame'ini de aynı uzaya çevir
+                NSRect cgScreen = screenFrameInCGSpace(screen);
+
+                if (windowCenterX >= NSMinX(cgScreen) && windowCenterX <= NSMaxX(cgScreen) &&
+                    windowCenterY >= NSMinY(cgScreen) && windowCenterY <= NSMaxY(cgScreen)) {
                     windowScreen = screen;
                     break;
                 }
             }
-            
+
             // Use main screen if no specific screen found
             if (!windowScreen) windowScreen = [NSScreen mainScreen];
-            
-            // Convert coordinates from CGWindow (top-left) to NSWindow (bottom-left) for the specific screen
-            NSRect screenFrame = [windowScreen frame];
-            CGFloat screenHeight = screenFrame.size.height;
-            CGFloat adjustedY = screenHeight - y - height;
+
+            // Convert coordinates from CGWindow (top-left) to Cocoa global (bottom-left)
+            CGFloat adjustedY = primaryScreenHeight() - y - height;
             
             // Window coordinates are in global space, overlay frame should be screen-relative
             // Keep X coordinate as-is (already in global space which is what we want)
@@ -1014,19 +1028,19 @@ void updateOverlay() {
             NSInteger targetScreenIndex = -1;
             NSScreen *targetScreen = nil;
             
-            // Find screen containing this window
+            // Find screen containing this window (karşılaştırma CGWindow uzayında yapılmalı)
             for (NSInteger i = 0; i < [allScreens count]; i++) {
                 NSScreen *screen = [allScreens objectAtIndex:i];
-                NSRect screenFrame = [screen frame];
-                
+                NSRect cgScreen = screenFrameInCGSpace(screen);
+
                 // Check if window center is within this screen bounds
                 CGFloat windowCenterX = x + width/2;
                 CGFloat windowCenterY = y + height/2;
-                
-                if (windowCenterX >= screenFrame.origin.x && 
-                    windowCenterX <= screenFrame.origin.x + screenFrame.size.width &&
-                    windowCenterY >= screenFrame.origin.y && 
-                    windowCenterY <= screenFrame.origin.y + screenFrame.size.height) {
+
+                if (windowCenterX >= NSMinX(cgScreen) &&
+                    windowCenterX <= NSMaxX(cgScreen) &&
+                    windowCenterY >= NSMinY(cgScreen) &&
+                    windowCenterY <= NSMaxY(cgScreen)) {
                     targetScreenIndex = i;
                     targetScreen = screen;
                     break;
@@ -1043,9 +1057,10 @@ void updateOverlay() {
             WindowSelectorOverlayView *targetOverlayView = [g_perScreenOverlayViews objectAtIndex:targetScreenIndex];
             NSRect targetScreenFrame = [targetScreen frame];
             
-            // Calculate LOCAL coordinates within target screen (much simpler!)
+            // Calculate LOCAL coordinates within target screen
+            // CG (sol-üst, primary orijinli) -> Cocoa global (sol-alt) -> ekran-yerel
             CGFloat localX = x - targetScreenFrame.origin.x;
-            CGFloat localY = (targetScreenFrame.size.height - (y - targetScreenFrame.origin.y)) - height;
+            CGFloat localY = (primaryScreenHeight() - y - height) - targetScreenFrame.origin.y;
             
             NSLog(@"🎯 Window on Screen %ld: Global(%.0f,%.0f) → Local(%.0f,%.0f)", 
                   targetScreenIndex, (CGFloat)x, (CGFloat)y, localX, localY);
@@ -2177,12 +2192,16 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
             NSRect screenFrame = [screen frame];
             
             // Create per-screen overlay window
+            // NOT: screen: parametresi non-nil verilirse contentRect o ekranın sol-alt köşesine
+            // GÖRE yorumlanır; global screenFrame ile birlikte çift offset oluşur. nil verip
+            // frame'i global koordinatta açıkça set ediyoruz.
             NSWindow *screenOverlay = [[NoFocusWindow alloc] initWithContentRect:screenFrame
                                                                         styleMask:NSWindowStyleMaskBorderless
                                                                           backing:NSBackingStoreBuffered
                                                                             defer:NO
-                                                                           screen:screen];
-            
+                                                                           screen:nil];
+            [screenOverlay setFrame:screenFrame display:NO];
+
             // Create per-screen overlay view
             WindowSelectorOverlayView *overlayView = [[WindowSelectorOverlayView alloc] initWithFrame:NSMakeRect(0, 0, screenFrame.size.width, screenFrame.size.height)];
             [screenOverlay setContentView:overlayView];
