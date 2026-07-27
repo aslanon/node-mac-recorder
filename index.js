@@ -866,6 +866,31 @@ class MacRecorder extends EventEmitter {
 					this.recordingStartTime = syncTimestamp;
 					console.log(`🎯 CURSOR SYNC: Cursor tracking will use timestamp: ${syncTimestamp}`);
 
+					// CURSOR/VIDEO TIME ALIGNMENT:
+					// Cursor timeline'in t=0'i bu andir (syncTimestamp), ama videonun
+					// ILK KARESI daha once yakalanmis olabilir (ScreenCaptureKit
+					// baslatma gecikmesi + yukaridaki hazir-olma beklemesi). Editor
+					// "cursor'un ilk ornegi = video t=0" varsayarsa aradaki fark sabit
+					// bir zaman kaymasi olarak kalir. Native gercek video baslangicini
+					// biliyor; okuyup sakla ki stop'ta cursor JSON'una yazabilelim.
+					this.videoStartTimestamp = 0;
+					try {
+						const nativeVideoStart =
+							typeof nativeBinding.getVideoStartTimestamp === 'function'
+								? Number(nativeBinding.getVideoStartTimestamp())
+								: 0;
+						if (Number.isFinite(nativeVideoStart) && nativeVideoStart > 0) {
+							this.videoStartTimestamp = nativeVideoStart;
+							console.log(
+								`🎯 SYNC: Video first-frame timestamp: ${nativeVideoStart} (cursor starts ${(syncTimestamp - nativeVideoStart).toFixed(0)}ms later)`
+							);
+						} else {
+							console.warn('⚠️ SYNC: Video start timestamp unavailable — cursor sync metadata will be skipped');
+						}
+					} catch (videoStartError) {
+						console.warn('⚠️ SYNC: Video start timestamp read failed:', videoStartError.message);
+					}
+
 					const standardCursorOptions = {
 						videoRelative: true,
 						displayInfo: this.recordingDisplayInfo,
@@ -1709,10 +1734,18 @@ class MacRecorder extends EventEmitter {
 				this.cursorCaptureInterval = null;
 
 				// Dosyayı kapat
+				let closedCursorFile = null;
 				if (this.cursorCaptureFile) {
 					const fs = require("fs");
 					fs.appendFileSync(this.cursorCaptureFile, "]");
+					closedCursorFile = this.cursorCaptureFile;
 					this.cursorCaptureFile = null;
+				}
+
+				// Cursor/video zaman hizalama bilgisini dosyaya yaz (editör bunu
+				// okuyup sabit kaymayı telafi ediyor).
+				if (closedCursorFile) {
+					this._writeCursorSyncMetadata(closedCursorFile);
 				}
 
 				// Değişkenleri temizle
@@ -1727,6 +1760,58 @@ class MacRecorder extends EventEmitter {
 				reject(error);
 			}
 		});
+	}
+
+	/**
+	 * Cursor JSON'una video/cursor zaman hizalama bilgisini yazar.
+	 *
+	 * NEDEN: Cursor timeline'inin t=0'i `syncTimestamp` (kayit hazir olduktan
+	 * sonraki an), videonun t=0'i ise ILK KARENIN yakalandigi an. ScreenCaptureKit
+	 * baslatma gecikmesi yuzunden bu ikisi ayni degil; fark bilinmezse oynatimda
+	 * sabit bir zaman kaymasi olusur (cursor video ile "sync tutmuyor").
+	 * Editor tarafi `_syncMetadata.videoStartTime` / `cursorStartTime` okuyup
+	 * tam telafi ediyor — burada sadece gercek degerleri yaziyoruz.
+	 *
+	 * Dosyanin ilk noktasina yazilir; okuyucu ilk metadata'yi bulup kullanir.
+	 */
+	_writeCursorSyncMetadata(cursorFilePath) {
+		const videoStartTime = Number(this.videoStartTimestamp);
+		const cursorStartTime = Number(this.syncTimestamp);
+		if (
+			!Number.isFinite(videoStartTime) ||
+			videoStartTime <= 0 ||
+			!Number.isFinite(cursorStartTime) ||
+			cursorStartTime <= 0
+		) {
+			// Native video baslangici okunamadiysa metadata yazma — editor eski
+			// (telafisiz) davranisa duser, yanlis bir offset uygulamaktan iyidir.
+			return;
+		}
+
+		try {
+			const fs = require("fs");
+			const raw = fs.readFileSync(cursorFilePath, "utf8");
+			const positions = JSON.parse(raw);
+			if (!Array.isArray(positions) || positions.length === 0) return;
+
+			positions[0]._syncMetadata = {
+				videoStartTime,
+				cursorStartTime,
+				startDelayMs: cursorStartTime - videoStartTime,
+				recordingType: this.options?.windowId
+					? "window"
+					: this.options?.captureArea
+						? "area"
+						: "display",
+			};
+
+			fs.writeFileSync(cursorFilePath, JSON.stringify(positions));
+			console.log(
+				`🎯 SYNC: Cursor sync metadata written (video→cursor delay ${(cursorStartTime - videoStartTime).toFixed(0)}ms)`
+			);
+		} catch (error) {
+			console.warn("⚠️ SYNC: Cursor sync metadata write failed:", error.message);
+		}
 	}
 
 	/**
