@@ -150,6 +150,23 @@ class MacRecorder extends EventEmitter {
 	/**
 	 * macOS ekranlarını listeler
 	 */
+	/**
+	 * ScreenCaptureKit'i onceden isitir (SCShareableContent cache).
+	 * Kayit baslatmadan once cagrilirsa "start recorder" gecikmesi belirgin azalir.
+	 * Asenkron ve guvenli: desteklenmeyen surumlerde sessizce false doner.
+	 */
+	prewarmScreenCapture() {
+		try {
+			if (typeof nativeBinding.prewarmScreenCapture !== "function") {
+				return false;
+			}
+			return nativeBinding.prewarmScreenCapture();
+		} catch (error) {
+			console.warn("Prewarm basarisiz:", error.message);
+			return false;
+		}
+	}
+
 	async getDisplays() {
 		const displays = nativeBinding.getDisplays();
 		return displays.map((display, index) => ({

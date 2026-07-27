@@ -1039,6 +1039,25 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     return NO;
 }
 
++ (void)prewarmShareableContent {
+    if (@available(macOS 15.0, *)) {
+        // Kayit sirasindaki ilk SCShareableContent cagrisi yavas olabiliyor
+        // (TCC kontrolu + pencere/ekran envanteri). Kayit baslamadan once bir kez
+        // cagirip macOS'un ic cache'ini isitiyoruz. Sonuc kullanilmiyor.
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+            [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
+                if (contentError) {
+                    MRLog(@"⚠️ Prewarm shareable content failed: %@", contentError.localizedDescription);
+                    return;
+                }
+                MRLog(@"🔥 Prewarm: shareable content hazir (%lu ekran, %lu pencere)",
+                      (unsigned long)content.displays.count,
+                      (unsigned long)content.windows.count);
+            }];
+        });
+    }
+}
+
 + (BOOL)startRecordingWithConfiguration:(NSDictionary *)config delegate:(id)delegate error:(NSError **)error {
     if (!config) {
         return NO;

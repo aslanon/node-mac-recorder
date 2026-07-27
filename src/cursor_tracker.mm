@@ -153,23 +153,7 @@ static uint64_t FNV1AHash(const unsigned char *data, size_t length) {
     return hash;
 }
 
-static NSString* CursorImageFingerprintFromImage(NSImage *image, NSPoint hotspot) {
-    if (!image) {
-        return nil;
-    }
-    NSRect imageRect = NSMakeRect(0, 0, [image size].width, [image size].height);
-    CGImageRef cgImage = [image CGImageForProposedRect:&imageRect context:nil hints:nil];
-    if (!cgImage) {
-        for (NSImageRep *rep in [image representations]) {
-            if ([rep isKindOfClass:[NSBitmapImageRep class]]) {
-                cgImage = [(NSBitmapImageRep *)rep CGImage];
-                if (cgImage) {
-                    break;
-                }
-            }
-        }
-    }
-
+static NSString* CursorImageFingerprintFromCGImage(CGImageRef cgImage, NSPoint hotspot) {
     if (!cgImage) {
         return nil;
     }
@@ -221,6 +205,67 @@ static NSString* CursorImageFingerprintFromImage(NSImage *image, NSPoint hotspot
             relX,
             relY,
             hash];
+}
+
+// NSImage'in VARSAYILAN temsilinden fingerprint. Hangi temsilin seçildigi ekranin
+// backing scale'ine bagli (Retina 2x vs harici 1x), bu yuzden calisma aninda
+// uretilen deger ekran konfigurasyonuna gore degisebilir.
+static NSString* CursorImageFingerprintFromImage(NSImage *image, NSPoint hotspot) {
+    if (!image) {
+        return nil;
+    }
+    NSRect imageRect = NSMakeRect(0, 0, [image size].width, [image size].height);
+    CGImageRef cgImage = [image CGImageForProposedRect:&imageRect context:nil hints:nil];
+    if (!cgImage) {
+        for (NSImageRep *rep in [image representations]) {
+            if ([rep isKindOfClass:[NSBitmapImageRep class]]) {
+                cgImage = [(NSBitmapImageRep *)rep CGImage];
+                if (cgImage) {
+                    break;
+                }
+            }
+        }
+    }
+
+    return CursorImageFingerprintFromCGImage(cgImage, hotspot);
+}
+
+// Bir cursor imajinin TUM temsilleri icin fingerprint uretir.
+// KRITIK: MacBook kapagi kapaliyken tek harici monitorde calisirken (clamshell)
+// veya ekranlar arasi gecerken NSImage farkli bir temsil donduruyor; tek fingerprint
+// kaydedilirse eslesme kayboluyor ve cursor tipi yanlis tespit ediliyordu.
+// Tum temsilleri kaydedince calisma aninda hangisi secilirse secilsin eslesme tutar.
+static NSArray<NSString *>* CursorImageFingerprintsAllReps(NSImage *image, NSPoint hotspot) {
+    if (!image) {
+        return @[];
+    }
+
+    NSMutableArray<NSString *> *fingerprints = [NSMutableArray array];
+
+    NSString *defaultFingerprint = CursorImageFingerprintFromImage(image, hotspot);
+    if (defaultFingerprint) {
+        [fingerprints addObject:defaultFingerprint];
+    }
+
+    for (NSImageRep *rep in [image representations]) {
+        CGImageRef repImage = NULL;
+        if ([rep isKindOfClass:[NSBitmapImageRep class]]) {
+            repImage = [(NSBitmapImageRep *)rep CGImage];
+        } else {
+            NSRect repRect = NSMakeRect(0, 0, [rep pixelsWide], [rep pixelsHigh]);
+            if (repRect.size.width <= 0 || repRect.size.height <= 0) {
+                repRect = NSMakeRect(0, 0, [rep size].width, [rep size].height);
+            }
+            repImage = [rep CGImageForProposedRect:&repRect context:nil hints:nil];
+        }
+
+        NSString *repFingerprint = CursorImageFingerprintFromCGImage(repImage, hotspot);
+        if (repFingerprint && ![fingerprints containsObject:repFingerprint]) {
+            [fingerprints addObject:repFingerprint];
+        }
+    }
+
+    return fingerprints;
 }
 
 static NSString* CursorImageFingerprintUnsafe(NSCursor *cursor) {
@@ -313,11 +358,17 @@ static void AddStandardCursorFingerprint(NSCursor *cursor, NSString *cursorType)
     if (!cursor || !cursorType) {
         return;
     }
-    NSString *fingerprint = CursorImageFingerprintUnsafe(cursor);
-    if (!fingerprint) {
-        return;
+    // Tek bir temsil degil, tum temsiller kaydedilir -> ekran olcegi degisse bile
+    // (clamshell / harici monitor) eslesme korunur.
+    NSArray<NSString *> *fingerprints =
+        CursorImageFingerprintsAllReps([cursor image], [cursor hotSpot]);
+    for (NSString *fingerprint in fingerprints) {
+        // Ilk kayit kazanir: ayni fingerprint birden fazla cursor'a denk gelirse
+        // once eklenen (daha spesifik) tip korunur.
+        if (![g_cursorFingerprintMap objectForKey:fingerprint]) {
+            [g_cursorFingerprintMap setObject:cursorType forKey:fingerprint];
+        }
     }
-    [g_cursorFingerprintMap setObject:cursorType forKey:fingerprint];
 }
 
 static void AddCursorIfAvailable(SEL selector, NSString *cursorType) {

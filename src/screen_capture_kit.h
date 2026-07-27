@@ -7,6 +7,11 @@ API_AVAILABLE(macos(12.3))
 
 + (BOOL)isScreenCaptureKitAvailable;
 
+// SCShareableContent'i onceden cekerek macOS ic cache'ini isitir.
+// Kayit anindaki ilk cagri yavas oldugu icin (ozellikle ekran konfigurasyonu
+// degistikten sonra) baslatma gecikmesini azaltir. Asenkron, hicbir seyi bloklamaz.
++ (void)prewarmShareableContent;
+
 // MULTI-SESSION API: New session-based recording
 + (NSString *)startRecordingWithConfiguration:(NSDictionary *)config
                                      delegate:(id)delegate

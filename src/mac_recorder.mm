@@ -1344,6 +1344,19 @@ Napi::Value GetVideoStartTimestamp(const Napi::CallbackInfo& info) {
 }
 
 // NAPI Function: Get Recording Status
+// Kayit baslatma gecikmesini azaltmak icin SCShareableContent'i onceden isitir.
+// Asenkron; hemen doner ve hicbir seyi bloklamaz.
+Napi::Value PrewarmScreenCapture(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (@available(macOS 12.3, *)) {
+        [ScreenCaptureKitRecorder prewarmShareableContent];
+        return Napi::Boolean::New(env, true);
+    }
+
+    return Napi::Boolean::New(env, false);
+}
+
 Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -1711,6 +1724,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
     exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
     exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
+    exports.Set(Napi::String::New(env, "prewarmScreenCapture"), Napi::Function::New(env, PrewarmScreenCapture));
     exports.Set(Napi::String::New(env, "getVideoStartTimestamp"), Napi::Function::New(env, GetVideoStartTimestamp));
     exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));
     
