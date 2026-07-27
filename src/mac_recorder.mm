@@ -627,13 +627,38 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                     // Use ScreenCaptureKit with window exclusion and timeout protection
                     NSError *sckError = nil;
 
-                    // A/V SYNC: Start camera non-blocking BEFORE ScreenCaptureKit
-                    // Camera warmup overlaps with async SCK initialization
+                    // A/V SYNC: Kamera SCK'dan ONCE baslatilir VE onayi burada beklenir.
+                    //
+                    // ESKIDEN: kamera non-blocking baslatilip SCK hemen schedule
+                    // ediliyor, kamera onayi SCK'dan SONRA bekleniyordu. Sorun:
+                    // SCK schedule edilir edilmez video ilk karesini yakalayip
+                    // KAYDA BASLIYOR, ama JS tarafi hala kamera onayini bekledigi
+                    // icin (startRecording senkron bir N-API cagrisi, event loop
+                    // bloke) "kayit basladi" sinyali ~1sn gec gidiyordu.
+                    // Olculdu: kamerali startRecording 1319ms / kamerasiz 508ms.
+                    // Bu fark dogrudan videonun basina fazlalik olarak yaziliyor
+                    // ve UI o sure boyunca "Starting recorder..." gosteriyordu.
+                    //
+                    // SIMDI: kamera hazir olduktan SONRA video baslar. Basta
+                    // fazlalik olusmaz ve kamera ile ekran ayni ana hizalanir.
                     if (captureCamera) {
-                        MRLog(@"🎥 Starting camera recording non-blocking (parallel with SCK init)");
+                        MRLog(@"🎥 Starting camera recording (before SCK, blocking until ready)");
                         if (!startCameraIfRequested(true, &cameraOutputPath, cameraDeviceId, outputPath, sessionTimestamp)) {
                             MRLog(@"❌ Camera failed to start - aborting recording");
                             return Napi::Boolean::New(env, false);
+                        }
+
+                        if (!waitForCameraRecordingStart(8.0)) {
+                            double cameraStartTs = currentCameraRecordingStartTime();
+                            if (cameraStartTs > 0 || isCameraRecording()) {
+                                MRLog(@"⚠️ Camera did not confirm start within 8.0s but appears running; continuing");
+                            } else {
+                                MRLog(@"❌ Camera did not signal recording start within 8.0s");
+                                stopCameraRecording();
+                                return Napi::Boolean::New(env, false);
+                            }
+                        } else {
+                            MRLog(@"✅ Camera recording confirmed (before SCK start)");
                         }
                     }
 
@@ -647,21 +672,10 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
                             MRLog(@"🎬 RECORDING METHOD: ScreenCaptureKit");
                             MRLog(@"✅ SYNC: ScreenCaptureKit recording started successfully");
 
-                            // A/V SYNC: Wait for camera AFTER SCK started
-                            if (captureCamera) {
-                                if (!waitForCameraRecordingStart(8.0)) {
-                                    double cameraStartTs = currentCameraRecordingStartTime();
-                                    if (cameraStartTs > 0 || isCameraRecording()) {
-                                        MRLog(@"⚠️ Camera did not confirm start within 8.0s but appears running; continuing");
-                                    } else {
-                                        MRLog(@"❌ Camera did not signal recording start within 8.0s");
-                                        stopCameraRecording();
-                                        [ScreenCaptureKitRecorder stopRecording];
-                                        return Napi::Boolean::New(env, false);
-                                    }
-                                }
-                                MRLog(@"✅ Camera recording confirmed (started in parallel with SCK)");
-                            }
+                            // NOT: Kamera onayi artik SCK'dan ONCE bekleniyor
+                            // (yukariya alindi) — burada blocking bir is kalmadi,
+                            // boylece SCK schedule edildikten sonra JS'e donus
+                            // gecikmiyor ve videonun basinda fazlalik olusmuyor.
 
                             g_isRecording = true;
                             MRMarkRecordingStartTimestamp();

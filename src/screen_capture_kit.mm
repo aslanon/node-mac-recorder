@@ -167,6 +167,45 @@ static NSInteger g_frameCount = 0;
 static CFAbsoluteTime g_firstFrameTime = 0;
 static const NSInteger kSCKHighQualityVideoBitrate = 100 * 1000 * 1000;
 
+// ---- Prewarm edilmis SCShareableContent onbellegi ----
+// Kayit baslatilirken envanter cagrisini tamamen atlayabilmek icin saklanir.
+// ARC KAPALI: retain/release elle yonetiliyor.
+static id g_cachedShareableContent = nil;
+static CFAbsoluteTime g_cachedShareableContentTime = 0;
+// Bayat envanter yanlis pencere/ekran secimine yol acabilir; kisa tutuluyor.
+static const CFAbsoluteTime kShareableContentCacheTTLSeconds = 30.0;
+
+static void SCKStoreShareableContent(id content) {
+    if (!content) return;
+    @synchronized([ScreenCaptureKitRecorder class]) {
+        if (g_cachedShareableContent != content) {
+            [g_cachedShareableContent release];
+            g_cachedShareableContent = [content retain];
+        }
+        g_cachedShareableContentTime = CFAbsoluteTimeGetCurrent();
+    }
+}
+
+// Taze onbellek varsa doner ve onbellegi bosaltir (her kayit taze envanterle
+// baslasin diye tek kullanimlik). Yoksa nil.
+static id SCKTakeCachedShareableContent(void) {
+    @synchronized([ScreenCaptureKitRecorder class]) {
+        if (!g_cachedShareableContent) {
+            return nil;
+        }
+
+        CFAbsoluteTime age = CFAbsoluteTimeGetCurrent() - g_cachedShareableContentTime;
+        id content = [[g_cachedShareableContent retain] autorelease];
+        [g_cachedShareableContent release];
+        g_cachedShareableContent = nil;
+
+        if (age > kShareableContentCacheTTLSeconds) {
+            return nil;
+        }
+        return content;
+    }
+}
+
 // Quality helpers
 static NSString *SCKNormalizeQualityPreset(id preset) {
     if (![preset isKindOfClass:[NSString class]]) {
@@ -1041,16 +1080,24 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
 + (void)prewarmShareableContent {
     if (@available(macOS 15.0, *)) {
-        // Kayit sirasindaki ilk SCShareableContent cagrisi yavas olabiliyor
-        // (TCC kontrolu + pencere/ekran envanteri). Kayit baslamadan once bir kez
-        // cagirip macOS'un ic cache'ini isitiyoruz. Sonuc kullanilmiyor.
+        // Kayit sirasindaki SCShareableContent cagrisi yavas olabiliyor
+        // (TCC kontrolu + ekran/pencere envanteri). Ozellikle ekran
+        // konfigurasyonu degistikten sonra (clamshell) bu envanter sifirdan
+        // kuruluyor ve saniyeler surebiliyor.
+        //
+        // Sadece "isitmak" yetmiyordu: kayit aninda cagri YINE bastan
+        // yapiliyordu. Artik sonucu saklayip kayitta yeniden kullaniyoruz,
+        // yani bu adim tamamen atlanabiliyor.
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+            CFAbsoluteTime fetchStart = CFAbsoluteTimeGetCurrent();
             [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
-                if (contentError) {
+                if (contentError || !content) {
                     MRLog(@"⚠️ Prewarm shareable content failed: %@", contentError.localizedDescription);
                     return;
                 }
-                MRLog(@"🔥 Prewarm: shareable content hazir (%lu ekran, %lu pencere)",
+                SCKStoreShareableContent(content);
+                NSLog(@"🔥 Prewarm: shareable content hazir ve saklandi (%.0fms, %lu ekran, %lu pencere)",
+                      (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000.0,
                       (unsigned long)content.displays.count,
                       (unsigned long)content.windows.count);
             }];
@@ -1082,9 +1129,29 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         return NO;
     }
 
+    // Prewarm ile alinmis taze envanter varsa cagriyi TAMAMEN atla.
+    // Bu cagri clamshell'de saniyeler surebiliyor ve kayit baslatmanin
+    // en buyuk gecikme kalemi.
+    if (@available(macOS 15.0, *)) {
+        SCShareableContent *prewarmed = (SCShareableContent *)SCKTakeCachedShareableContent();
+        if (prewarmed) {
+            NSLog(@"⚡ Prewarmed shareable content kullanildi — envanter cagrisi atlandi");
+            dispatch_async(controlQueue, ^{
+                SCKPerformRecordingSetup(configCopy, prewarmed);
+            });
+            // NOT: Burada onbellegi tazelemek YOK.
+            // Kayit setup'i calisirken yeni bir SCShareableContent istegi
+            // baslatmak sistem envanterini kayitla ayni anda sorgular ve
+            // kamera/stream baslatmayla yarisir. Tazeleme, kayit bittikten
+            // sonra desktop tarafindaki periyodik isitmaya birakiliyor.
+            return YES;
+        }
+    }
+
     // CRITICAL FIX: Use dispatch_get_global_queue instead of main_queue
     // because Node.js standalone doesn't run macOS main event loop (only Electron does)
     NSLog(@"🚀 Requesting shareable content...");
+    CFAbsoluteTime contentFetchStart = CFAbsoluteTimeGetCurrent();
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
             if (contentError || !content) {
@@ -1092,7 +1159,8 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                 SCKFailScheduling();
                 return;
             }
-            NSLog(@"✅ Got shareable content, starting recording setup...");
+            NSLog(@"✅ Got shareable content in %.0fms, starting recording setup...",
+                  (CFAbsoluteTimeGetCurrent() - contentFetchStart) * 1000.0);
             dispatch_async(controlQueue, ^{
                 SCKPerformRecordingSetup(configCopy, content);
             });

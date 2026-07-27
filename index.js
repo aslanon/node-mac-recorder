@@ -899,79 +899,58 @@ class MacRecorder extends EventEmitter {
 						}
 					};
 
-					let videoStartTimestamp = 0;
-					const waitStart = Date.now();
-
-					if (usesScreenCaptureKit) {
-						while (Date.now() - waitStart < VIDEO_START_TIMEOUT_MS) {
-							videoStartTimestamp = readVideoStart();
-							if (videoStartTimestamp > 0) {
-								console.log(
-									`✅ SYNC: Video ilk karesi ${Date.now() - waitStart}ms'de yakalandi`
-								);
-								break;
-							}
-							await new Promise(r => setTimeout(r, VIDEO_START_POLL_MS));
-						}
-
-						if (!videoStartTimestamp) {
-							console.warn(
-								`⚠️ SYNC: Video baslangici ${VIDEO_START_TIMEOUT_MS}ms icinde okunamadi — heuristik hizalamaya dusuluyor`
-							);
-						}
-					} else {
-						// AVFoundation yolunda video-start damgasi yok; eski
-						// hazir-olma beklemesi korunuyor.
-						while (Date.now() - waitStart < 600) {
-							try {
-								if (
-									nativeBinding &&
-									nativeBinding.getRecordingStatus &&
-									nativeBinding.getRecordingStatus()
-								) {
-									break;
-								}
-							} catch (_) {}
-							await new Promise(r => setTimeout(r, 30));
-						}
-					}
-
+					// ONEMLI: Bu bekleme BLOKLAMAZ.
+					// Ilk kare, yakalandigi andan ~200ms+ sonra islenip bize ulasiyor
+					// (clamshell'de saniyeler). startRecording bunu beklerse kayit
+					// coktan basladigi halde UI "Starting..." gostergesinde takili
+					// kaliyor. Bu yuzden cursor/klavye HEMEN baslatiliyor (veri kaybi
+					// olmasin), video baslangici ARKA PLANDA yakalanip saklaniyor;
+					// stop sirasinda cursor JSON'una gercek offset yaziliyor ve
+					// editor bunu birebir telafi ediyor.
 					this.sessionTimestamp = sessionTimestamp;
-					this.videoStartTimestamp = videoStartTimestamp;
-					// Onceki kayittan kalan referans sizmasin
-					this.timelineStartTimestamp = 0;
+					this.videoStartTimestamp = 0;
 
 					const syncTimestamp = Date.now();
 					this.syncTimestamp = syncTimestamp;
 					this.recordingStartTime = syncTimestamp;
+					this.timelineStartTimestamp = syncTimestamp;
 
-					if (videoStartTimestamp > 0) {
-						console.log(
-							`🎯 SYNC: Video first-frame timestamp: ${videoStartTimestamp} (JS bunu ${(syncTimestamp - videoStartTimestamp).toFixed(0)}ms sonra fark etti)`
-						);
+					if (usesScreenCaptureKit) {
+						const watchStart = Date.now();
+						this._videoStartWatcherActive = true;
+						this._videoStartWatcher = (async () => {
+							while (
+								this._videoStartWatcherActive &&
+								Date.now() - watchStart < VIDEO_START_TIMEOUT_MS
+							) {
+								const value = readVideoStart();
+								if (value > 0) {
+									this.videoStartTimestamp = value;
+									console.log(
+										`✅ SYNC: Video ilk karesi ${Date.now() - watchStart}ms'de yakalandi (cursor'a gore ${(syncTimestamp - value).toFixed(0)}ms once)`
+									);
+									return value;
+								}
+								await new Promise(r => setTimeout(r, VIDEO_START_POLL_MS));
+							}
+							if (this._videoStartWatcherActive) {
+								console.warn(
+									`⚠️ SYNC: Video baslangici ${VIDEO_START_TIMEOUT_MS}ms icinde okunamadi — heuristik hizalamaya dusuluyor`
+								);
+							}
+							return 0;
+						})();
+						// Kayit akisini etkilemesin
+						this._videoStartWatcher.catch(() => {});
 					}
 
-					// ZAMAN REFERANSI: cursor/klavye timeline'i VIDEONUN ilk karesine
-					// hizalanir, JS'in "kayit hazir" dedigi ana degil.
-					//
-					// NEDEN: syncTimestamp, yukaridaki hazir-olma dongusunden sonraki an.
-					// Bu an ile videonun gercek t=0'i arasindaki fark, baslatma hizina
-					// gore DEGISIYOR (ornegin ScreenCaptureKit isitilmissa video cok daha
-					// erken basliyor). Cursor bu degisken ana baglanirsa her kayitta
-					// farkli bir kayma olusuyor ve editordeki telafi 1sn limitine
-					// takilabiliyor. Videonun kendi baslangicini referans alinca fark
-					// yapisal olarak sifir olur; hizlanma senkronu bozmaz.
-					const timelineStartTimestamp =
-						this.videoStartTimestamp > 0
-							? this.videoStartTimestamp
-							: syncTimestamp;
-					this.timelineStartTimestamp = timelineStartTimestamp;
-
-					if (timelineStartTimestamp !== syncTimestamp) {
-						console.log(
-							`🎯 SYNC: Timeline referansi video ilk karesine cekildi (${(syncTimestamp - timelineStartTimestamp).toFixed(0)}ms geri)`
-						);
-					}
+					// ZAMAN REFERANSI: cursor/klavye timeline'i SIMDI baslar
+					// (syncTimestamp). Videonun gercek t=0'i genelde bundan biraz
+					// oncedir; aradaki fark stop'ta cursor JSON'una yazilir ve
+					// editor birebir telafi eder. Bekleyip "sifir offset" elde
+					// etmek yerine bu yol tercih ediliyor cunku bekleme, kayit
+					// coktan basladigi halde UI'i "Starting..." halinde tutuyordu.
+					const timelineStartTimestamp = syncTimestamp;
 
 					const standardCursorOptions = {
 						videoRelative: true,
@@ -1085,11 +1064,43 @@ class MacRecorder extends EventEmitter {
 					}, 1000);
 
 					// Native kayıt gerçekten başladığını kontrol etmek için polling başlat
+					//
+					// KRITIK: getRecordingStatus() TEK BASINA KULLANILAMAZ.
+					// ScreenCaptureKit yolunda `isFullyInitialized` = 10 KARE sarti
+					// arıyor. Ama video writer ILK KAREDE basliyor — yani kayit
+					// coktan basladigi halde bu bayrak false kalabiliyor.
+					// ScreenCaptureKit statik ekranda yeni kare URETMEDIGI icin
+					// (sadece degisiklik oldugunda kare gonderir) kullanici kayda
+					// basip bekledigi anda 10 kare hic dolmuyor ve UI saniyelerce
+					// "Starting recorder..." gosteriyordu; bu sure de videoya giriyordu.
+					//
+					// Dogru sinyal ilk karedir: videoStartTimestamp > 0 (arka plandaki
+					// _videoStartWatcher set eder). Boylece UI, videonun gercek
+					// baslangici ile ayni ana kapanir.
 					let recordingStartedEmitted = false;
 					let checkRecordingStatus = null;
+					const isNativeRecordingLive = () => {
+						if (this.options.preferScreenCaptureKit === true) {
+							// SCK yolunda TEK dogru sinyal ilk karedir.
+							// getRecordingStatus() burada iki yonlu yaniltiyor:
+							//  - SCK stream'i henuz baslamadiysa g_isRecording
+							//    fallback'ine dusup ERKEN true doner (video yokken
+							//    "kayit basladi" denir)
+							//  - SCK basladiysa isFullyInitialized = 10 kare bekler,
+							//    statik ekranda bu hic dolmaz ve GEC true doner
+							// Hangisinin kazandigi yarisa bagli; ilk kare ise kesin.
+							return Number(this.videoStartTimestamp) > 0;
+						}
+						// AVFoundation yolu: video-start damgasi yok, eski sinyal
+						try {
+							return nativeBinding.getRecordingStatus();
+						} catch (_) {
+							return false;
+						}
+					};
 					const pollRecordingStatus = () => {
 						try {
-							const nativeStatus = nativeBinding.getRecordingStatus();
+							const nativeStatus = isNativeRecordingLive();
 							if (nativeStatus && !recordingStartedEmitted) {
 								recordingStartedEmitted = true;
 								clearInterval(checkRecordingStatus);
@@ -1228,6 +1239,11 @@ class MacRecorder extends EventEmitter {
 					: -1;
 			try {
 				console.log('🛑 SYNC: Stopping all recording components simultaneously');
+
+				// Video baslangicini bekleyen arka plan izleyicisini sonlandir.
+				// Deger geldiyse zaten this.videoStartTimestamp'e yazildi ve
+				// cursor metadata'sinda kullanilacak.
+				this._videoStartWatcherActive = false;
 
 				// SYNC FIX: Stop ALL components at the same time for perfect sync
 				// 1. Stop cursor tracking FIRST (it's instant)
