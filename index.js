@@ -2,6 +2,12 @@ const { EventEmitter } = require("events");
 const path = require("path");
 const fs = require("fs");
 
+// Videonun ilk karesi yakalanana kadar beklenecek ust sinir.
+// Normalde birkac yuz ms; clamshell'de ekran envanteri yeniden kuruldugu icin
+// saniyelere cikabiliyor. Beklemek, cursor'i yanlis referansa baglamaktan iyidir.
+const VIDEO_START_TIMEOUT_MS = 12000;
+const VIDEO_START_POLL_MS = 10;
+
 // Auto-switch to Electron-safe implementation when running under Electron and binary exists
 let USE_ELECTRON_SAFE = false;
 let ElectronSafeMacRecorder = null;
@@ -860,54 +866,89 @@ class MacRecorder extends EventEmitter {
 
 				// Only start cursor if native recording started successfully
 				if (success) {
-					// For ScreenCaptureKit (async startup), wait briefly until native fully initialized
-					// ScreenCaptureKit needs ~150-300ms to start + ~150ms for first 10 frames
+					// ==========================================================
+					// VIDEONUN ILK KARESINI BEKLE — SENKRONUN TEMELI
+					// ==========================================================
+					// getRecordingStatus() BU AMAC ICIN KULLANILAMAZ:
+					// ScreenCaptureKit stream'i henuz baslamadiysa native taraf
+					// `g_isRecording` fallback'ine dusup TRUE donuyor, yani
+					// "kayit komutu verildi"yi "kayit basladi" saniyor.
+					// Olculdu: "fully ready after 0ms" + videoStartTimestamp = 0.
+					// Sonucu: cursor timeline'i video'dan ONCE basliyor. Normal
+					// kosulda fark ~150-300ms, clamshell'de (ekran envanteri
+					// yeniden kuruldugu icin) SANIYELER — editordeki 1sn'lik
+					// telafi limiti bunu kapatamiyor ve cursor gorunur sekilde kayiyor.
+					//
+					// Dogru sinyal getVideoStartTimestamp(): native ilk kareyi
+					// yakalayip g_videoStartTime'i set ettiginde gecerli bir
+					// wall-clock degeri doner. Timeline'i buna baglayinca
+					// baslatma hizi (prewarm vb.) senkronu ETKILEMEZ.
+					const usesScreenCaptureKit =
+						this.options.preferScreenCaptureKit === true;
+
+					const readVideoStart = () => {
+						try {
+							const value = Number(
+								typeof nativeBinding.getVideoStartTimestamp === 'function'
+									? nativeBinding.getVideoStartTimestamp()
+									: 0
+							);
+							return Number.isFinite(value) && value > 0 ? value : 0;
+						} catch (_) {
+							return 0;
+						}
+					};
+
+					let videoStartTimestamp = 0;
 					const waitStart = Date.now();
-					try {
+
+					if (usesScreenCaptureKit) {
+						while (Date.now() - waitStart < VIDEO_START_TIMEOUT_MS) {
+							videoStartTimestamp = readVideoStart();
+							if (videoStartTimestamp > 0) {
+								console.log(
+									`✅ SYNC: Video ilk karesi ${Date.now() - waitStart}ms'de yakalandi`
+								);
+								break;
+							}
+							await new Promise(r => setTimeout(r, VIDEO_START_POLL_MS));
+						}
+
+						if (!videoStartTimestamp) {
+							console.warn(
+								`⚠️ SYNC: Video baslangici ${VIDEO_START_TIMEOUT_MS}ms icinde okunamadi — heuristik hizalamaya dusuluyor`
+							);
+						}
+					} else {
+						// AVFoundation yolunda video-start damgasi yok; eski
+						// hazir-olma beklemesi korunuyor.
 						while (Date.now() - waitStart < 600) {
 							try {
-								const nativeStatus = nativeBinding && nativeBinding.getRecordingStatus ? nativeBinding.getRecordingStatus() : true;
-								if (nativeStatus) {
-									console.log(`✅ SYNC: Native recording fully ready after ${Date.now() - waitStart}ms`);
+								if (
+									nativeBinding &&
+									nativeBinding.getRecordingStatus &&
+									nativeBinding.getRecordingStatus()
+								) {
 									break;
 								}
 							} catch (_) {}
 							await new Promise(r => setTimeout(r, 30));
 						}
-					} catch (_) {}
-					this.sessionTimestamp = sessionTimestamp;
+					}
 
-					// Native sync_timeline handles A/V alignment - no JS-level delay needed
+					this.sessionTimestamp = sessionTimestamp;
+					this.videoStartTimestamp = videoStartTimestamp;
+					// Onceki kayittan kalan referans sizmasin
+					this.timelineStartTimestamp = 0;
+
 					const syncTimestamp = Date.now();
 					this.syncTimestamp = syncTimestamp;
 					this.recordingStartTime = syncTimestamp;
-					console.log(`🎯 CURSOR SYNC: Cursor tracking will use timestamp: ${syncTimestamp}`);
 
-					// CURSOR/VIDEO TIME ALIGNMENT:
-					// Cursor timeline'in t=0'i bu andir (syncTimestamp), ama videonun
-					// ILK KARESI daha once yakalanmis olabilir (ScreenCaptureKit
-					// baslatma gecikmesi + yukaridaki hazir-olma beklemesi). Editor
-					// "cursor'un ilk ornegi = video t=0" varsayarsa aradaki fark sabit
-					// bir zaman kaymasi olarak kalir. Native gercek video baslangicini
-					// biliyor; okuyup sakla ki stop'ta cursor JSON'una yazabilelim.
-					this.videoStartTimestamp = 0;
-					// Onceki kayittan kalan referans sizmasin
-					this.timelineStartTimestamp = 0;
-					try {
-						const nativeVideoStart =
-							typeof nativeBinding.getVideoStartTimestamp === 'function'
-								? Number(nativeBinding.getVideoStartTimestamp())
-								: 0;
-						if (Number.isFinite(nativeVideoStart) && nativeVideoStart > 0) {
-							this.videoStartTimestamp = nativeVideoStart;
-							console.log(
-								`🎯 SYNC: Video first-frame timestamp: ${nativeVideoStart} (cursor starts ${(syncTimestamp - nativeVideoStart).toFixed(0)}ms later)`
-							);
-						} else {
-							console.warn('⚠️ SYNC: Video start timestamp unavailable — cursor sync metadata will be skipped');
-						}
-					} catch (videoStartError) {
-						console.warn('⚠️ SYNC: Video start timestamp read failed:', videoStartError.message);
+					if (videoStartTimestamp > 0) {
+						console.log(
+							`🎯 SYNC: Video first-frame timestamp: ${videoStartTimestamp} (JS bunu ${(syncTimestamp - videoStartTimestamp).toFixed(0)}ms sonra fark etti)`
+						);
 					}
 
 					// ZAMAN REFERANSI: cursor/klavye timeline'i VIDEONUN ilk karesine
@@ -1174,9 +1215,16 @@ class MacRecorder extends EventEmitter {
 
 		return new Promise(async (resolve, reject) => {
 			const stopRequestedAt = Date.now();
+			// Sure, VIDEONUN baslangicindan olculur. recordingStartTime (JS'in
+			// hazir oldugunu fark ettigi an) videodan birkac on ms sonra oldugu
+			// icin buradan hesaplanan stopLimit videoyu kuyrugundan kirpiyordu.
+			const durationReference =
+				this.timelineStartTimestamp && this.timelineStartTimestamp > 0
+					? this.timelineStartTimestamp
+					: this.recordingStartTime;
 			const elapsedSeconds =
-				this.recordingStartTime && this.recordingStartTime > 0
-					? (stopRequestedAt - this.recordingStartTime) / 1000
+				durationReference && durationReference > 0
+					? (stopRequestedAt - durationReference) / 1000
 					: -1;
 			try {
 				console.log('🛑 SYNC: Stopping all recording components simultaneously');
