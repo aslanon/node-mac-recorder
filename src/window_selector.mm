@@ -85,11 +85,31 @@ static bool shouldSkipSelectableWindowOwner(NSString *windowOwner) {
 }
 
 // Record icon helpers
-static NSImage *CreateRecordIconImage(CGFloat size) {
-    const CGFloat leadingInset = 24.0;
-    const CGFloat trailingSpacing = 6.0;
-    CGFloat width = leadingInset + size + trailingSpacing;
-    NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, size)] autorelease];
+// ---------------------------------------------------------------------------
+// Marka butonu metrikleri — electron/main.cjs içindeki alan seçici `button.primary`
+// ile bire bir: padding 14px 26px | min-width 220px | radius 18px | font 15px/650
+// gap 10px | ikon 20px halka + 8px nokta | hover: translateY(-1px)
+// ---------------------------------------------------------------------------
+static const CGFloat kBrandFontSize = 15.0;
+static const CGFloat kBrandCornerRadius = 18.0;
+static const CGFloat kBrandPaddingX = 26.0;
+static const CGFloat kBrandPaddingY = 16.0;  // web 14px; NSButton'da metin
+                                             // biraz daha sıkışık durduğu için +2
+static const CGFloat kBrandMinWidth = 220.0;
+static const CGFloat kBrandIconDiameter = 20.0;
+static const CGFloat kBrandIconSpacing = 10.0;
+// Hover: web'de renk DEĞİŞMİYOR, buton 1px yukarı kalkıyor.
+static const CGFloat kBrandHoverLift = 1.0;
+
+// CSS açısı (0° = yukarı, saat yönü) -> NSGradient açısı (0° = sağa, saat yönü tersi)
+static const CGFloat kBrandBaseAngle = 259.0;   // CSS 190.98deg
+static const CGFloat kBrandGlossAngle = 249.25; // CSS 200.71deg
+
+// Alan seçicideki .primary-icon ile aynı: 20x20 halka, 2px beyaz kenarlık
+// (%90 alfa), ortasında 8px beyaz nokta. Sağdaki boşluk CSS'teki gap:10px.
+static NSImage *CreateRecordIconImage(CGFloat diameter, CGFloat trailingGap) {
+    CGFloat width = diameter + trailingGap;
+    NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, diameter)] autorelease];
     if (!image) {
         return nil;
     }
@@ -97,26 +117,25 @@ static NSImage *CreateRecordIconImage(CGFloat size) {
     [image lockFocus];
 
     [[NSColor clearColor] setFill];
-    NSRectFill(NSMakeRect(0, 0, width, size));
+    NSRectFill(NSMakeRect(0, 0, width, diameter));
 
-    CGFloat strokeWidth = MAX(2.0, size * 0.12);
-    NSRect iconRect = NSMakeRect(leadingInset,
-                                 (size - size) / 2.0,
-                                 size,
-                                 size);
+    NSColor *iconColor = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.9];
+
+    const CGFloat strokeWidth = 2.0;
+    NSRect iconRect = NSMakeRect(0, 0, diameter, diameter);
     NSRect outerRect = NSInsetRect(iconRect, strokeWidth / 2.0, strokeWidth / 2.0);
     NSBezierPath *outerPath = [NSBezierPath bezierPathWithOvalInRect:outerRect];
     [outerPath setLineWidth:strokeWidth];
-    [[NSColor whiteColor] setStroke];
+    [iconColor setStroke];
     [outerPath stroke];
 
-    CGFloat innerDiameter = size * 0.45;
+    const CGFloat innerDiameter = 8.0;
     NSRect innerRect = NSMakeRect(NSMidX(iconRect) - innerDiameter / 2.0,
                                   NSMidY(iconRect) - innerDiameter / 2.0,
                                   innerDiameter,
                                   innerDiameter);
     NSBezierPath *innerPath = [NSBezierPath bezierPathWithOvalInRect:innerRect];
-    [[NSColor whiteColor] setFill];
+    [iconColor setFill];
     [innerPath fill];
 
     [image unlockFocus];
@@ -128,7 +147,7 @@ static NSImage *CreateRecordIconImage(CGFloat size) {
 static NSImage *GetStartRecordIcon(void) {
     static NSImage *recordIcon = nil;
     if (!recordIcon) {
-        recordIcon = [CreateRecordIconImage(18.0) retain];
+        recordIcon = [CreateRecordIconImage(kBrandIconDiameter, kBrandIconSpacing) retain];
     }
     return recordIcon;
 }
@@ -146,15 +165,54 @@ static void ApplyStartRecordButtonIcon(NSButton *button) {
     [button setImage:icon];
     [button setImageScaling:NSImageScaleNone];
     [button setImagePosition:NSImageLeft];
+    // İç boşluk ApplyBrandButtonStyle'da ayarlanıyor (padding 14px 26px).
+}
 
-    if ([button respondsToSelector:@selector(setContentInsets:)]) {
-        NSEdgeInsets insets = NSEdgeInsetsMake(0, 12.0, 0, 12.0);
-        [button setContentInsets:insets];
-    }
+// ---------------------------------------------------------------------------
+// Marka butonu — pages/selection.vue içindeki .confirm-button ile aynı görünüm
+//
+//   background: linear-gradient(200.71deg, rgba(255,255,255,.57) -0.3%,
+//                               rgba(255,255,255,0) 70.49%),
+//               linear-gradient(190.98deg, #006aff 26.77%, #0030ff);
+//   color: #fff | padding: 8px 16px | border-radius: 6px | font-size: 14px
+//   hover: filter: brightness(0.92) | transition: 0.2s
+//
+// Arka plan drawRect'te çizilir: CAGradientLayer sublayer olarak eklenince
+// butonun başlığı ve ikonu gradient'in ALTINDA kalıyor.
+// ---------------------------------------------------------------------------
+static NSFont *BrandButtonFont(void) {
+    // CSS: font-size 15px, font-weight 650 (semibold ile bire bir yakın).
+    NSFont *inter = [NSFont fontWithName:@"Inter-SemiBold" size:kBrandFontSize];
+    if (inter) return inter;
+    return [NSFont systemFontOfSize:kBrandFontSize weight:NSFontWeightSemibold];
+}
 
-    if ([button respondsToSelector:@selector(setContentTintColor:)]) {
-        [button setContentTintColor:[NSColor whiteColor]];
+static NSGradient *BrandBaseGradient(void) {
+    static NSGradient *gradient = nil;
+    if (!gradient) {
+        NSColor *from = [NSColor colorWithSRGBRed:0.0 green:106.0 / 255.0 blue:1.0 alpha:1.0];
+        NSColor *to = [NSColor colorWithSRGBRed:0.0 green:48.0 / 255.0 blue:1.0 alpha:1.0];
+        gradient = [[NSGradient alloc] initWithColorsAndLocations:from, 0.2677, to, 1.0, nil];
     }
+    return gradient;
+}
+
+static NSGradient *BrandGlossGradient(void) {
+    static NSGradient *gradient = nil;
+    if (!gradient) {
+        NSColor *from = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.57];
+        NSColor *to = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.0];
+        gradient = [[NSGradient alloc] initWithColorsAndLocations:from, 0.0, to, 0.7049, nil];
+    }
+    return gradient;
+}
+
+static void DrawBrandBackground(NSRect bounds) {
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:bounds
+                                                        xRadius:kBrandCornerRadius
+                                                        yRadius:kBrandCornerRadius];
+    [BrandBaseGradient() drawInBezierPath:path angle:kBrandBaseAngle];
+    [BrandGlossGradient() drawInBezierPath:path angle:kBrandGlossAngle];
 }
 
 // CGWindow (sol-üst orijin) <-> Cocoa (sol-alt orijin) dönüşümünde referans yükseklik
@@ -205,6 +263,10 @@ void updateScreenOverlays();
 // Custom button with hover effects
 @interface HoverButton : NSButton
 @property (nonatomic) BOOL isHovered;
+// Marka butonu (alan seçimindeki mavi buton) görünümü: arka plan drawRect'te
+// çizilir. CAGradientLayer sublayer olarak eklenirse butonun kendi çizimi
+// (başlık + ikon) ALTINDA kalıyor, o yüzden katman değil çizim kullanılıyor.
+@property (nonatomic) BOOL usesBrandStyle;
 - (void)setupHoverTracking;
 @end
 
@@ -368,7 +430,19 @@ void updateScreenOverlays();
 - (void)mouseEntered:(NSEvent *)event {
     self.isHovered = YES;
     [[NSCursor pointingHandCursor] set];
-    
+
+    // Marka butonu: hover'da web ile aynı şekilde HAFİF KOYULAŞIR
+    // (filter: brightness(0.92)). Gradient katmanlı olduğu için backgroundColor
+    // ile oynanamaz, örtü katmanının opacity'si kullanılır.
+    if (self.usesBrandStyle) {
+        // CSS: transform: translateY(-1px) — renk değişmiyor, buton kalkıyor.
+        [CATransaction begin];
+        [CATransaction setAnimationDuration:0.11];
+        self.layer.transform = CATransform3DMakeTranslation(0, kBrandHoverLift, 0);
+        [CATransaction commit];
+        return;
+    }
+
     // Brighten background on hover
     if (self.layer.backgroundColor) {
         CGFloat red, green, blue, alpha;
@@ -388,7 +462,15 @@ void updateScreenOverlays();
 - (void)mouseExited:(NSEvent *)event {
     self.isHovered = NO;
     [[NSCursor arrowCursor] set];
-    
+
+    if (self.usesBrandStyle) {
+        [CATransaction begin];
+        [CATransaction setAnimationDuration:0.11];
+        self.layer.transform = CATransform3DIdentity;
+        [CATransaction commit];
+        return;
+    }
+
     // Restore original background color
     NSString *title = [self title];
     if ([title isEqualToString:@"Start Record"]) {
@@ -412,17 +494,99 @@ void updateScreenOverlays();
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-    
+
     // Remove old tracking areas
     for (NSTrackingArea *area in self.trackingAreas) {
         [self removeTrackingArea:area];
     }
-    
+
     // Add new tracking area
     [self setupHoverTracking];
 }
 
+// Marka arka planı drawRect'te çizildiği için başlık ve ikon her zaman ÜSTTE kalır.
+- (void)drawRect:(NSRect)dirtyRect {
+    if (self.usesBrandStyle) {
+        DrawBrandBackground([self bounds]);
+    }
+    [super drawRect:dirtyRect];
+}
+
 @end
+
+// Marka butonu stilini uygular: alan seçimindeki .confirm-button ile aynı
+// tipografi, köşe ve iç boşluk. Arka planı HoverButton.drawRect çiziyor.
+static void ApplyBrandButtonStyle(NSButton *button) {
+    if (!button) return;
+
+    [button setWantsLayer:YES];
+    [button setBordered:NO];
+    [button setFocusRingType:NSFocusRingTypeNone];
+    [button setShowsBorderOnlyWhileMouseInside:NO];
+
+    if ([button isKindOfClass:[HoverButton class]]) {
+        [(HoverButton *)button setUsesBrandStyle:YES];
+    }
+
+    CALayer *root = [button layer];
+    if (root) {
+        // Arka plan drawRect'te; katman tarafında hiçbir dolgu/kenar kalmasın.
+        root.backgroundColor = [[NSColor clearColor] CGColor];
+        root.borderWidth = 0.0;
+        root.borderColor = [[NSColor clearColor] CGColor];
+        root.shadowOpacity = 0.0;
+        root.shadowRadius = 0.0;
+        root.shadowOffset = CGSizeMake(0, 0);
+        root.masksToBounds = NO;
+    }
+
+    NSFont *font = BrandButtonFont();
+    [button setFont:font];
+
+    // İç boşluk web ile aynı: padding 14px 26px.
+    if ([button respondsToSelector:@selector(setContentInsets:)]) {
+        [button setContentInsets:NSEdgeInsetsMake(kBrandPaddingY, kBrandPaddingX,
+                                                  kBrandPaddingY, kBrandPaddingX)];
+    }
+    // Web'de ikon ve metin bir arada ortalanıyor (inline-flex + center).
+    // Bu olmadan NSButton ikonu sol kenara dayar, metni ortada bırakır.
+    if ([button respondsToSelector:@selector(setImageHugsTitle:)]) {
+        [button setImageHugsTitle:YES];
+    }
+
+    NSString *title = [button title] ?: @"";
+    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+    [paragraph setAlignment:NSTextAlignmentCenter];
+    NSDictionary *attributes = @{
+        NSForegroundColorAttributeName : [NSColor whiteColor],
+        NSParagraphStyleAttributeName : paragraph,
+        NSFontAttributeName : font
+    };
+    NSMutableAttributedString *attributed =
+        [[NSMutableAttributedString alloc] initWithString:title];
+    [attributed addAttributes:attributes range:NSMakeRange(0, [attributed length])];
+    [button setAttributedTitle:attributed];
+
+    // Boyut: içerik + padding, en az min-width 220px (web ile aynı).
+    NSSize textSize = [title sizeWithAttributes:attributes];
+    CGFloat contentWidth = ceil(textSize.width);
+    CGFloat contentHeight = ceil(textSize.height);
+    NSImage *icon = [button image];
+    if (icon) {
+        // İkon görüntüsü sağındaki gap'i (10px) zaten içeriyor.
+        contentWidth += [icon size].width;
+        contentHeight = MAX(contentHeight, [icon size].height);
+    }
+    NSRect frame = [button frame];
+    frame.size.width = MAX(kBrandMinWidth, contentWidth + kBrandPaddingX * 2.0);
+    frame.size.height = contentHeight + kBrandPaddingY * 2.0;
+    [button setFrame:frame];
+    [button setNeedsDisplay:YES];
+
+    [attributed release];
+    [paragraph release];
+}
+
 
 @implementation NoFocusWindow
 
@@ -1207,28 +1371,10 @@ void updateOverlay() {
                 [targetSelectButton setBordered:NO];
                 [targetSelectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
                 
-                // CRITICAL VISUAL FIX: Super aggressive styling for external displays
-                [targetSelectButton setWantsLayer:YES];
-                [targetSelectButton.layer setBackgroundColor:[[NSColor redColor] CGColor]]; // BRIGHT RED for testing
-                [targetSelectButton.layer setCornerRadius:8.0];
-                [targetSelectButton.layer setBorderWidth:3.0]; // THICK border
-                [targetSelectButton.layer setBorderColor:[[NSColor yellowColor] CGColor]]; // YELLOW border
-                [targetSelectButton.layer setMasksToBounds:YES];
-                
-                // Force very visible styling
-                [targetSelectButton.layer setShadowColor:[[NSColor blackColor] CGColor]];
-                [targetSelectButton.layer setShadowOffset:CGSizeMake(5, 5)];
-                [targetSelectButton.layer setShadowRadius:10.0];
-                [targetSelectButton.layer setShadowOpacity:1.0];
-                
-                // Clean white text - normal weight
-                NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
-                    initWithString:[targetSelectButton title]];
-                [titleString addAttribute:NSForegroundColorAttributeName 
-                                    value:[NSColor whiteColor] 
-                                    range:NSMakeRange(0, [titleString length])];
-                [targetSelectButton setAttributedTitle:titleString];
-                
+                // Alan seçimindeki mavi buton ile aynı marka görünümü
+                ApplyStartRecordButtonIcon(targetSelectButton);
+                ApplyBrandButtonStyle(targetSelectButton);
+
                 // Set target and action
                 if (!g_delegate) {
                     g_delegate = [[WindowSelectorDelegate alloc] init];
@@ -1244,7 +1390,10 @@ void updateOverlay() {
                 NSLog(@"🆕 Added new button to Screen %ld overlay - total subviews now: %lu", targetScreenIndex, [targetOverlay.contentView subviews].count);
             }
 
+            // Butonun her gösterimde marka metriklerinde kalmasını garanti et
+            // (mevcut buton yeniden kullanılıyor olabilir).
             ApplyStartRecordButtonIcon(targetSelectButton);
+            ApplyBrandButtonStyle(targetSelectButton);
 
             // Position buttons - Start Record in center of selected window
             if (targetSelectButton) {
@@ -1614,15 +1763,17 @@ void updateScreenOverlays() {
                     if ([subview isKindOfClass:[NSButton class]]) {
                         NSButton *button = (NSButton *)subview;
                         if ([button.title isEqualToString:@"Start Record"]) {
-                            if (isActiveScreen) {
-                                // Active screen: bright, prominent button with new RGB color
-                                [button.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:1.0] CGColor]];
-                                [button setAlphaValue:1.0];
-                            } else {
-                                // Inactive screen: dimmer button with new RGB color
-                                [button.layer setBackgroundColor:[[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0 alpha:0.6] CGColor]];
-                                [button setAlphaValue:0.7];
+                            // Marka butonunun arka planı drawRect'te çiziliyor;
+                            // layer.backgroundColor set edilirse hapın altında
+                            // köşeli bir dikdörtgen olarak görünüyor.
+                            BOOL usesBrand = [button isKindOfClass:[HoverButton class]] &&
+                                             [(HoverButton *)button usesBrandStyle];
+                            if (!usesBrand) {
+                                [button.layer setBackgroundColor:
+                                    [[NSColor colorWithRed:77.0/255.0 green:30.0/255.0 blue:231.0/255.0
+                                                     alpha:(isActiveScreen ? 1.0 : 0.6)] CGColor]];
                             }
+                            [button setAlphaValue:isActiveScreen ? 1.0 : 0.7];
                         }
                     }
                     if ([subview isKindOfClass:[NSTextField class]]) {
@@ -1827,29 +1978,11 @@ bool startScreenSelection() {
             [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
             [selectButton setTag:i]; // Set screen index as tag
             
-            // Modern button styling with new RGB color
-            [selectButton setWantsLayer:YES];
-            [selectButton.layer setBackgroundColor:[[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor]];
-            [selectButton.layer setCornerRadius:8.0];
-            [selectButton.layer setBorderWidth:0.0];
-            
-            // Remove all button borders and decorations
-            [selectButton.layer setShadowOpacity:0.0];
-            [selectButton.layer setShadowRadius:0.0];
-            [selectButton.layer setShadowOffset:NSMakeSize(0, 0)];
-            [selectButton.layer setMasksToBounds:YES];
-            
-            // Clean white text - normal weight
-            [selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
+            // Alan seçimindeki mavi buton ile aynı marka görünümü
             [selectButton setTitle:@"Start Record"];
-            NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
-                initWithString:[selectButton title]];
-            [titleString addAttribute:NSForegroundColorAttributeName 
-                                value:[NSColor whiteColor] 
-                                range:NSMakeRange(0, [titleString length])];
-            [selectButton setAttributedTitle:titleString];
-
             ApplyStartRecordButtonIcon(selectButton);
+            ApplyBrandButtonStyle(selectButton);
+
 
             // Clean button - no shadows or highlights
 
@@ -2314,29 +2447,10 @@ Napi::Value StartWindowSelection(const Napi::CallbackInfo& info) {
         [g_selectButton setBordered:NO];
         [g_selectButton setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightRegular]];
         
-        // Modern button styling with new RGB color
-        [g_selectButton setWantsLayer:YES];
-        [g_selectButton.layer setBackgroundColor:[[NSColor colorWithRed:90.0/255.0 green:50.0/255.0 blue:250.0/255.0 alpha:1.0] CGColor]];
-        [g_selectButton.layer setCornerRadius:8.0];
-        [g_selectButton.layer setBorderWidth:0.0];
-        
-        // Remove all button borders and decorations
-        [g_selectButton.layer setShadowOpacity:0.0];
-        [g_selectButton.layer setShadowRadius:0.0];
-        [g_selectButton.layer setShadowOffset:NSMakeSize(0, 0)];
-        [g_selectButton.layer setMasksToBounds:YES];
-        [g_selectButton.layer setBorderWidth:0.0];
-        [g_selectButton.layer setBorderColor:[[NSColor clearColor] CGColor]];
-        
-        // Clean white text - normal weight
-        NSMutableAttributedString *titleString = [[NSMutableAttributedString alloc] 
-            initWithString:[g_selectButton title]];
-        [titleString addAttribute:NSForegroundColorAttributeName 
-                            value:[NSColor whiteColor] 
-                            range:NSMakeRange(0, [titleString length])];
-        [g_selectButton setAttributedTitle:titleString];
-
+        // Alan seçimindeki mavi buton ile aynı marka görünümü
         ApplyStartRecordButtonIcon(g_selectButton);
+        ApplyBrandButtonStyle(g_selectButton);
+
 
         // Create delegate for button action and timer
         g_delegate = [[WindowSelectorDelegate alloc] init];
