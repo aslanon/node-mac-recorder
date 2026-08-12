@@ -165,7 +165,17 @@ static NSInteger g_targetFPS = 60;
 static NSString *g_qualityPreset = @"high";
 static NSInteger g_frameCount = 0;
 static CFAbsoluteTime g_firstFrameTime = 0;
-static const NSInteger kSCKHighQualityVideoBitrate = 100 * 1000 * 1000;
+
+// Encoder gercek zamanli yetisemezse kare SESSIZCE dusuyordu (readyForMoreMediaData
+// NO -> return). Fansiz makinelerde (MacBook Air) 60 FPS Retina yakalamada bu
+// gorunmez kalite kaybinin ana kaynagi; sayilmadan teshis edilemiyor.
+static NSInteger g_videoFramesAppended = 0;
+static NSInteger g_videoFramesDroppedNotReady = 0;
+// CleanupWriters sayaclari sifirladigi icin JS tarafi kayit bittikten SONRA
+// okuyabilsin diye son oturumun degerleri ayrica saklanir.
+static NSInteger g_lastVideoFramesAppended = 0;
+static NSInteger g_lastVideoFramesDropped = 0;
+static NSInteger g_lastVideoTargetFPS = 0;
 
 // ---- Prewarm edilmis SCShareableContent onbellegi ----
 // Kayit baslatilirken envanter cagrisini tamamen atlayabilmek icin saklanir.
@@ -232,42 +242,88 @@ static CGFloat SCKQualityScaleForPreset(NSString *preset) {
     return 1.0; // High = full resolution
 }
 
+// SCDisplay.width/height ve CGDisplayPixelsWide/High ölçekli Retina modlarında
+// mantıksal (Quartz) çözünürlüğü döndürebiliyor. Zoom sırasında gerçek piksel
+// detayını korumak için aktif display mode'un backing pixel ölçüsünü, global
+// point-space frame'e böl. ScreenCaptureKit filter scale'i bazı bağımsız pencere
+// filtrelerinde 1.0 raporladığından bu değer güvenilir alt sınırdır.
+static CGFloat SCKBackingScaleForDisplay(SCDisplay *display) API_AVAILABLE(macos(12.3)) {
+    if (!display) return 1.0;
+
+    CGFloat logicalWidth = display.frame.size.width;
+    CGFloat logicalHeight = display.frame.size.height;
+    NSInteger backingWidth = 0;
+    NSInteger backingHeight = 0;
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display.displayID);
+    if (mode) {
+        backingWidth = (NSInteger)CGDisplayModeGetPixelWidth(mode);
+        backingHeight = (NSInteger)CGDisplayModeGetPixelHeight(mode);
+        CGDisplayModeRelease(mode);
+    }
+
+    // Eski/alışılmadık display mode'larda pixel ölçüsü yoksa Quartz değerine
+    // düş; bu en azından non-Retina ekranlarda doğru 1x sonucu verir.
+    if (backingWidth <= 0) {
+        backingWidth = (NSInteger)CGDisplayPixelsWide(display.displayID);
+    }
+    if (backingHeight <= 0) {
+        backingHeight = (NSInteger)CGDisplayPixelsHigh(display.displayID);
+    }
+
+    CGFloat scaleX = (logicalWidth > 0 && backingWidth > 0)
+        ? (CGFloat)backingWidth / logicalWidth
+        : 1.0;
+    CGFloat scaleY = (logicalHeight > 0 && backingHeight > 0)
+        ? (CGFloat)backingHeight / logicalHeight
+        : 1.0;
+    CGFloat scale = MAX(scaleX, scaleY);
+    if (!isfinite(scale)) scale = 1.0;
+    return MIN(4.0, MAX(1.0, scale));
+}
+
+// Bitrate hesabi FPS'e DUYARLI olmali. Eski formul `w*h*multiplier` idi ve fps'i
+// hic gormuyordu: kayit 30 -> 60 FPS'e cikarildiginda toplam bitrate ayni kaldigi
+// icin kare basina bit yariya dustu, ustelik 180+ Mbps CABAC akisi fansiz bir
+// makinede gercek zamanli encoder'i doyurup kare dusurmeye basladi. Artik hedef
+// "kare basina piksel basina bit" (bpp) olarak ifade edilir; fps degisince toplam
+// bitrate onunla birlikte olceklenir ve kare basina kalite SABIT kalir.
 static void SCKQualityBitrateForDimensions(NSString *preset,
                                            NSInteger width,
                                            NSInteger height,
+                                           NSInteger fps,
                                            NSInteger *bitrateOut,
-                                           NSInteger *multiplierOut,
+                                           double *bppOut,
                                            NSInteger *minOut,
                                            NSInteger *maxOut) {
     NSString *normalized = SCKNormalizeQualityPreset(preset);
 
-    NSInteger multiplier = 30;
-    NSInteger minBitrate = 30 * 1000 * 1000;
-    NSInteger maxBitrate = 120 * 1000 * 1000;
+    // H.264 High/CABAC 4:2:0 ekran icerigi icin 0.28 bpp zaten gorsel olarak
+    // doygunluk bolgesidir; asil kalite tavani bitrate degil 4:2:0 kroma alt
+    // ornekleme. Eski 0.53 bpp'nin ikinci yarisi kalite getirmiyor, sadece
+    // entropy coding + disk yazma yuku olarak realtime encoder'i zorluyordu.
+    double bpp = 0.28;
+    NSInteger minBitrate = 40 * 1000 * 1000;
+    NSInteger maxBitrate = 200 * 1000 * 1000;
 
     if ([normalized isEqualToString:@"low"]) {
-        multiplier = 10;
+        bpp = 0.09;
         minBitrate = 10 * 1000 * 1000;
         maxBitrate = 45 * 1000 * 1000;
     } else if ([normalized isEqualToString:@"medium"]) {
-        multiplier = 18;
-        minBitrate = 18 * 1000 * 1000;
-        maxBitrate = 80 * 1000 * 1000;
-    } else { // high/default - çözünürlüğe DUYARLI yüksek kalite
-        // Eski hali sabit 50 Mbps idi: Retina/4K kayıtta çok düşük (hatta medium
-        // yüksek çözünürlükte high'ı geçebiliyordu). Artık çözünürlükle ölçeklenir.
-        multiplier = 32; // ~0.53 bpp @60fps
-        minBitrate = kSCKHighQualityVideoBitrate; // 100 Mbps taban
-        maxBitrate = 200 * 1000 * 1000;           // 200 Mbps tavan (realtime güvenli)
+        bpp = 0.16;
+        minBitrate = 20 * 1000 * 1000;
+        maxBitrate = 90 * 1000 * 1000;
     }
 
-    double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) * (double)multiplier;
+    double base = ((double)MAX(1, width)) * ((double)MAX(1, height)) *
+                  ((double)MAX(1, fps)) * bpp;
     NSInteger bitrate = (NSInteger)base;
     if (bitrate < minBitrate) bitrate = minBitrate;
     if (bitrate > maxBitrate) bitrate = maxBitrate;
 
     if (bitrateOut) *bitrateOut = bitrate;
-    if (multiplierOut) *multiplierOut = multiplier;
+    if (bppOut) *bppOut = bpp;
     if (minOut) *minOut = minBitrate;
     if (maxOut) *maxOut = maxBitrate;
 }
@@ -409,9 +465,31 @@ static void CleanupWriters(void) {
         g_videoWriterStarted = NO;
         g_videoStartTime = kCMTimeInvalid;
 
+        // Kayit sonu ozeti: kare dusme orani gorunur kalsin, aksi halde "video
+        // kalitesiz" sikayeti olcusuz kaliyor.
+        NSInteger totalSeen = g_videoFramesAppended + g_videoFramesDroppedNotReady;
+        if (totalSeen > 0) {
+            g_lastVideoFramesAppended = g_videoFramesAppended;
+            g_lastVideoFramesDropped = g_videoFramesDroppedNotReady;
+            g_lastVideoTargetFPS = MAX(1, g_targetFPS);
+            double dropRatio = 100.0 * g_videoFramesDroppedNotReady / totalSeen;
+            MRLog(@"📊 Kayit ozeti: %ld kare yazildi, %ld dusuruldu (%%%.1f) @%ldfps hedef",
+                  (long)g_videoFramesAppended,
+                  (long)g_videoFramesDroppedNotReady,
+                  dropRatio,
+                  (long)MAX(1, g_targetFPS));
+            if (dropRatio > 2.0) {
+                NSLog(@"⚠️ Encoder yuku surdurulebilir degil: kare dusme orani %%%.1f. "
+                      @"Cozunurluk/FPS/bitrate kombinasyonu bu makine icin agir.",
+                      dropRatio);
+            }
+        }
+
         // Reset frame counting
         g_frameCount = 0;
         g_firstFrameTime = 0;
+        g_videoFramesAppended = 0;
+        g_videoFramesDroppedNotReady = 0;
     }
     
     if (g_audioWriter) {
@@ -447,6 +525,23 @@ extern "C" BOOL MRMixAudioToSingleTrackWithGains(NSString *primaryAudioPath,
                                                   float micGain,
                                                   float systemGain);
 extern "C" BOOL MRMuxAudioIntoVideo(NSString *videoPath, NSString *audioPath);
+
+// Encoder'in gercek zamanli yetisip yetismedigini JS tarafina tasir. Kayit
+// suruyorsa canli sayaclar, bittiyse son oturumun degerleri dondurulur.
+extern "C" void ScreenCaptureKitGetFrameStats(long *appendedOut,
+                                              long *droppedOut,
+                                              long *targetFPSOut) {
+    BOOL live = (g_videoFramesAppended + g_videoFramesDroppedNotReady) > 0;
+    if (appendedOut) {
+        *appendedOut = (long)(live ? g_videoFramesAppended : g_lastVideoFramesAppended);
+    }
+    if (droppedOut) {
+        *droppedOut = (long)(live ? g_videoFramesDroppedNotReady : g_lastVideoFramesDropped);
+    }
+    if (targetFPSOut) {
+        *targetFPSOut = (long)(live ? MAX(1, g_targetFPS) : g_lastVideoTargetFPS);
+    }
+}
 
 extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     if (!g_audioOutputPath) {
@@ -545,9 +640,21 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     if (!g_videoInput.readyForMoreMediaData) {
+        // Encoder geride kaldi: bu kare kalici olarak kayboluyor. Sessizce
+        // dusurmek kalite sikayetlerini teshis edilemez hale getiriyordu; oran
+        // %2'yi asarsa encoder yuku (cozunurluk x fps x bitrate) surdurulebilir
+        // degil demektir.
+        g_videoFramesDroppedNotReady++;
+        NSInteger totalSeen = g_videoFramesAppended + g_videoFramesDroppedNotReady;
+        if (g_videoFramesDroppedNotReady == 1 || (g_videoFramesDroppedNotReady % 60) == 0) {
+            MRLog(@"⚠️ Encoder yetisemedi, kare dusuruldu: %ld/%ld (%.1f%%)",
+                  (long)g_videoFramesDroppedNotReady,
+                  (long)totalSeen,
+                  totalSeen > 0 ? (100.0 * g_videoFramesDroppedNotReady / totalSeen) : 0.0);
+        }
         return;
     }
-    
+
     CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!pixelBuffer) {
         return;
@@ -596,6 +703,8 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     BOOL appended = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativePresentation];
     if (!appended) {
         NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
+    } else {
+        g_videoFramesAppended++;
     }
 
     // Frame rate debugging
@@ -819,30 +928,39 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     NSString *normalizedQuality = SCKNormalizeQualityPreset(g_qualityPreset);
+    NSInteger encoderFPS = MAX(1, g_targetFPS);
     NSInteger bitrate = 0;
+    double bpp = 0.0;
     NSInteger minBitrate = 0;
     NSInteger maxBitrate = 0;
-    SCKQualityBitrateForDimensions(normalizedQuality, width, height, &bitrate, NULL, &minBitrate, &maxBitrate);
+    SCKQualityBitrateForDimensions(normalizedQuality, width, height, encoderFPS,
+                                   &bitrate, &bpp, &minBitrate, &maxBitrate);
 
     NSNumber *qualityHint = [normalizedQuality isEqualToString:@"high"] ? @1.0 : ([normalizedQuality isEqualToString:@"medium"] ? @0.9 : @0.85);
 
-    MRLog(@"🎬 Screen encoder (%@): %ldx%ld, codec=H.264 High Profile, bitrate=%.2fMbps (min=%ldMbps max=%ldMbps)",
+    MRLog(@"🎬 Screen encoder (%@): %ldx%ld@%ldfps, codec=H.264 High Profile, bitrate=%.2fMbps (%.2f bpp, min=%ldMbps max=%ldMbps)",
           normalizedQuality,
           (long)width,
           (long)height,
+          (long)encoderFPS,
           bitrate / (1000.0 * 1000.0),
+          bpp,
           (long)(minBitrate / (1000 * 1000)),
           (long)(maxBitrate / (1000 * 1000)));
 
     NSDictionary *compressionProps = @{
         AVVideoAverageBitRateKey: @(bitrate),
-        AVVideoMaxKeyFrameIntervalKey: @(MAX(1, g_targetFPS)),
-        AVVideoAllowFrameReorderingKey: @YES,
-        AVVideoExpectedSourceFrameRateKey: @(MAX(1, g_targetFPS)),
+        AVVideoMaxKeyFrameIntervalKey: @(encoderFPS),
+        // B-frame'ler (kare yeniden siralama) gercek zamanli yakalamada encoder'a
+        // ek gecikme + is yukleyip readyForMoreMediaData'yi geciktiriyor; ekran
+        // icerigi zaten neredeyse tamamen statik/kesme oldugu icin kazanci ihmal
+        // edilebilir. Kapatmak fansiz makinelerde kare dusmesini azaltir.
+        AVVideoAllowFrameReorderingKey: @NO,
+        AVVideoExpectedSourceFrameRateKey: @(encoderFPS),
         AVVideoQualityKey: qualityHint,
         AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
         AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
-        AVVideoAverageNonDroppableFrameRateKey: @(MAX(1, g_targetFPS)),
+        AVVideoAverageNonDroppableFrameRateKey: @(encoderFPS),
         AVVideoMaxKeyFrameIntervalDurationKey: @(1.0)
     };
 
@@ -1490,31 +1608,41 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                     CGRect dispBounds = CGRectMake(disp.frame.origin.x, disp.frame.origin.y,
                                                    disp.frame.size.width, disp.frame.size.height);
                     if (CGRectContainsPoint(dispBounds, windowCenter)) {
-                        NSInteger physW = (NSInteger)CGDisplayPixelsWide(disp.displayID);
-                        NSInteger physH = (NSInteger)CGDisplayPixelsHigh(disp.displayID);
-                        CGFloat scX = (disp.width > 0) ? (CGFloat)physW / (CGFloat)disp.width : 1.0;
-                        CGFloat scY = (disp.height > 0) ? (CGFloat)physH / (CGFloat)disp.height : 1.0;
-                        scaleFactor = MAX(scX, scY);
+                        scaleFactor = SCKBackingScaleForDisplay(disp);
                         break;
                     }
                 }
                 // Fallback: use main display scale factor
                 if (scaleFactor == 1.0 && content.displays.count > 0) {
                     SCDisplay *mainDisp = content.displays.firstObject;
-                    NSInteger physW = (NSInteger)CGDisplayPixelsWide(mainDisp.displayID);
-                    NSInteger physH = (NSInteger)CGDisplayPixelsHigh(mainDisp.displayID);
-                    CGFloat scX = (mainDisp.width > 0) ? (CGFloat)physW / (CGFloat)mainDisp.width : 1.0;
-                    CGFloat scY = (mainDisp.height > 0) ? (CGFloat)physH / (CGFloat)mainDisp.height : 1.0;
-                    scaleFactor = MAX(scX, scY);
+                    scaleFactor = SCKBackingScaleForDisplay(mainDisp);
                 }
 
-                NSInteger physicalWindowWidth = (NSInteger)(windowLogicalWidth * scaleFactor);
-                NSInteger physicalWindowHeight = (NSInteger)(windowLogicalHeight * scaleFactor);
+                filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
+                if (@available(macOS 14.0, *)) {
+                    // ScreenCaptureKit exposes the authoritative point→pixel
+                    // conversion for this exact filter. Prefer it over display
+                    // heuristics (scaled modes and windows spanning displays).
+                    CGFloat filterScale = filter.pointPixelScale;
+                    if (isfinite(filterScale) && filterScale >= 1.0 && filterScale <= 4.0) {
+                        // desktopIndependentWindow filtresi bazı macOS/sürüm
+                        // kombinasyonlarında Retina pencerede bile 1.0 dönebiliyor.
+                        // Display geometrisinden bulunan 2x değeri 1x'e indirirsek
+                        // 1500x960 pencere gerçek 3000x1920 yerine logical boyutta
+                        // kaydediliyor ve zoom'da metin detayı geri dönülemez
+                        // biçimde kayboluyor. Filter yalnızca daha yüksek/güvenli
+                        // bir backing scale bildiriyorsa heuristiği yükseltsin.
+                        scaleFactor = MAX(scaleFactor, filterScale);
+                    }
+                }
+                scaleFactor = MIN(4.0, MAX(1.0, scaleFactor));
+
+                NSInteger physicalWindowWidth = (NSInteger)llround(windowLogicalWidth * scaleFactor);
+                NSInteger physicalWindowHeight = (NSInteger)llround(windowLogicalHeight * scaleFactor);
 
                 MRLog(@"🪟 Recording window: %@ logical=%ux%u, physical=%ldx%ld, scale=%.2fx",
                       targetWindow.title, (unsigned)windowLogicalWidth, (unsigned)windowLogicalHeight,
                       (long)physicalWindowWidth, (long)physicalWindowHeight, scaleFactor);
-                filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
                 recordingWidth = physicalWindowWidth;
                 recordingHeight = physicalWindowHeight;
             } else {
@@ -1550,22 +1678,36 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             }
 
             if (targetDisplay) {
-                // Use physical pixel dimensions for Retina displays (not logical points)
                 CGDirectDisplayID displayID = targetDisplay.displayID;
-                NSInteger physicalWidth = (NSInteger)CGDisplayPixelsWide(displayID);
-                NSInteger physicalHeight = (NSInteger)CGDisplayPixelsHigh(displayID);
-                NSInteger logicalWidth = targetDisplay.width;
-                NSInteger logicalHeight = targetDisplay.height;
+                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
 
-                CGFloat scaleX = (logicalWidth > 0) ? (CGFloat)physicalWidth / (CGFloat)logicalWidth : 1.0;
-                CGFloat scaleY = (logicalHeight > 0) ? (CGFloat)physicalHeight / (CGFloat)logicalHeight : 1.0;
-                CGFloat scaleFactor = MAX(scaleX, scaleY);
+                // CGDisplayPixelsWide/High reports the current Quartz coordinate
+                // resolution on scaled Retina modes (for example 1800x1169), not
+                // necessarily the backing pixels ScreenCaptureKit can deliver.
+                // The filter exposes the authoritative point -> pixel scale and
+                // content rect, so derive the requested stream size from those.
+                CGFloat logicalWidth = targetDisplay.frame.size.width;
+                CGFloat logicalHeight = targetDisplay.frame.size.height;
+                CGFloat scaleFactor = SCKBackingScaleForDisplay(targetDisplay);
+                if (@available(macOS 14.0, *)) {
+                    CGRect filterRect = filter.contentRect;
+                    CGFloat filterScale = filter.pointPixelScale;
+                    if (filterRect.size.width > 0 && filterRect.size.height > 0) {
+                        logicalWidth = filterRect.size.width;
+                        logicalHeight = filterRect.size.height;
+                    }
+                    if (isfinite(filterScale) && filterScale >= 1.0 && filterScale <= 4.0) {
+                        scaleFactor = MAX(scaleFactor, filterScale);
+                    }
+                }
+                scaleFactor = MIN(4.0, MAX(1.0, scaleFactor));
 
-                MRLog(@"🖥️ Recording display %u: logical=%dx%d, physical=%ldx%ld, scale=%.2fx",
-                      displayID, (int)logicalWidth, (int)logicalHeight,
+                NSInteger physicalWidth = (NSInteger)llround(logicalWidth * scaleFactor);
+                NSInteger physicalHeight = (NSInteger)llround(logicalHeight * scaleFactor);
+                MRLog(@"🖥️ Recording display %u: logical=%.0fx%.0f, physical=%ldx%ld, scale=%.2fx (filter-backed)",
+                      displayID, logicalWidth, logicalHeight,
                       (long)physicalWidth, (long)physicalHeight, scaleFactor);
 
-                filter = [[SCContentFilter alloc] initWithDisplay:targetDisplay excludingWindows:@[]];
                 recordingWidth = physicalWidth;
                 recordingHeight = physicalHeight;
             } else {
@@ -1575,19 +1717,28 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             }
         }
 
-        if (captureRect && captureRect[@"width"] && captureRect[@"height"]) {
+        // desktopIndependentWindow kendi içerik sınırını zaten uygular. JS
+        // katmanındaki window captureArea cursor metadata'sı olarak tutulabilir;
+        // burada tekrar crop boyutu gibi kullanılırsa yukarıda hesaplanan Retina
+        // physicalWindowWidth/Height logical 1x ölçülerle ezilir. Bu blok yalnızca
+        // gerçek display/area kayıtlarında çıktı ölçüsünü değiştirmeli.
+        BOOL isWindowCapture = windowId && [windowId integerValue] != 0;
+        if (!isWindowCapture && captureRect && captureRect[@"width"] && captureRect[@"height"]) {
             CGFloat cropWidth = [captureRect[@"width"] doubleValue];
             CGFloat cropHeight = [captureRect[@"height"] doubleValue];
             if (cropWidth > 0 && cropHeight > 0) {
                 // Scale crop dimensions for Retina displays
                 CGFloat cropScaleFactor = 1.0;
                 if (targetDisplay) {
-                    NSInteger physW = (NSInteger)CGDisplayPixelsWide(targetDisplay.displayID);
-                    NSInteger physH = (NSInteger)CGDisplayPixelsHigh(targetDisplay.displayID);
-                    CGFloat scX = (targetDisplay.width > 0) ? (CGFloat)physW / (CGFloat)targetDisplay.width : 1.0;
-                    CGFloat scY = (targetDisplay.height > 0) ? (CGFloat)physH / (CGFloat)targetDisplay.height : 1.0;
-                    cropScaleFactor = MAX(scX, scY);
+                    cropScaleFactor = SCKBackingScaleForDisplay(targetDisplay);
+                    if (@available(macOS 14.0, *)) {
+                        CGFloat filterScale = filter.pointPixelScale;
+                        if (isfinite(filterScale) && filterScale >= 1.0 && filterScale <= 4.0) {
+                            cropScaleFactor = MAX(cropScaleFactor, filterScale);
+                        }
+                    }
                 }
+                cropScaleFactor = MIN(4.0, MAX(1.0, cropScaleFactor));
                 NSInteger physicalCropWidth = (NSInteger)(cropWidth * cropScaleFactor);
                 NSInteger physicalCropHeight = (NSInteger)(cropHeight * cropScaleFactor);
                 MRLog(@"🔲 Crop area: logical=%.0fx%.0f, physical=%ldx%ld, scale=%.2fx at (%.0f,%.0f)",

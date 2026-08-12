@@ -493,7 +493,7 @@
     "want_separate_host_toolset": 0,
     "xcode_version": "16.0",
     "nodedir": "/Users/onur/Library/Caches/node-gyp/24.5.0",
-    "python": "/usr/local/opt/python@3.13/bin/python3.13",
+    "python": "/usr/local/opt/python@3.14/bin/python3.14",
     "standalone_static_library": 1,
     "global_prefix": "/Users/onur/.nvm/versions/node/v24.5.0",
     "local_prefix": "/Users/onur/codes/creavit.studio/node-mac-recorder",

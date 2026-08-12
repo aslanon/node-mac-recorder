@@ -43,6 +43,7 @@ extern "C" {
     bool hasAudioPermission();
 
     NSString *ScreenCaptureKitCurrentAudioPath(void);
+    void ScreenCaptureKitGetFrameStats(long *appendedOut, long *droppedOut, long *targetFPSOut);
 }
 
 // Cursor tracker function declarations
@@ -1400,6 +1401,29 @@ Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, g_isRecording);
 }
 
+// NAPI Function: Yakalama sirasinda encoder'in dusurdugu kare istatistikleri.
+// dropRatio > ~2 ise cozunurluk x FPS x bitrate bu makine icin surdurulebilir
+// degildir ve "video kalitesiz" sikayetinin olculebilir kanitidir.
+Napi::Value GetCaptureFrameStats(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
+
+    long appended = 0;
+    long dropped = 0;
+    long targetFPS = 0;
+    if (@available(macOS 12.3, *)) {
+        ScreenCaptureKitGetFrameStats(&appended, &dropped, &targetFPS);
+    }
+
+    long total = appended + dropped;
+    result.Set("appendedFrames", Napi::Number::New(env, (double)appended));
+    result.Set("droppedFrames", Napi::Number::New(env, (double)dropped));
+    result.Set("targetFps", Napi::Number::New(env, (double)targetFPS));
+    result.Set("dropRatio",
+               Napi::Number::New(env, total > 0 ? (double)dropped / (double)total : 0.0));
+    return result;
+}
+
 // NAPI Function: Get Window Thumbnail
 Napi::Value GetWindowThumbnail(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -1738,6 +1762,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
     exports.Set(Napi::String::New(env, "getWindows"), Napi::Function::New(env, GetWindows));
     exports.Set(Napi::String::New(env, "getRecordingStatus"), Napi::Function::New(env, GetRecordingStatus));
+    exports.Set(Napi::String::New(env, "getCaptureFrameStats"), Napi::Function::New(env, GetCaptureFrameStats));
     exports.Set(Napi::String::New(env, "prewarmScreenCapture"), Napi::Function::New(env, PrewarmScreenCapture));
     exports.Set(Napi::String::New(env, "getVideoStartTimestamp"), Napi::Function::New(env, GetVideoStartTimestamp));
     exports.Set(Napi::String::New(env, "checkPermissions"), Napi::Function::New(env, CheckPermissions));

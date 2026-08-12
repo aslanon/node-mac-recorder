@@ -835,8 +835,12 @@ class MacRecorder extends EventEmitter {
 						};
 				}
 
-				// Manuel captureArea varsa onu kullan
-				if (this.options.captureArea) {
+				// Gerçek alan kaydında crop'u native tarafa ilet. Pencere kaydında
+				// captureArea yalnızca cursor koordinat metadata'sıdır; ScreenCaptureKit
+				// desktopIndependentWindow zaten doğru pencereyi filtreler. Bunu ayrıca
+				// crop olarak göndermek native tarafta Retina 2x boyutu tekrar 1x
+				// logical pencere ölçüsüne indiriyordu.
+				if (this.options.captureArea && !this.options.windowId) {
 					recordingOptions.captureArea = {
 						x: this.options.captureArea.x,
 						y: this.options.captureArea.y,
@@ -1410,6 +1414,19 @@ class MacRecorder extends EventEmitter {
 				? Math.floor((Date.now() - this.recordingStartTime) / 1000)
 				: 0,
 		};
+	}
+
+	/**
+	 * Encoder'ın gerçek zamanlı yetişip yetişmediğini gösteren kare sayaçları.
+	 * Kayıt sırasında canlı, bittikten sonra son oturumun değerlerini döndürür.
+	 * dropRatio > 0.02 ise çözünürlük x FPS x bitrate bu makine için ağırdır ve
+	 * görüntü kalitesi sessizce düşüyor demektir.
+	 */
+	getCaptureFrameStats() {
+		if (typeof nativeBinding.getCaptureFrameStats !== "function") {
+			return { appendedFrames: 0, droppedFrames: 0, targetFps: 0, dropRatio: 0 };
+		}
+		return nativeBinding.getCaptureFrameStats();
 	}
 
 	/**
