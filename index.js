@@ -1417,6 +1417,31 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
+	 * Pencere kaydında hedef pencerenin uygulamasını aktive eder.
+	 *
+	 * Kayıt başlarken kaydedilen uygulama pasif kalırsa, odağını kaybedince
+	 * gizlenen pencereler (iTerm2 hotkey window vb.) kendini gizler ve kayıtta
+	 * görünmez. Kayıt komutu verildiğinde odak bizde olduğu için bu adım şart.
+	 *
+	 * @param {number} windowId CGWindowID
+	 * @returns {boolean}
+	 */
+	activateWindowOwnerApp(windowId) {
+		const id = Number(windowId);
+		if (!Number.isFinite(id) || id <= 0) return false;
+		if (typeof nativeBinding.activateWindowOwnerApp !== "function") return false;
+		try {
+			return !!nativeBinding.activateWindowOwnerApp(id);
+		} catch (error) {
+			console.warn(
+				"[MacRecorder] activateWindowOwnerApp başarısız:",
+				error?.message || error,
+			);
+			return false;
+		}
+	}
+
+	/**
 	 * Encoder'ın gerçek zamanlı yetişip yetişmediğini gösteren kare sayaçları.
 	 * Kayıt sırasında canlı, bittikten sonra son oturumun değerlerini döndürür.
 	 * dropRatio > 0.02 ise çözünürlük x FPS x bitrate bu makine için ağırdır ve

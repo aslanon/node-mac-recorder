@@ -239,6 +239,7 @@ void updateOverlay();
 NSDictionary* getWindowUnderCursor(CGPoint point);
 NSArray* getAllSelectableWindows();
 bool bringWindowToFront(int windowId);
+bool activateWindowOwnerApp(int windowId);
 void cleanupRecordingPreview();
 bool showRecordingPreview(NSDictionary *windowInfo);
 bool hideRecordingPreview();
@@ -841,6 +842,61 @@ static void ApplyBrandButtonStyle(NSButton *button) {
 @end
 
 static WindowSelectorDelegate *g_delegate = nil;
+
+// Pencerenin SAHIBI UYGULAMAYI aktive eder.
+//
+// bringWindowToFront() yalnizca AXRaise + AXFocused yapar; bu pencereyi one
+// getirir ama uygulamayi AKTIF hale getirmez. Kayit basladiginda kaydedilen
+// uygulama pasif kalirsa "odagi kaybedince gizlen" davranisindaki pencereler
+// (iTerm2 hotkey window vb.) kendini gizler ve kayitta gorunmez. Pencere kaydi
+// baslarken hedef uygulama gercekten aktif olmalidir ki kullanici icine
+// yazabilsin.
+bool activateWindowOwnerApp(int windowId) {
+    @autoreleasepool {
+        @try {
+            CFArrayRef cgWindowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+            if (!cgWindowList) return false;
+
+            NSArray *windowArray = (__bridge NSArray *)cgWindowList;
+            pid_t ownerPid = 0;
+            for (NSDictionary *windowInfo in windowArray) {
+                NSNumber *cgWindowId = [windowInfo objectForKey:(NSString *)kCGWindowNumber];
+                if ([cgWindowId intValue] == windowId) {
+                    NSNumber *processId = [windowInfo objectForKey:(NSString *)kCGWindowOwnerPID];
+                    ownerPid = (pid_t)[processId intValue];
+                    break;
+                }
+            }
+            CFRelease(cgWindowList);
+
+            if (ownerPid <= 0) {
+                NSLog(@"⚠️ activateWindowOwnerApp: window %d icin PID bulunamadi", windowId);
+                return false;
+            }
+
+            NSRunningApplication *app =
+                [NSRunningApplication runningApplicationWithProcessIdentifier:ownerPid];
+            if (!app) {
+                NSLog(@"⚠️ activateWindowOwnerApp: PID %d icin uygulama yok", ownerPid);
+                return false;
+            }
+
+            // Once uygulamayi aktive et, sonra hedef pencereyi one kaldir.
+            // Ters sirada yapilirsa aktivasyon uygulamanin kendi ana penceresini
+            // one getirip secilen pencereyi geri plana itebiliyor.
+            BOOL activated = [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+            NSLog(@"🔝 activateWindowOwnerApp: PID %d aktive=%d (window %d)",
+                  ownerPid, activated, windowId);
+
+            bringWindowToFront(windowId);
+            return activated ? true : false;
+
+        } @catch (NSException *exception) {
+            NSLog(@"❌ activateWindowOwnerApp exception: %@", exception.reason);
+            return false;
+        }
+    }
+}
 
 // Bring window to front using Accessibility API
 bool bringWindowToFront(int windowId) {
@@ -2696,6 +2752,24 @@ Napi::Value BringWindowToFront(const Napi::CallbackInfo& info) {
     }
 }
 
+// NAPI Function: Pencerenin sahibi uygulamayi aktive et (pencere kaydi icin)
+Napi::Value ActivateWindowOwnerApp(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Window ID required").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    int windowId = info[0].As<Napi::Number>().Int32Value();
+
+    @try {
+        return Napi::Boolean::New(env, activateWindowOwnerApp(windowId));
+    } @catch (NSException *exception) {
+        return Napi::Boolean::New(env, false);
+    }
+}
+
 // NAPI Function: Enable/Disable Auto Bring To Front
 Napi::Value SetBringToFrontEnabled(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -2937,6 +3011,7 @@ Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports) {
     exports.Set("getSelectedWindowInfo", Napi::Function::New(env, GetSelectedWindowInfo));
     exports.Set("getWindowSelectionStatus", Napi::Function::New(env, GetWindowSelectionStatus));
     exports.Set("bringWindowToFront", Napi::Function::New(env, BringWindowToFront));
+    exports.Set("activateWindowOwnerApp", Napi::Function::New(env, ActivateWindowOwnerApp));
     exports.Set("setBringToFrontEnabled", Napi::Function::New(env, SetBringToFrontEnabled));
     exports.Set("showRecordingPreview", Napi::Function::New(env, ShowRecordingPreview));
     exports.Set("hideRecordingPreview", Napi::Function::New(env, HideRecordingPreview));

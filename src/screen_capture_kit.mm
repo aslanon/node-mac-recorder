@@ -1600,6 +1600,7 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
 
                 // Find display containing this window to get scale factor
                 CGFloat scaleFactor = 1.0;
+                SCDisplay *windowDisplay = nil;
                 CGPoint windowCenter = CGPointMake(
                     targetWindow.frame.origin.x + windowLogicalWidth / 2.0,
                     targetWindow.frame.origin.y + windowLogicalHeight / 2.0
@@ -1608,6 +1609,7 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                     CGRect dispBounds = CGRectMake(disp.frame.origin.x, disp.frame.origin.y,
                                                    disp.frame.size.width, disp.frame.size.height);
                     if (CGRectContainsPoint(dispBounds, windowCenter)) {
+                        windowDisplay = disp;
                         scaleFactor = SCKBackingScaleForDisplay(disp);
                         break;
                     }
@@ -1615,24 +1617,32 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                 // Fallback: use main display scale factor
                 if (scaleFactor == 1.0 && content.displays.count > 0) {
                     SCDisplay *mainDisp = content.displays.firstObject;
+                    if (!windowDisplay) windowDisplay = mainDisp;
                     scaleFactor = SCKBackingScaleForDisplay(mainDisp);
                 }
 
+                // DOGRUDAN pencere yakalama. Ekrandan kirpma/kompozit YOK: bu
+                // filtre pencereyi kendi basina yakalar, pencere tasinsa da takip
+                // eder. (Display kompozit alternatifi denendi ve reddedildi.)
                 filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
+
+                CGFloat displayScale = scaleFactor;
+                CGFloat filterScaleLog = -1.0;
                 if (@available(macOS 14.0, *)) {
-                    // ScreenCaptureKit exposes the authoritative point→pixel
-                    // conversion for this exact filter. Prefer it over display
-                    // heuristics (scaled modes and windows spanning displays).
+                    // filter.pointPixelScale, SCK'nin bu filtre icin GERCEKTEN
+                    // uretecegi point->pixel oranidir; tek yetkili kaynak odur.
+                    //
+                    // Eskiden MAX(displayScale, filterScale) aliniyordu. Bu yanlis:
+                    // olculdu ki harici 3440x1440 (1x) ekranda display heuristigi
+                    // 2.00 donerken filtre dogru sekilde 1.00 donuyor. MAX ile 2x
+                    // istenince SCK yine 1x uretiyor ve icerik karenin sol ust
+                    // ceyregine sikisip geri kalani siyah kaliyordu.
+                    // Retina'da filtre zaten 2.00 donuyor (olculdu), yani Retina
+                    // keskinligi kaybi YOK.
                     CGFloat filterScale = filter.pointPixelScale;
+                    filterScaleLog = filterScale;
                     if (isfinite(filterScale) && filterScale >= 1.0 && filterScale <= 4.0) {
-                        // desktopIndependentWindow filtresi bazı macOS/sürüm
-                        // kombinasyonlarında Retina pencerede bile 1.0 dönebiliyor.
-                        // Display geometrisinden bulunan 2x değeri 1x'e indirirsek
-                        // 1500x960 pencere gerçek 3000x1920 yerine logical boyutta
-                        // kaydediliyor ve zoom'da metin detayı geri dönülemez
-                        // biçimde kayboluyor. Filter yalnızca daha yüksek/güvenli
-                        // bir backing scale bildiriyorsa heuristiği yükseltsin.
-                        scaleFactor = MAX(scaleFactor, filterScale);
+                        scaleFactor = filterScale;
                     }
                 }
                 scaleFactor = MIN(4.0, MAX(1.0, scaleFactor));
@@ -1640,9 +1650,11 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                 NSInteger physicalWindowWidth = (NSInteger)llround(windowLogicalWidth * scaleFactor);
                 NSInteger physicalWindowHeight = (NSInteger)llround(windowLogicalHeight * scaleFactor);
 
-                MRLog(@"🪟 Recording window: %@ logical=%ux%u, physical=%ldx%ld, scale=%.2fx",
+                MRLog(@"🪟 Recording window: %@ logical=%ux%u, physical=%ldx%ld, scale=%.2fx "
+                      @"(displayScale=%.2f filterScale=%.2f)",
                       targetWindow.title, (unsigned)windowLogicalWidth, (unsigned)windowLogicalHeight,
-                      (long)physicalWindowWidth, (long)physicalWindowHeight, scaleFactor);
+                      (long)physicalWindowWidth, (long)physicalWindowHeight, scaleFactor,
+                      displayScale, filterScaleLog);
                 recordingWidth = physicalWindowWidth;
                 recordingHeight = physicalWindowHeight;
             } else {
@@ -1696,8 +1708,12 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                         logicalWidth = filterRect.size.width;
                         logicalHeight = filterRect.size.height;
                     }
+                    // Pencere dalindaki ile ayni kural: SCK'nin uretecegi olcek
+                    // filtreden okunur. MAX(display, filter) yanlisti — harici
+                    // 3440x1440 (1x) ekranda display heuristigi 2.00 donuyor ve
+                    // istenen boyut SCK'nin urettiginin iki kati oluyordu.
                     if (isfinite(filterScale) && filterScale >= 1.0 && filterScale <= 4.0) {
-                        scaleFactor = MAX(scaleFactor, filterScale);
+                        scaleFactor = filterScale;
                     }
                 }
                 scaleFactor = MIN(4.0, MAX(1.0, scaleFactor));
@@ -1732,9 +1748,10 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                 if (targetDisplay) {
                     cropScaleFactor = SCKBackingScaleForDisplay(targetDisplay);
                     if (@available(macOS 14.0, *)) {
+                        // Ekran/pencere dallariyla ayni kural: yetkili kaynak filtre.
                         CGFloat filterScale = filter.pointPixelScale;
                         if (isfinite(filterScale) && filterScale >= 1.0 && filterScale <= 4.0) {
-                            cropScaleFactor = MAX(cropScaleFactor, filterScale);
+                            cropScaleFactor = filterScale;
                         }
                     }
                 }
@@ -1779,11 +1796,19 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             streamConfig.queueDepth = 8;
         }
         if (@available(macOS 14.0, *)) {
-            // Use best capture resolution for maximum quality on Retina displays
-            streamConfig.captureResolution = SCCaptureResolutionBest;
-            // Make stream opaque to avoid alpha channel overhead
+            // captureResolution = SCCaptureResolutionBest BILEREK KULLANILMIYOR.
+            //
+            // Retina kalitesi icin eklenmisti ama GPU (Metal) ile cizen
+            // uygulamalarda pencere kaydinda ICERIGI TAMAMEN DUSURUYOR: iTerm2'de
+            // sekme cubugu/bolme basliklari (AppKit) geliyor, oturum icerigi
+            // (Metal katmani) simsiyah cikiyordu. Olculdu: ayni pencere, ayni
+            // kosullar, sadece bu satir kapaliyken icerik geri geldi.
+            // Cozunurluk zaten streamConfig.width/height ile isteniyor; bu ayara
+            // ihtiyac yok.
+            //
+            // shouldBeOpaque ve colorSpaceName ayni deneyde TEST EDILDI ve
+            // masum cikti (ikisi de acikken icerik geliyor) - dokunulmadi.
             streamConfig.shouldBeOpaque = YES;
-            MRLog(@"🎯 Using SCCaptureResolutionBest + shouldBeOpaque for maximum quality (macOS 14+)");
         }
         if (@available(macOS 13.0, *)) {
             // Frame'leri bilinen bir renk uzayında (sRGB) iste; encoder tarafında
