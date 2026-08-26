@@ -7,6 +7,7 @@
         "src/screen_capture_kit.mm",
         "src/avfoundation_recorder.mm",
         "src/camera_recorder.mm",
+        "src/ios_device_recorder.mm",
         "src/sync_timeline.mm",
         "src/audio_recorder.mm",
         "src/audio_mixer.mm",
@@ -42,7 +43,8 @@
           "-framework ApplicationServices",
           "-framework Carbon",
           "-framework Accessibility",
-          "-framework CoreAudio"
+          "-framework CoreAudio",
+          "-framework CoreMediaIO"
         ]
       },
       "defines": [ "NAPI_DISABLE_CPP_EXCEPTIONS" ]

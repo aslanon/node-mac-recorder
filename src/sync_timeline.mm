@@ -25,6 +25,13 @@ static CMTime g_cameraFirstTimestamp = kCMTimeInvalid;
 static CMTime g_audioHoldFirstTimestamp = kCMTimeInvalid;
 static BOOL g_audioHoldLogged = NO;
 
+// Primary-source start barrier (USB iPhone screen capture, etc.).
+static BOOL g_expectPrimary = NO;
+static BOOL g_primaryReady = YES;
+static CMTime g_primaryStartTimestamp = kCMTimeInvalid;
+static CMTime g_primaryHoldFirstTimestamp = kCMTimeInvalid;
+static BOOL g_primaryHoldLogged = NO;
+
 void MRSyncConfigure(BOOL expectAudio) {
     dispatch_sync(MRSyncQueue(), ^{
         g_expectAudio = expectAudio;
@@ -40,6 +47,11 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_cameraFirstTimestamp = kCMTimeInvalid;
         g_audioHoldFirstTimestamp = kCMTimeInvalid;
         g_audioHoldLogged = NO;
+        g_expectPrimary = NO;
+        g_primaryReady = YES;
+        g_primaryStartTimestamp = kCMTimeInvalid;
+        g_primaryHoldFirstTimestamp = kCMTimeInvalid;
+        g_primaryHoldLogged = NO;
     });
 }
 
@@ -242,6 +254,82 @@ BOOL MRSyncShouldHoldAudioSample(CMTime timestamp) {
         MRLog(@"▶️ A/V SYNC: Audio hold released by timeout (camera not detected within 1.0s)");
     }
 
+    return shouldHold;
+}
+
+void MRSyncConfigurePrimaryStart(BOOL expectPrimary) {
+    dispatch_sync(MRSyncQueue(), ^{
+        g_expectPrimary = expectPrimary;
+        g_primaryReady = expectPrimary ? NO : YES;
+        g_primaryStartTimestamp = kCMTimeInvalid;
+        g_primaryHoldFirstTimestamp = kCMTimeInvalid;
+        g_primaryHoldLogged = NO;
+    });
+    if (expectPrimary) {
+        MRLog(@"🔄 A/V SYNC: Primary-source start barrier enabled");
+    }
+}
+
+void MRSyncMarkPrimaryStarted(CMTime timestamp) {
+    if (!CMTIME_IS_VALID(timestamp)) return;
+
+    __block BOOL logRelease = NO;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (g_primaryReady) return;
+        g_primaryStartTimestamp = timestamp;
+        g_primaryReady = YES;
+        g_primaryHoldFirstTimestamp = kCMTimeInvalid;
+        g_primaryHoldLogged = NO;
+        logRelease = YES;
+    });
+    if (logRelease) {
+        MRLog(@"🎯 A/V SYNC: Primary source started - releasing camera and microphone");
+    }
+}
+
+BOOL MRSyncShouldHoldForPrimary(CMTime timestamp) {
+    if (!CMTIME_IS_VALID(timestamp)) return NO;
+
+    __block BOOL shouldHold = NO;
+    __block BOOL logHold = NO;
+    __block BOOL logRelease = NO;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (!g_expectPrimary || g_primaryReady) {
+            if (CMTIME_IS_VALID(g_primaryStartTimestamp) &&
+                CMTIME_COMPARE_INLINE(timestamp, <, g_primaryStartTimestamp)) {
+                shouldHold = YES;
+            }
+            return;
+        }
+
+        if (!CMTIME_IS_VALID(g_primaryHoldFirstTimestamp)) {
+            g_primaryHoldFirstTimestamp = timestamp;
+            shouldHold = YES;
+            if (!g_primaryHoldLogged) {
+                g_primaryHoldLogged = YES;
+                logHold = YES;
+            }
+            return;
+        }
+
+        // Fail open if a future primary source forgets to signal start.
+        CMTime elapsed = CMTimeSubtract(timestamp, g_primaryHoldFirstTimestamp);
+        if (CMTIME_COMPARE_INLINE(elapsed, >, CMTimeMakeWithSeconds(12.0, 600))) {
+            g_primaryReady = YES;
+            g_primaryHoldFirstTimestamp = kCMTimeInvalid;
+            g_primaryHoldLogged = NO;
+            shouldHold = NO;
+            logRelease = YES;
+            return;
+        }
+        shouldHold = YES;
+    });
+
+    if (logHold) {
+        MRLog(@"⏸️ A/V SYNC: Camera/microphone waiting for primary source");
+    } else if (logRelease) {
+        MRLog(@"▶️ A/V SYNC: Primary-source hold released by safety timeout");
+    }
     return shouldHold;
 }
 

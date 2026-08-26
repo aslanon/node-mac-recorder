@@ -337,6 +337,12 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
 
+    // Keep microphone warm-up outside the recording until the USB iPhone movie
+    // output has actually started writing its first frame.
+    if (MRSyncShouldHoldForPrimary(timestamp)) {
+        return;
+    }
+
     // A/V SYNC: Hold audio samples until camera produces first frame
     // This ensures both audio and camera files start from the same wall-clock moment
     if (MRSyncShouldHoldAudioSample(timestamp)) {

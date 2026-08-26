@@ -526,6 +526,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
 
+    // Drop camera warm-up frames until the primary source (USB iPhone screen)
+    // has committed its first frame. This keeps all files on one t=0 boundary.
+    if (MRSyncShouldHoldForPrimary(timestamp)) {
+        return;
+    }
+
     // A/V SYNC: Signal camera's first frame to release audio hold
     MRSyncMarkCameraFirstFrame(timestamp);
 

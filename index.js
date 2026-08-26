@@ -154,6 +154,170 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
+	 * USB uzerinden AVFoundation muxed capture kaynagi olarak gorunen
+	 * iPhone/iPad cihazlarini listeler. Continuity Camera cihazlari bu listeye
+	 * dahil edilmez; bu kaynak telefonun kamera sensoru degil ekran akışıdır.
+	 */
+	async getIOSCaptureDevices() {
+		if (typeof nativeBinding.getIOSCaptureDevices !== "function") return [];
+		const devices = nativeBinding.getIOSCaptureDevices();
+		if (!Array.isArray(devices)) return [];
+		return devices.map((device) => ({
+			id: device?.id || "",
+			name: device?.name || "iPhone",
+			manufacturer: device?.manufacturer || "Apple",
+			model: device?.model || null,
+			connected: device?.connected !== false,
+			suspended: device?.suspended === true,
+			width: Number(device?.width) || 0,
+			height: Number(device?.height) || 0,
+			hasAudio: device?.hasAudio !== false,
+			transport: device?.transport || "usb",
+		}));
+	}
+
+	/**
+	 * QuickTime benzeri dogrudan USB iPhone ekran kaydi. Muxed aygitin kendi
+	 * video ve sesini tek, uzun-kayitlara dayanikli MOV dosyasina yazar.
+	 */
+	async startIOSRecording(outputPath, options = {}) {
+		if (this.isRecording) throw new Error("Recording is already in progress");
+		if (!outputPath) throw new Error("Output path is required");
+		if (typeof nativeBinding.startIOSDeviceRecording !== "function") {
+			throw new Error("This recorder build does not support USB iPhone capture");
+		}
+
+		const outputDir = path.dirname(outputPath);
+		if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+		this.outputPath = outputPath;
+		const sessionTimestamp = options.sessionTimestamp || Date.now();
+		const cameraOutputPath = options.captureCamera === true
+			? path.join(outputDir, `temp_camera_${sessionTimestamp}.mov`)
+			: null;
+		const audioOutputPath = options.includeMicrophone === true
+			? path.join(outputDir, `temp_audio_${sessionTimestamp}.mov`)
+			: null;
+		this.options = {
+			...this.options,
+			...options,
+			sourceType: "iphone",
+			captureCursor: false,
+			// The muxed USB source already contains the iPhone's own system audio.
+			// includeSystemAudio refers to the Mac and must never be added here.
+			includeSystemAudio: false,
+		};
+		this.cameraCaptureFile = cameraOutputPath;
+		this.audioCaptureFile = audioOutputPath;
+		this.cameraCaptureActive = options.captureCamera === true;
+		this.audioCaptureActive = options.includeMicrophone === true;
+		this.sessionTimestamp = sessionTimestamp;
+		this.recordingMode = "iphone";
+
+		try {
+			const success = nativeBinding.startIOSDeviceRecording(
+				outputPath,
+				options.deviceId || options.iosDeviceId || "",
+				{
+					captureCamera: options.captureCamera === true,
+					cameraOutputPath,
+					cameraDeviceId: options.cameraDeviceId || "",
+					includeMicrophone: options.includeMicrophone === true,
+					audioOutputPath,
+					audioDeviceId: options.audioDeviceId || "",
+				},
+			);
+			if (!success) throw new Error("The iPhone capture session could not be started");
+
+			this.isRecording = true;
+			this.recordingStartTime = Date.now();
+			this.timelineStartTimestamp = this.recordingStartTime;
+			this.syncTimestamp = this.recordingStartTime;
+			this.recordingTimer = setInterval(() => {
+				this.emit(
+					"timeUpdate",
+					Math.floor((Date.now() - this.recordingStartTime) / 1000),
+				);
+			}, 1000);
+
+			const event = {
+				outputPath,
+				timestamp: this.recordingStartTime,
+				options: this.options,
+				nativeConfirmed: true,
+				cursorOutputPath: null,
+				keyboardOutputPath: null,
+				audioOutputPath,
+				cameraOutputPath,
+				sessionTimestamp: this.sessionTimestamp,
+				syncTimestamp: this.syncTimestamp,
+				fileTimestamp: this.sessionTimestamp,
+				sourceType: "iphone",
+			};
+			this.emit("recordingStarted", event);
+			this.emit("started", outputPath);
+			return outputPath;
+		} catch (error) {
+			this.recordingMode = null;
+			this.isRecording = false;
+			this.cameraCaptureActive = false;
+			this.audioCaptureActive = false;
+			this.cameraCaptureFile = null;
+			this.audioCaptureFile = null;
+			throw error;
+		}
+	}
+
+	async stopIOSRecording() {
+		if (this.recordingMode !== "iphone" || !this.isRecording) {
+			throw new Error("No iPhone recording in progress");
+		}
+		let success = false;
+		try {
+			success = nativeBinding.stopIOSDeviceRecording();
+		} finally {
+			if (this.recordingTimer) clearInterval(this.recordingTimer);
+			this.recordingTimer = null;
+			this.isRecording = false;
+			this.recordingMode = null;
+		}
+
+		const result = {
+			code: success ? 0 : 1,
+			outputPath: this.outputPath,
+			cameraOutputPath: this.cameraCaptureFile || null,
+			audioOutputPath: this.audioCaptureFile || null,
+			sessionTimestamp: this.sessionTimestamp,
+			syncTimestamp: this.syncTimestamp,
+			sourceType: "iphone",
+		};
+		if (this.cameraCaptureActive) {
+			this.emit("cameraCaptureStopped", {
+				outputPath: this.cameraCaptureFile,
+				success,
+				sessionTimestamp: this.sessionTimestamp,
+				syncTimestamp: this.syncTimestamp,
+			});
+		}
+		if (this.audioCaptureActive) {
+			this.emit("audioCaptureStopped", {
+				outputPath: this.audioCaptureFile,
+				success,
+				sessionTimestamp: this.sessionTimestamp,
+				syncTimestamp: this.syncTimestamp,
+			});
+		}
+		this.cameraCaptureActive = false;
+		this.audioCaptureActive = false;
+		this.emit("stopped", result);
+		if (success && fs.existsSync(this.outputPath)) {
+			this.emit("completed", this.outputPath);
+		}
+		this.sessionTimestamp = null;
+		this.syncTimestamp = null;
+		return result;
+	}
+
+	/**
 	 * macOS ekranlarını listeler
 	 */
 	/**
@@ -1227,6 +1391,9 @@ class MacRecorder extends EventEmitter {
 		if (!this.isRecording) {
 			throw new Error("No recording in progress");
 		}
+		if (this.recordingMode === "iphone") {
+			return this.stopIOSRecording();
+		}
 
 		return new Promise(async (resolve, reject) => {
 			const stopRequestedAt = Date.now();
@@ -1399,7 +1566,11 @@ class MacRecorder extends EventEmitter {
 	 * Kayıt durumunu döndürür
 	 */
 	getStatus() {
-		const nativeStatus = nativeBinding.getRecordingStatus();
+		const nativeStatus =
+			this.recordingMode === "iphone" &&
+			typeof nativeBinding.getIOSDeviceRecordingStatus === "function"
+				? nativeBinding.getIOSDeviceRecordingStatus().isRecording === true
+				: nativeBinding.getRecordingStatus();
 		return {
 			isRecording: this.isRecording && nativeStatus,
 			outputPath: this.outputPath,

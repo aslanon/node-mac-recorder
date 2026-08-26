@@ -55,6 +55,9 @@ Napi::Object InitKeyboardTracker(Napi::Env env, Napi::Object exports);
 // Window selector function declarations
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
 
+// USB iPhone/iPad screen capture functions
+Napi::Object InitIOSDeviceRecorder(Napi::Env env, Napi::Object exports);
+
 // Window selector overlay functions (external)
 extern "C" void hideOverlays();
 extern "C" void showOverlays();
@@ -1779,6 +1782,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     // Initialize window selector
     InitWindowSelector(env, exports);
+
+    // Initialize direct USB iPhone/iPad capture
+    InitIOSDeviceRecorder(env, exports);
     
     return exports;
 }

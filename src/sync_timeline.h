@@ -32,6 +32,14 @@ void MRSyncConfigureCamera(BOOL expectCamera);
 void MRSyncMarkCameraFirstFrame(CMTime timestamp);
 BOOL MRSyncShouldHoldAudioSample(CMTime timestamp);
 
+// Some primary sources (for example a USB iPhone muxed device) need a short
+// asynchronous warm-up before their first frame is committed. Camera and
+// microphone writers can use this barrier to discard their warm-up samples and
+// begin at the same host-clock instant as that primary source.
+void MRSyncConfigurePrimaryStart(BOOL expectPrimary);
+void MRSyncMarkPrimaryStarted(CMTime timestamp);
+BOOL MRSyncShouldHoldForPrimary(CMTime timestamp);
+
 // Optional hard stop limit (seconds) shared across capture components.
 void MRSyncSetStopLimitSeconds(double seconds);
 double MRSyncGetStopLimitSeconds(void);
