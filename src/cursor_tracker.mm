@@ -865,9 +865,30 @@ static bool g_leftMouseDown = false;
 static bool g_rightMouseDown = false;
 static NSString *g_lastEventType = @"move";
 
+// Erisilebilirlik izni durumu (istem GOSTERMEDEN).
+// NEDEN: izin yokken bile AX cagrilari yapiliyordu; macOS bunun uzerine
+// "Erisilebilirlik" izin dialogunu aciyor ve bu fonksiyon kayit boyunca
+// yuksek frekansta cagrildigi icin istem tekrar tekrar cikiyor. Durum
+// saniyede bir tazelenir: kullanici izni verdigi anda yol kendiliginden
+// devreye girer.
+static bool accessibilityTrustedCached(void) {
+    static CFAbsoluteTime lastCheck = 0;
+    static bool trusted = false;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (lastCheck == 0 || now - lastCheck > 1.0) {
+        trusted = AXIsProcessTrusted();
+        lastCheck = now;
+    }
+    return trusted;
+}
+
 // Accessibility tabanlı cursor tip tespiti
 static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
     @autoreleasepool {
+        if (!accessibilityTrustedCached()) {
+            return nil;
+        }
+
         AXUIElementRef systemWide = AXUIElementCreateSystemWide();
         if (!systemWide) {
             return nil;

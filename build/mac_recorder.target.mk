@@ -117,6 +117,7 @@ OBJS := \
 	$(obj).target/$(TARGET)/src/screen_capture_kit.o \
 	$(obj).target/$(TARGET)/src/avfoundation_recorder.o \
 	$(obj).target/$(TARGET)/src/camera_recorder.o \
+	$(obj).target/$(TARGET)/src/ios_device_recorder.o \
 	$(obj).target/$(TARGET)/src/sync_timeline.o \
 	$(obj).target/$(TARGET)/src/audio_recorder.o \
 	$(obj).target/$(TARGET)/src/audio_mixer.o \
@@ -190,7 +191,8 @@ LIBS := \
 	-framework ApplicationServices \
 	-framework Carbon \
 	-framework Accessibility \
-	-framework CoreAudio
+	-framework CoreAudio \
+	-framework CoreMediaIO
 
 $(builddir)/mac_recorder.node: GYP_LDFLAGS := $(LDFLAGS_$(BUILDTYPE))
 $(builddir)/mac_recorder.node: LIBS := $(LIBS)

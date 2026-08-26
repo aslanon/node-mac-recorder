@@ -898,10 +898,57 @@ bool activateWindowOwnerApp(int windowId) {
     }
 }
 
+// Hedef pencerenin sahibi uygulamayi ONE ALIR (Accessibility GEREKTIRMEZ).
+// bringWindowToFront'un AX yolu izin isterken bu yol yalnizca
+// NSRunningApplication kullanir; izin yokken tek calisan yol budur.
+static bool activateOwnerAppForWindow(int windowId) {
+    @autoreleasepool {
+        // Method 2: Light activation fallback (minimal app activation)
+        NSLog(@"   🔄 Trying minimal activation for window %d", windowId);
+    
+        // Get window info to find the process
+        CFArrayRef cgWindowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+        if (cgWindowList) {
+            NSArray *windowArray = (__bridge NSArray *)cgWindowList;
+        
+            for (NSDictionary *windowInfo in windowArray) {
+                NSNumber *cgWindowId = [windowInfo objectForKey:(NSString *)kCGWindowNumber];
+                if ([cgWindowId intValue] == windowId) {
+                    // Get process ID
+                    NSNumber *processId = [windowInfo objectForKey:(NSString *)kCGWindowOwnerPID];
+                    if (processId) {
+                        // Light activation - only bring app to front, don't activate all windows
+                        NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:[processId intValue]];
+                        if (app) {
+                            // Use NSApplicationActivateIgnoringOtherApps only (no NSApplicationActivateAllWindows)
+                            [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+                            NSLog(@"   ✅ App minimally activated: PID %d (specific window should be frontmost)", [processId intValue]);
+                            CFRelease(cgWindowList);
+                            return true;
+                        }
+                    }
+                    break;
+                }
+            }
+            CFRelease(cgWindowList);
+        }
+        return false;
+    }
+}
+
 // Bring window to front using Accessibility API
 bool bringWindowToFront(int windowId) {
     @autoreleasepool {
         @try {
+            // TCC istemi CIKMASIN: untrusted bir surecin systemWide element
+            // uzerindeki AX cagrilari macOS'a "Erisilebilirlik" dialogunu
+            // actiriyor — pencere kaydi HER baslatildiginda yeniden. Izin yoksa
+            // AX yolunu hic deneme; hafif aktivasyon zaten ayni isi goruyor.
+            // AXIsProcessTrusted() kendisi istem GOSTERMEZ.
+            if (!AXIsProcessTrusted()) {
+                return activateOwnerAppForWindow(windowId);
+            }
+
             // Method 1: Using Accessibility API (most reliable)
             AXUIElementRef systemWide = AXUIElementCreateSystemWide();
             if (!systemWide) return false;
@@ -965,35 +1012,8 @@ bool bringWindowToFront(int windowId) {
             
             CFRelease(systemWide);
             
-            // Method 2: Light activation fallback (minimal app activation)
-            NSLog(@"   🔄 Trying minimal activation for window %d", windowId);
-            
-            // Get window info to find the process
-            CFArrayRef cgWindowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
-            if (cgWindowList) {
-                NSArray *windowArray = (__bridge NSArray *)cgWindowList;
-                
-                for (NSDictionary *windowInfo in windowArray) {
-                    NSNumber *cgWindowId = [windowInfo objectForKey:(NSString *)kCGWindowNumber];
-                    if ([cgWindowId intValue] == windowId) {
-                        // Get process ID
-                        NSNumber *processId = [windowInfo objectForKey:(NSString *)kCGWindowOwnerPID];
-                        if (processId) {
-                            // Light activation - only bring app to front, don't activate all windows
-                            NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:[processId intValue]];
-                            if (app) {
-                                // Use NSApplicationActivateIgnoringOtherApps only (no NSApplicationActivateAllWindows)
-                                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-                                NSLog(@"   ✅ App minimally activated: PID %d (specific window should be frontmost)", [processId intValue]);
-                                CFRelease(cgWindowList);
-                                return true;
-                            }
-                        }
-                        break;
-                    }
-                }
-                CFRelease(cgWindowList);
-            }
+            // AX yolu pencereyi bulamadi → izinsiz de calisan hafif aktivasyon.
+            if (activateOwnerAppForWindow(windowId)) return true;
             
             return false;
             
