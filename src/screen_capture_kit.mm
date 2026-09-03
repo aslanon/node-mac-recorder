@@ -936,8 +936,6 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     SCKQualityBitrateForDimensions(normalizedQuality, width, height, encoderFPS,
                                    &bitrate, &bpp, &minBitrate, &maxBitrate);
 
-    NSNumber *qualityHint = [normalizedQuality isEqualToString:@"high"] ? @1.0 : ([normalizedQuality isEqualToString:@"medium"] ? @0.9 : @0.85);
-
     MRLog(@"🎬 Screen encoder (%@): %ldx%ld@%ldfps, codec=H.264 High Profile, bitrate=%.2fMbps (%.2f bpp, min=%ldMbps max=%ldMbps)",
           normalizedQuality,
           (long)width,
@@ -957,7 +955,14 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         // edilebilir. Kapatmak fansiz makinelerde kare dusmesini azaltir.
         AVVideoAllowFrameReorderingKey: @NO,
         AVVideoExpectedSourceFrameRateKey: @(encoderFPS),
-        AVVideoQualityKey: qualityHint,
+        // AVVideoQualityKey BILEREK YOK: Apple belgesine gore yalnizca JPEG ve
+        // ProRes icin gecerli. H.264'te (avc1) donanim encoder'i onu sessizce
+        // yok sayiyordu, ama encoder yazilim yoluna dustugunde AVFoundation
+        // dogrulamasi sertlesiyor ve AVAssetWriterInput ISTISNA atiyor:
+        // "Compression property Quality is not supported for video codec type
+        // avc1". Istisna tum kayit kurulumunu iptal ettigi icin kayit "basladi"
+        // gorunup dosya hic olusmuyordu (editorde bos canvas). Kaliteyi zaten
+        // AVVideoAverageBitRateKey belirliyor.
         AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
         AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
         AVVideoAverageNonDroppableFrameRateKey: @(encoderFPS),
@@ -982,7 +987,75 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         AVVideoCompressionPropertiesKey: compressionProps
     };
     
-    g_videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
+    // AVFoundation, avc1 icin hangi sikistirma ozelligini kabul ettigine
+    // encoder yoluna gore karar veriyor ve reddettiginde NSError DEGIL ISTISNA
+    // atiyor. Istisna tum kayit kurulumunu iptal ettigi icin kayit "basladi"
+    // gorunup dosya hic olusmuyor; kullanici ancak editorde bos canvas gorunce
+    // anliyor. OLCULDU (macOS 26, 1x harici ekran, iTerm penceresi): once
+    // "Compression property Quality is not supported for video codec type avc1",
+    // o kaldirilinca "AverageNonDroppableFrameRate is not supported" — yani tek
+    // tek anahtar elemek guvenilir degil. Ayni ozelliklerle ayni ekrandaki baska
+    // pencereler sorunsuz calisiyor.
+    //
+    // Bu yuzden ayarlar KADEMELI denenir: once tam set, sonra yalnizca her
+    // encoder'in destekledigi cekirdek set, en sonda codec+boyut. Ilk kabul
+    // edilen kazanir; kayit hicbir kosulda sessizce bos cikmaz.
+    NSMutableArray<NSDictionary *> *settingsTiers = [NSMutableArray array];
+    [settingsTiers addObject:videoSettings];
+    [settingsTiers addObject:@{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoColorPropertiesKey: colorProps,
+        AVVideoCompressionPropertiesKey: @{
+            AVVideoAverageBitRateKey: @(bitrate),
+            AVVideoMaxKeyFrameIntervalKey: @(encoderFPS),
+            AVVideoAllowFrameReorderingKey: @NO,
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+        }
+    }];
+    [settingsTiers addObject:@{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoCompressionPropertiesKey: @{ AVVideoAverageBitRateKey: @(bitrate) }
+    }];
+    [settingsTiers addObject:@{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height)
+    }];
+
+    g_videoInput = nil;
+    NSString *lastRejection = nil;
+    for (NSUInteger tier = 0; tier < settingsTiers.count; tier++) {
+        @try {
+            g_videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
+                                                             outputSettings:settingsTiers[tier]];
+        } @catch (NSException *exception) {
+            g_videoInput = nil;
+            lastRejection = exception.reason;
+            NSLog(@"⚠️ Video encoder settings tier %lu rejected: %@", (unsigned long)tier, exception.reason);
+            continue;
+        }
+        if (g_videoInput) {
+            if (tier > 0) {
+                NSLog(@"⚠️ Video encoder fell back to settings tier %lu (%ldx%ld); last rejection: %@",
+                      (unsigned long)tier, (long)width, (long)height, lastRejection);
+            }
+            break;
+        }
+    }
+    if (!g_videoInput) {
+        MRLog(@"❌ Video writer failed: no accepted encoder settings (%@)", lastRejection ?: @"unknown");
+        if (error) {
+            *error = [NSError errorWithDomain:@"ScreenCaptureKitRecorder" code:-101 userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"No accepted H.264 encoder settings: %@",
+                                            lastRejection ?: @"unknown"]
+            }];
+        }
+        return NO;
+    }
     g_videoInput.expectsMediaDataInRealTime = YES;
     
     AVAssetWriterInputPixelBufferAdaptor *pixelAdaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:g_videoInput sourcePixelBufferAttributes:@{
@@ -1785,6 +1858,18 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                   (long)recordingWidth,
                   (long)recordingHeight);
         }
+
+        // H.264 4:2:0 luma duzlemi CIFT boyut ister; tek sayili genislik/yukseklik
+        // encoder'i gereksiz yere yazilim yoluna itebiliyor. 1x harici ekranda
+        // pencere boyutlari dogrudan piksele esitlendigi icin (Retina'da 2x ile
+        // her zaman cift olur) tek sayilar yalnizca orada ortaya cikiyor.
+        // En fazla 1 piksel kirpilir; olcek/konum degismez.
+        // NOT: bu tek basina "bos kayit" hatasini cozmez — asil koruma asagidaki
+        // kademeli encoder ayari geri dususudur.
+        if (recordingWidth % 2 != 0) recordingWidth -= 1;
+        if (recordingHeight % 2 != 0) recordingHeight -= 1;
+        recordingWidth = MAX(2, recordingWidth);
+        recordingHeight = MAX(2, recordingHeight);
 
         SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
         streamConfig.width = recordingWidth;

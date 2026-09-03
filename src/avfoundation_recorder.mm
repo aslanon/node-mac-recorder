@@ -123,6 +123,10 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             MRLog(@"🔍 Scale factor: %.1fx → Standard display", scaleFactor);
         }
         
+        // H.264 4:2:0 CIFT boyut ister — bkz. screen_capture_kit.mm'deki ayni guard.
+        recordingSize.width = MAX(2.0, floor(recordingSize.width / 2.0) * 2.0);
+        recordingSize.height = MAX(2.0, floor(recordingSize.height / 2.0) * 2.0);
+
         MRLog(@"🎯 Recording size: %.0fx%.0f (using actual physical dimensions for Retina fix)", recordingSize.width, recordingSize.height);
         
         NSString *normalizedQuality = @"high";
@@ -140,7 +144,6 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
 
         NSString *codecKey = AVVideoCodecTypeH264;
         NSInteger bitrate = kAVFoundationHighQualityVideoBitrate;
-        NSNumber *qualityHint = @1.0;
 
         if ([normalizedQuality isEqualToString:@"low"]) {
             NSInteger multiplier = 10;
@@ -149,7 +152,6 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
             bitrate = MAX(bitrate, minBitrate);
             bitrate = MIN(bitrate, maxBitrate);
-            qualityHint = @0.85;
         } else if ([normalizedQuality isEqualToString:@"medium"]) {
             NSInteger multiplier = 18;
             NSInteger minBitrate = 18 * 1000 * 1000;
@@ -157,7 +159,6 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
             bitrate = MAX(bitrate, minBitrate);
             bitrate = MIN(bitrate, maxBitrate);
-            qualityHint = @0.9;
         } else { // high - çözünürlüğe DUYARLI yüksek kalite (eski sabit 50 Mbps yerine)
             NSInteger multiplier = 32; // ~0.53 bpp @60fps
             NSInteger minBitrate = kAVFoundationHighQualityVideoBitrate; // 100 Mbps taban
@@ -165,7 +166,6 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
             bitrate = (NSInteger)(recordingSize.width * recordingSize.height * multiplier);
             bitrate = MAX(bitrate, minBitrate);
             bitrate = MIN(bitrate, maxBitrate);
-            qualityHint = @1.0;
         }
 
         MRLog(@"🎬 AVFoundation encoder (%@): %dx%d, codec=H.264 High Profile, bitrate=%.2fMbps",
@@ -183,14 +183,65 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                 AVVideoMaxKeyFrameIntervalKey: @((int)fps),
                 AVVideoAllowFrameReorderingKey: @YES,
                 AVVideoExpectedSourceFrameRateKey: @((int)fps),
-                AVVideoQualityKey: qualityHint,
+                // AVVideoQualityKey BILEREK YOK — bkz. screen_capture_kit.mm:
+                // avc1 icin gecersiz, yazilim encoder yolunda AVAssetWriterInput
+                // istisna atip kaydi sessizce bos birakiyor.
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC
             }
         };
         
-        // Create video input
-        g_avVideoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
+        // Create video input — kademeli geri dusus (bkz. screen_capture_kit.mm).
+        // AVFoundation reddettigi sikistirma ozelliginde NSError degil ISTISNA
+        // atiyor; yakalanmazsa kayit sessizce bos cikiyor.
+        NSArray<NSDictionary *> *settingsTiers = @[
+            videoSettings,
+            @{
+                AVVideoCodecKey: codecKey,
+                AVVideoWidthKey: @((int)recordingSize.width),
+                AVVideoHeightKey: @((int)recordingSize.height),
+                AVVideoCompressionPropertiesKey: @{
+                    AVVideoAverageBitRateKey: @(bitrate),
+                    AVVideoMaxKeyFrameIntervalKey: @((int)fps),
+                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+                }
+            },
+            @{
+                AVVideoCodecKey: codecKey,
+                AVVideoWidthKey: @((int)recordingSize.width),
+                AVVideoHeightKey: @((int)recordingSize.height),
+                AVVideoCompressionPropertiesKey: @{ AVVideoAverageBitRateKey: @(bitrate) }
+            },
+            @{
+                AVVideoCodecKey: codecKey,
+                AVVideoWidthKey: @((int)recordingSize.width),
+                AVVideoHeightKey: @((int)recordingSize.height)
+            }
+        ];
+        g_avVideoInput = nil;
+        NSString *lastRejection = nil;
+        for (NSUInteger tier = 0; tier < settingsTiers.count; tier++) {
+            @try {
+                g_avVideoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
+                                                                   outputSettings:settingsTiers[tier]];
+            } @catch (NSException *exception) {
+                g_avVideoInput = nil;
+                lastRejection = exception.reason;
+                NSLog(@"⚠️ AVFoundation encoder settings tier %lu rejected: %@", (unsigned long)tier, exception.reason);
+                continue;
+            }
+            if (g_avVideoInput) {
+                if (tier > 0) {
+                    NSLog(@"⚠️ AVFoundation encoder fell back to settings tier %lu; last rejection: %@",
+                          (unsigned long)tier, lastRejection);
+                }
+                break;
+            }
+        }
+        if (!g_avVideoInput) {
+            NSLog(@"❌ AVFoundation: no accepted H.264 encoder settings (%@)", lastRejection ?: @"unknown");
+            return false;
+        }
         g_avVideoInput.expectsMediaDataInRealTime = YES;
         
         // Create pixel buffer adaptor with compatibility
