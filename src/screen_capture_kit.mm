@@ -1,6 +1,8 @@
 #import "screen_capture_kit.h"
 #import "logging.h"
 #import "sync_timeline.h"
+#import "recording_writer_safety.h"
+#include <atomic>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
@@ -132,9 +134,10 @@ static dispatch_queue_t g_sessionsQueue = nil;
 // Legacy global state for backward compatibility (points to first/default session)
 static SCStream * API_AVAILABLE(macos(12.3)) g_stream = nil;
 static id<SCStreamDelegate> API_AVAILABLE(macos(12.3)) g_streamDelegate = nil;
-static BOOL g_isRecording = NO;
-static BOOL g_isCleaningUp = NO;
-static BOOL g_isScheduling = NO;
+static std::atomic<bool> g_isRecording{false};
+static std::atomic<bool> g_isCleaningUp{false};
+static std::atomic<bool> g_isScheduling{false};
+static uint64_t g_schedulingGeneration = 0;
 static NSString *g_outputPath = nil;
 static BOOL g_firstFrameReceived = NO;
 static NSInteger g_frameCountSinceStart = 0;
@@ -156,6 +159,7 @@ static CMTime g_audioStartTime = kCMTimeInvalid;
 static BOOL g_audioWriterStarted = NO;
 static BOOL g_captureMicrophoneEnabled = NO;
 static BOOL g_captureSystemAudioEnabled = NO;
+static BOOL g_captureCameraEnabled = NO;
 static BOOL g_mixAudioEnabled = YES;
 static float g_mixMicGain = 0.8f;
 static float g_mixSystemGain = 0.4f;
@@ -176,6 +180,16 @@ static NSInteger g_videoFramesDroppedNotReady = 0;
 static NSInteger g_lastVideoFramesAppended = 0;
 static NSInteger g_lastVideoFramesDropped = 0;
 static NSInteger g_lastVideoTargetFPS = 0;
+
+// This target uses manual reference counting. Async configuration copies no
+// longer leak, so globals must explicitly own paths used after setup returns.
+static void SCKSetOwnedString(NSString **slot, NSString *value) {
+    @synchronized([ScreenCaptureKitRecorder class]) {
+        NSString *owned = [value copy];
+        [*slot release];
+        *slot = owned;
+    }
+}
 
 // ---- Prewarm edilmis SCShareableContent onbellegi ----
 // Kayit baslatilirken envanter cagrisini tamamen atlayabilmek icin saklanir.
@@ -331,7 +345,9 @@ static void SCKQualityBitrateForDimensions(NSString *preset,
 static dispatch_queue_t ScreenCaptureControlQueue(void);
 static void SCKMarkSchedulingComplete(void);
 static void SCKFailScheduling(void);
-static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *content) API_AVAILABLE(macos(12.3));
+static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *content, uint64_t generation) API_AVAILABLE(macos(12.3));
+static void SCKCompleteStop(void);
+static void SCKRequestStop(SCStream *expectedStream) API_AVAILABLE(macos(12.3));
 
 static void CleanupWriters(void);
 
@@ -437,25 +453,13 @@ static NSString *MRNormalizePath(id value) {
 }
 
 static void FinishWriter(AVAssetWriter *writer, AVAssetWriterInput *input) {
-    if (!writer) {
-        return;
-    }
-    
-    if (input) {
-        [input markAsFinished];
-    }
-    
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    [writer finishWritingWithCompletionHandler:^{
-        dispatch_semaphore_signal(semaphore);
-    }];
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
-    dispatch_semaphore_wait(semaphore, timeout);
+    MRFinishAssetWriterSafely(writer, 5.0);
 }
 
 static void CleanupWriters(void) {
     if (g_videoWriter) {
         FinishWriter(g_videoWriter, g_videoInput);
+        [g_videoWriter release];
         g_videoWriter = nil;
         g_videoInput = nil;
         if (g_pixelBufferAdaptorRef) {
@@ -493,14 +497,11 @@ static void CleanupWriters(void) {
     }
     
     if (g_audioWriter) {
-        if (g_systemAudioInput) {
-            [g_systemAudioInput markAsFinished];
-        }
-        if (g_microphoneAudioInput) {
-            [g_microphoneAudioInput markAsFinished];
-        }
         FinishWriter(g_audioWriter, nil);
+        [g_audioWriter release];
         g_audioWriter = nil;
+        // Factory-created inputs are borrowed from the writer, just like the
+        // video input. Releasing them again would over-release on stop.
         g_systemAudioInput = nil;
         g_microphoneAudioInput = nil;
         g_audioWriterStarted = NO;
@@ -544,47 +545,62 @@ extern "C" void ScreenCaptureKitGetFrameStats(long *appendedOut,
 }
 
 extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
-    if (!g_audioOutputPath) {
-        return nil;
+    @synchronized([ScreenCaptureKitRecorder class]) {
+        // Native stop may clear the owned path on another queue while N-API
+        // is converting it to a JS string. Return a caller-owned pool copy.
+        return [[MRNormalizePath(g_audioOutputPath) copy] autorelease];
     }
-    if ([g_audioOutputPath isKindOfClass:[NSArray class]]) {
-        id first = [(NSArray *)g_audioOutputPath firstObject];
-        if ([first isKindOfClass:[NSString class]]) {
-            return first;
-        }
-        return nil;
+}
+
+// All finalization runs on the control queue. Stop publishing samples before
+// draining both queues; only then may the pixel buffer adaptor be released.
+static void SCKCompleteStop(void) {
+    g_isRecording = NO;
+    g_isCleaningUp = YES;
+    if (g_videoQueue) dispatch_sync(g_videoQueue, ^{});
+    if (g_audioQueue) dispatch_sync(g_audioQueue, ^{});
+    @try {
+        CleanupWriters();
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Capture finalization failed safely: %@", exception.reason);
+    } @finally {
+        [ScreenCaptureKitRecorder cleanupVideoWriter];
+        SCKMarkSchedulingComplete();
     }
-    return g_audioOutputPath;
+}
+
+static void SCKRequestStop(SCStream *expectedStream) {
+    if ((expectedStream && expectedStream != g_stream) || g_isCleaningUp) return;
+    ++g_schedulingGeneration; // invalidate pending inventory/start callbacks
+    g_isCleaningUp = YES;
+    g_isRecording = NO;
+    g_isScheduling = NO;
+    SCStream *streamToStop = g_stream;
+    if (!streamToStop) {
+        SCKCompleteStop();
+        return;
+    }
+    @try {
+        [streamToStop stopCaptureWithCompletionHandler:^(NSError *error) {
+            dispatch_async(ScreenCaptureControlQueue(), ^{
+                if (streamToStop != g_stream) return;
+                if (error) NSLog(@"[Recorder] Capture stop error: %@", error);
+                SCKCompleteStop();
+            });
+        }];
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Capture stop failed safely: %@", exception.reason);
+        SCKCompleteStop();
+    }
 }
 
 @implementation PureScreenCaptureDelegate
-- (void)stream:(SCStream * API_AVAILABLE(macos(12.3)))stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
-    // ELECTRON FIX: Run cleanup on background thread to avoid blocking Electron
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        MRLog(@"🛑 Pure ScreenCapture stream stopped");
-
-        // Prevent recursive calls during cleanup
-        if (g_isCleaningUp) {
-            MRLog(@"⚠️ Already cleaning up, ignoring delegate callback");
-            return;
-        }
-
-        @synchronized([ScreenCaptureKitRecorder class]) {
-            g_isRecording = NO;
-        }
-
-        if (error) {
-            NSLog(@"❌ Stream error: %@", error);
-        } else {
-            MRLog(@"✅ Stream stopped cleanly");
-        }
-
-        // Finalize on background thread with synchronization
-        @synchronized([ScreenCaptureKitRecorder class]) {
-            if (!g_isCleaningUp) {
-                [ScreenCaptureKitRecorder finalizeRecording];
-            }
-        }
+- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
+    dispatch_async(ScreenCaptureControlQueue(), ^{
+        if (stream != g_stream || g_isCleaningUp) return;
+        NSLog(@"[Recorder] Capture source stopped: %@", error);
+        ++g_schedulingGeneration;
+        SCKCompleteStop();
     });
 }
 @end
@@ -599,7 +615,13 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
 @implementation ScreenCaptureVideoOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)) {
+    if (g_isCleaningUp || stream != g_stream) return;
+    @try {
     if (!g_isRecording || type != SCStreamOutputTypeScreen) {
+        return;
+    }
+
+    if (MRSyncIsPaused()) {
         return;
     }
     
@@ -686,6 +708,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
             relativePresentation = kCMTimeZero;
         }
     }
+    relativePresentation = MRSyncAdjustForPauses(relativePresentation);
 
     double stopLimit = MRSyncGetStopLimitSeconds();
     if (stopLimit > 0) {
@@ -717,6 +740,11 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         double actualFPS = g_frameCount / elapsed;
         MRLog(@"📊 Frame stats: %ld frames in %.1fs = %.1f FPS", (long)g_frameCount, elapsed, actualFPS);
     }
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Sample callback failed safely: %@", exception.reason);
+        dispatch_async(ScreenCaptureControlQueue(), ^{ SCKRequestStop(stream); });
+    }
+
 }
 @end
 
@@ -725,12 +753,18 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
 
 @implementation ScreenCaptureAudioOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)) {
+    if (g_isCleaningUp || stream != g_stream) return;
+    @try {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         MRLog(@"🎤 First audio sample callback received from ScreenCaptureKit");
     });
 
     if (!g_isRecording || !g_shouldCaptureAudio) {
+        return;
+    }
+
+    if (MRSyncIsPaused()) {
         return;
     }
 
@@ -782,6 +816,17 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     }
     
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+
+    // When camera and microphone are both active, lip sync must be anchored to
+    // the microphone clock. System audio can arrive first on macOS 15; letting
+    // it start the shared writer makes camera alignment depend on callback
+    // ordering. Drop only the short system-audio lead-in until mic t=0 exists.
+    if (g_captureCameraEnabled &&
+        g_captureMicrophoneEnabled &&
+        !routeToMicrophoneTrack &&
+        CMTIME_IS_INVALID(MRSyncAudioFirstTimestamp())) {
+        return;
+    }
 
     // A/V SYNC: Hold audio samples until camera produces first frame
     if (MRSyncShouldHoldAudioSample(presentationTime)) {
@@ -838,7 +883,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                         if (CMTIME_COMPARE_INLINE(adjustedPTS, <, kCMTimeZero)) {
                             adjustedPTS = kCMTimeZero;
                         }
-                        timingInfo[i].presentationTimeStamp = adjustedPTS;
+                        timingInfo[i].presentationTimeStamp = MRSyncAdjustForPauses(adjustedPTS);
                     } else {
                         timingInfo[i].presentationTimeStamp = kCMTimeZero;
                     }
@@ -848,7 +893,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                         if (CMTIME_COMPARE_INLINE(adjustedDTS, <, kCMTimeZero)) {
                             adjustedDTS = kCMTimeZero;
                         }
-                        timingInfo[i].decodeTimeStamp = adjustedDTS;
+                        timingInfo[i].decodeTimeStamp = MRSyncAdjustForPauses(adjustedDTS);
                     }
                 }
                 
@@ -902,6 +947,11 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     if (bufferToAppend != sampleBuffer) {
         CFRelease(bufferToAppend);
     }
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Sample callback failed safely: %@", exception.reason);
+        dispatch_async(ScreenCaptureControlQueue(), ^{ SCKRequestStop(stream); });
+    }
+
 }
 @end
 
@@ -1123,7 +1173,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         if (![audioPath.pathExtension.lowercaseString isEqualToString:@"mov"]) {
             MRLog(@"⚠️ Audio path has wrong extension '%@', changing to .mov", audioPath.pathExtension);
             audioPath = [[audioPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"mov"];
-            g_audioOutputPath = audioPath;
+            SCKSetOwnedString(&g_audioOutputPath, audioPath);
         }
         audioURL = [NSURL fileURLWithPath:audioPath];
         [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
@@ -1280,6 +1330,7 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         // yapiliyordu. Artik sonucu saklayip kayitta yeniden kullaniyoruz,
         // yani bu adim tamamen atlanabiliyor.
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+          @try {
             CFAbsoluteTime fetchStart = CFAbsoluteTimeGetCurrent();
             [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
                 if (contentError || !content) {
@@ -1292,6 +1343,9 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
                       (unsigned long)content.displays.count,
                       (unsigned long)content.windows.count);
             }];
+          } @catch (NSException *exception) {
+            NSLog(@"[Recorder] Prewarm failed safely: %@", exception.reason);
+          }
         });
     }
 }
@@ -1304,19 +1358,22 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     NSDictionary *configCopy = [config copy];
     dispatch_queue_t controlQueue = ScreenCaptureControlQueue();
     __block BOOL accepted = NO;
+    __block uint64_t generation = 0;
 
     dispatch_sync(controlQueue, ^{
         if (g_isRecording || g_isCleaningUp || g_isScheduling) {
-            MRLog(@"⚠️ ScreenCaptureKit busy (recording:%d cleaning:%d scheduling:%d)", g_isRecording, g_isCleaningUp, g_isScheduling);
+            MRLog(@"⚠️ ScreenCaptureKit busy (recording:%d cleaning:%d scheduling:%d)", g_isRecording.load(), g_isCleaningUp.load(), g_isScheduling.load());
             accepted = NO;
             return;
         }
         g_isCleaningUp = NO;
         g_isScheduling = YES;
+        generation = ++g_schedulingGeneration;
         accepted = YES;
     });
 
     if (!accepted) {
+        [configCopy release];
         return NO;
     }
 
@@ -1328,8 +1385,9 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
         if (prewarmed) {
             NSLog(@"⚡ Prewarmed shareable content kullanildi — envanter cagrisi atlandi");
             dispatch_async(controlQueue, ^{
-                SCKPerformRecordingSetup(configCopy, prewarmed);
+                SCKPerformRecordingSetup(configCopy, prewarmed, generation);
             });
+            [configCopy release];
             // NOT: Burada onbellegi tazelemek YOK.
             // Kayit setup'i calisirken yeni bir SCShareableContent istegi
             // baslatmak sistem envanterini kayitla ayni anda sorgular ve
@@ -1344,115 +1402,36 @@ extern "C" NSString *ScreenCaptureKitCurrentAudioPath(void) {
     NSLog(@"🚀 Requesting shareable content...");
     CFAbsoluteTime contentFetchStart = CFAbsoluteTimeGetCurrent();
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
-            if (contentError || !content) {
-                NSLog(@"❌ Content error: %@", contentError);
-                SCKFailScheduling();
-                return;
-            }
-            NSLog(@"✅ Got shareable content in %.0fms, starting recording setup...",
-                  (CFAbsoluteTimeGetCurrent() - contentFetchStart) * 1000.0);
+        @try {
+            [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
+                dispatch_async(controlQueue, ^{
+                    if (generation != g_schedulingGeneration) return;
+                    if (contentError || !content) {
+                        NSLog(@"[Recorder] Content error: %@", contentError);
+                        SCKFailScheduling();
+                        return;
+                    }
+                    SCKPerformRecordingSetup(configCopy, content, generation);
+                });
+            }];
+        } @catch (NSException *exception) {
+            NSLog(@"[Recorder] Content discovery failed safely: %@", exception.reason);
             dispatch_async(controlQueue, ^{
-                SCKPerformRecordingSetup(configCopy, content);
+                if (generation == g_schedulingGeneration) SCKFailScheduling();
             });
-        }];
+        }
     });
+    [configCopy release];
 
     return YES;
 }
 
 + (void)stopRecording {
-    if (!g_isRecording || !g_stream || g_isCleaningUp) {
-        NSLog(@"⚠️ Cannot stop: recording=%d stream=%@ cleaning=%d", g_isRecording, g_stream, g_isCleaningUp);
-        SCKMarkSchedulingComplete();
-        return;
-    }
+    dispatch_sync(ScreenCaptureControlQueue(), ^{ SCKRequestStop(nil); });
+}
 
-    MRLog(@"🛑 Stopping pure ScreenCaptureKit recording");
-
-    // CRITICAL FIX: Set cleanup flag IMMEDIATELY to prevent race conditions
-    // This prevents startRecording from being called while stop is in progress
-    @synchronized([ScreenCaptureKitRecorder class]) {
-        g_isCleaningUp = YES;
-    }
-
-    // Store stream reference to prevent it from being deallocated
-    SCStream *streamToStop = g_stream;
-
-    // ELECTRON FIX: Stop FULLY ASYNCHRONOUSLY - NO blocking, NO semaphores
-    [streamToStop stopCaptureWithCompletionHandler:^(NSError *stopError) {
-        @autoreleasepool {
-            if (stopError) {
-                NSLog(@"❌ Stop error: %@", stopError);
-            } else {
-                MRLog(@"✅ Pure stream stopped");
-            }
-
-            // Reset recording state to allow new recordings
-            @synchronized([ScreenCaptureKitRecorder class]) {
-                g_isRecording = NO;
-                g_isCleaningUp = NO; // CRITICAL: Reset cleanup flag when done
-            }
-
-            // Cleanup after stop completes
-            CleanupWriters();
-            [ScreenCaptureKitRecorder cleanupVideoWriter];
-
-            // Post-process: mix (if enabled) then mux audio into video file
-            if (g_shouldCaptureAudio && g_audioOutputPath) {
-                NSString *primaryAudioPath = ScreenCaptureKitCurrentAudioPath();
-                if ([primaryAudioPath isKindOfClass:[NSArray class]]) {
-                    id first = [(NSArray *)primaryAudioPath firstObject];
-                    if ([first isKindOfClass:[NSString class]]) {
-                        primaryAudioPath = (NSString *)first;
-                    } else {
-                        primaryAudioPath = nil;
-                    }
-                }
-                if (primaryAudioPath && [primaryAudioPath length] > 0) {
-                    BOOL preferInternal = NO;
-                    if (@available(macOS 15.0, *)) {
-                        preferInternal = (g_captureSystemAudioEnabled && g_captureMicrophoneEnabled);
-                    }
-                    NSString *externalMicPath = nil;
-                    if (currentStandaloneAudioRecordingPath) {
-                        externalMicPath = currentStandaloneAudioRecordingPath();
-                    }
-                    if (!externalMicPath || [externalMicPath length] == 0) {
-                        if (lastStandaloneAudioRecordingPath) {
-                            externalMicPath = lastStandaloneAudioRecordingPath();
-                        }
-                    }
-                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-                        NSString *audioForMux = primaryAudioPath;
-                        if (g_mixAudioEnabled) {
-                            BOOL mixed = NO;
-                            // Try gain-aware mix first
-                            mixed = MRMixAudioToSingleTrackWithGains(primaryAudioPath, externalMicPath, preferInternal, g_mixMicGain, g_mixSystemGain);
-                            if (!mixed) {
-                                mixed = MRMixAudioToSingleTrack(primaryAudioPath, externalMicPath, preferInternal);
-                            }
-                            if (mixed) {
-                                MRLog(@"🎧 Post-mix completed: %@", primaryAudioPath);
-                            } else {
-                                MRLog(@"ℹ️ Post-mix skipped or failed; proceeding to mux");
-                            }
-                        }
-                        if (g_outputPath && [g_outputPath length] > 0) {
-                            BOOL muxed = MRMuxAudioIntoVideo(g_outputPath, audioForMux);
-                            if (muxed) {
-                                MRLog(@"🔗 Muxed audio into video: %@", g_outputPath);
-                            } else {
-                                MRLog(@"⚠️ Failed to mux audio into video %@", g_outputPath);
-                            }
-                        }
-                    });
-                }
-            }
-
-            SCKMarkSchedulingComplete();
-        }
-    }];
++ (BOOL)isScheduling {
+    return g_isScheduling;
 }
 
 + (BOOL)isRecording {
@@ -1523,15 +1502,19 @@ BOOL isScreenCaptureKitCleaningUp() API_AVAILABLE(macos(12.3)) {
         
         // Clean up in proper order to prevent crashes
         if (g_stream) {
+            [g_stream release];
             g_stream = nil;
             MRLog(@"✅ Stream reference cleared");
         }
         
         if (g_streamDelegate) {
+            [(id)g_streamDelegate release];
             g_streamDelegate = nil;
             MRLog(@"✅ Stream delegate reference cleared");
         }
         
+        [g_videoStreamOutput release];
+        [g_audioStreamOutput release];
         g_videoStreamOutput = nil;
         g_audioStreamOutput = nil;
         g_videoQueue = nil;
@@ -1540,14 +1523,15 @@ BOOL isScreenCaptureKitCleaningUp() API_AVAILABLE(macos(12.3)) {
             CFRelease(g_pixelBufferAdaptorRef);
             g_pixelBufferAdaptorRef = NULL;
         }
-        g_audioOutputPath = nil;
+        SCKSetOwnedString(&g_audioOutputPath, nil);
         g_shouldCaptureAudio = NO;
         g_captureMicrophoneEnabled = NO;
         g_captureSystemAudioEnabled = NO;
+        g_captureCameraEnabled = NO;
 
         g_isRecording = NO;
         g_isCleaningUp = NO;  // Reset cleanup flag
-        g_outputPath = nil;
+        SCKSetOwnedString(&g_outputPath, nil);
 
         // ELECTRON FIX: Reset frame tracking
         g_firstFrameReceived = NO;
@@ -1572,12 +1556,13 @@ static void SCKMarkSchedulingComplete(void) {
 }
 
 static void SCKFailScheduling(void) {
-    g_isScheduling = NO;
-    g_isRecording = NO;
+    SCKRequestStop(nil);
 }
 
-static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *content) API_AVAILABLE(macos(12.3)) {
+static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *content, uint64_t generation) API_AVAILABLE(macos(12.3)) {
     @autoreleasepool {
+      @try {
+        if (generation != g_schedulingGeneration) return;
         if (!config || !content) {
             SCKFailScheduling();
             return;
@@ -1594,7 +1579,7 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             SCKFailScheduling();
             return;
         }
-        g_outputPath = outputPath;
+        SCKSetOwnedString(&g_outputPath, outputPath);
 
         NSNumber *displayId = config[@"displayId"];
         NSNumber *windowId = config[@"windowId"];
@@ -1620,7 +1605,7 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
             if (g_mixSystemGain < 0.f) g_mixSystemGain = 0.f;
             if (g_mixSystemGain > 2.f) g_mixSystemGain = 2.f;
         }
-        g_qualityPreset = SCKNormalizeQualityPreset(config[@"quality"]);
+        SCKSetOwnedString(&g_qualityPreset, SCKNormalizeQualityPreset(config[@"quality"]));
         MRLog(@"🎚️ Requested quality preset: %@", g_qualityPreset);
         NSNumber *captureCamera = config[@"captureCamera"];
 
@@ -1907,12 +1892,13 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         g_shouldCaptureAudio = shouldCaptureSystemAudio || shouldCaptureMic;
         g_captureMicrophoneEnabled = shouldCaptureMic;
         g_captureSystemAudioEnabled = shouldCaptureSystemAudio;
+        g_captureCameraEnabled = captureCamera ? [captureCamera boolValue] : NO;
 
         if (audioOutputPath && ![audioOutputPath isKindOfClass:[NSString class]]) {
             MRLog(@"⚠️ audioOutputPath type mismatch: %@, converting...", NSStringFromClass([audioOutputPath class]));
-            g_audioOutputPath = nil;
+            SCKSetOwnedString(&g_audioOutputPath, nil);
         } else {
-            g_audioOutputPath = audioOutputPath;
+            SCKSetOwnedString(&g_audioOutputPath, audioOutputPath);
         }
 
         if (g_shouldCaptureAudio && (!g_audioOutputPath || [g_audioOutputPath length] == 0)) {
@@ -1995,7 +1981,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         if (![ScreenCaptureKitRecorder prepareVideoWriterWithWidth:recordingWidth height:recordingHeight error:&writerError]) {
             NSLog(@"❌ Failed to prepare video writer: %@", writerError);
             SCKFailScheduling();
-            CleanupWriters();
             return;
         }
 
@@ -2012,7 +1997,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         g_stream = [[SCStream alloc] initWithFilter:filter configuration:streamConfig delegate:g_streamDelegate];
         if (!g_stream) {
             NSLog(@"❌ Failed to create pure stream");
-            CleanupWriters();
             SCKFailScheduling();
             return;
         }
@@ -2021,10 +2005,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         BOOL videoOutputAdded = [g_stream addStreamOutput:g_videoStreamOutput type:SCStreamOutputTypeScreen sampleHandlerQueue:g_videoQueue error:&outputError];
         if (!videoOutputAdded || outputError) {
             NSLog(@"❌ Failed to add video output: %@", outputError);
-            CleanupWriters();
-            @synchronized([ScreenCaptureKitRecorder class]) {
-                g_stream = nil;
-            }
             SCKFailScheduling();
             return;
         }
@@ -2044,8 +2024,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                                                             error:&audioError];
                         if (!micAdded || audioError) {
                             NSLog(@"❌ Failed to add microphone output: %@", audioError);
-                            CleanupWriters();
-                            @synchronized([ScreenCaptureKitRecorder class]) { g_stream = nil; }
                             SCKFailScheduling();
                             return;
                         }
@@ -2061,8 +2039,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                                                            error:&audioError];
                         if (!sysAdded || audioError) {
                             NSLog(@"❌ Failed to add system audio output: %@", audioError);
-                            CleanupWriters();
-                            @synchronized([ScreenCaptureKitRecorder class]) { g_stream = nil; }
                             SCKFailScheduling();
                             return;
                         }
@@ -2079,8 +2055,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                                                        error:&audioError];
                     if (!audAdded || audioError) {
                         NSLog(@"❌ Failed to add audio output: %@", audioError);
-                        CleanupWriters();
-                        @synchronized([ScreenCaptureKitRecorder class]) { g_stream = nil; }
                         SCKFailScheduling();
                         return;
                     }
@@ -2090,8 +2064,6 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
 
                 if (!anyAudioAdded) {
                     NSLog(@"❌ No audio outputs added (unexpected configuration)");
-                    CleanupWriters();
-                    @synchronized([ScreenCaptureKitRecorder class]) { g_stream = nil; }
                     SCKFailScheduling();
                     return;
                 }
@@ -2109,18 +2081,22 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         }
 
         NSLog(@"🚀 CALLING startCaptureWithCompletionHandler (async)...");
-        [g_stream startCaptureWithCompletionHandler:^(NSError *startError) {
+        SCStream *startingStream = g_stream;
+        [startingStream startCaptureWithCompletionHandler:^(NSError *startError) {
             dispatch_async(ScreenCaptureControlQueue(), ^{
+                if (generation != g_schedulingGeneration || startingStream != g_stream) {
+                    // Cancellation can precede the asynchronous start reply.
+                    if (!startError) {
+                        @try { [startingStream stopCaptureWithCompletionHandler:^(NSError *error) {}]; }
+                        @catch (NSException *exception) { NSLog(@"[Recorder] Stale stream stop: %@", exception.reason); }
+                    }
+                    return;
+                }
                 if (startError) {
                     NSLog(@"❌ Failed to start pure capture: %@", startError);
                     NSLog(@"❌ Error domain: %@, code: %ld", startError.domain, (long)startError.code);
                     NSLog(@"❌ Error userInfo: %@", startError.userInfo);
-                    CleanupWriters();
-                    @synchronized([ScreenCaptureKitRecorder class]) {
-                        g_isRecording = NO;
-                        g_stream = nil;
-                    }
-                    SCKFailScheduling();
+                            SCKFailScheduling();
                 } else {
                     NSLog(@"🎉 PURE ScreenCaptureKit recording started successfully!");
                     NSLog(@"🎤 Audio capture enabled: %d (mic=%d, system=%d)", g_shouldCaptureAudio, g_captureMicrophoneEnabled, g_captureSystemAudioEnabled);
@@ -2131,5 +2107,9 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
                 }
             });
         }];
+      } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Capture setup failed safely: %@", exception.reason);
+        SCKFailScheduling();
+      }
     }
 }

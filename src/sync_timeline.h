@@ -44,6 +44,15 @@ BOOL MRSyncShouldHoldForPrimary(CMTime timestamp);
 void MRSyncSetStopLimitSeconds(double seconds);
 double MRSyncGetStopLimitSeconds(void);
 
+// Pause/resume the shared media timeline without closing any writers. Samples
+// received while paused are discarded; resumed samples are shifted backwards
+// by the accumulated pause duration so every track remains gap-free.
+void MRSyncPause(void);
+void MRSyncResume(void);
+BOOL MRSyncIsPaused(void);
+CMTime MRSyncAdjustForPauses(CMTime relativeTimestamp);
+double MRSyncGetPausedDurationSeconds(void);
+
 #ifdef __cplusplus
 }
 #endif

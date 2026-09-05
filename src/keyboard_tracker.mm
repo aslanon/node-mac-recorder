@@ -11,6 +11,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Carbon/Carbon.h>
 #import "logging.h"
+#import "sync_timeline.h"
 
 // ---- Global durum (tek aktif oturum) --------------------------------------
 static CFMachPortRef g_kbEventTap = NULL;
@@ -110,6 +111,10 @@ static CGEventRef KeyboardEventCallback(CGEventTapProxy proxy,
         return event;
     }
 
+    if (MRSyncIsPaused()) {
+        return event;
+    }
+
     @autoreleasepool {
         CGEventFlags flags = CGEventGetFlags(event);
         BOOL hasCommand = (flags & kCGEventFlagMaskCommand) != 0;
@@ -146,7 +151,9 @@ static CGEventRef KeyboardEventCallback(CGEventTapProxy proxy,
         }
 
         double unixMs = NowUnixMs();
-        double relMs = g_kbStartUnixMs > 0 ? (unixMs - g_kbStartUnixMs) : 0.0;
+        double relMs = g_kbStartUnixMs > 0
+            ? (unixMs - g_kbStartUnixMs - (MRSyncGetPausedDurationSeconds() * 1000.0))
+            : 0.0;
         if (relMs < 0) relMs = 0;
 
         NSString *json = [NSString stringWithFormat:

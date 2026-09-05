@@ -1,3 +1,4 @@
+#import "recording_writer_safety.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -506,6 +507,12 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
 - (void)captureOutput:(AVCaptureOutput *)output
 didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
        fromConnection:(AVCaptureConnection *)connection {
+    if (self.stopInFlight || !self.isRecording || output != self.videoOutput) return;
+    @try {
+
+    if (MRSyncIsPaused()) {
+        return;
+    }
 
     if (!CMSampleBufferDataIsReady(sampleBuffer)) {
         return;
@@ -534,6 +541,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
     // A/V SYNC: Signal camera's first frame to release audio hold
     MRSyncMarkCameraFirstFrame(timestamp);
+
+    // "Ready" means the capture device delivered a real frame, not that the
+    // writer already received audio. Signaling here lets the primary recorder
+    // start its audio source; waiting until writer start creates a camera/audio
+    // barrier cycle and can hold startup until the timeout.
+    [self completeStart:YES token:self.activeToken];
 
     // Hold camera frames until we see audio so timelines stay aligned
     if (MRSyncShouldHoldVideoFrame(timestamp)) {
@@ -573,8 +586,6 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         
         g_cameraStartTimestamp = CFAbsoluteTimeGetCurrent();
 
-        // Signal start completion
-        [self completeStart:YES token:self.activeToken];
     }
 
     if (!self.writerInput.readyForMoreMediaData) {
@@ -595,6 +606,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         // This should not happen if sync is working correctly
         adjustedTimestamp = kCMTimeZero;
     }
+    adjustedTimestamp = MRSyncAdjustForPauses(adjustedTimestamp);
 
     // LIP SYNC FIX: Check stopLimit OR elapsed time to drop frames after recording duration
     // This prevents camera from recording longer than audio
@@ -604,7 +616,9 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
     // CRITICAL FIX: Also check elapsed time since recording started
     // This works even if stopLimit hasn't been set yet
-    double elapsedTime = (g_cameraStartTimestamp > 0) ? (CFAbsoluteTimeGetCurrent() - g_cameraStartTimestamp) : 0;
+    double elapsedTime = (g_cameraStartTimestamp > 0)
+        ? MAX(0, CFAbsoluteTimeGetCurrent() - g_cameraStartTimestamp - MRSyncGetPausedDurationSeconds())
+        : 0;
     double maxDuration = (stopLimit > 0) ? stopLimit : elapsedTime + 1.0;  // Use stopLimit if available, else allow 1s more
 
     // DEBUG: Log every 30th frame
@@ -642,6 +656,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     if (!success) {
         MRLog(@"⚠️ Failed to append camera pixel buffer: %@", self.writer.error);
     }
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Camera sample failed safely: %@", exception.reason);
+        [self completeStart:NO token:self.activeToken];
+        self.isRecording = NO;
+    }
+
 }
 
 #pragma mark - Synchronization helpers
@@ -655,7 +675,8 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
 - (BOOL)waitForStopCompletion:(NSTimeInterval)timeout {
     dispatch_semaphore_t stopSemaphore = self.stopSemaphore;
-    if (!stopSemaphore) {
+    if (!stopSemaphore || !self.stopInFlight) {
+        self.stopSemaphore = nil;
         return YES;
     }
     dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC));
@@ -884,96 +905,57 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     uint64_t token = [self nextToken];
 
     dispatch_async(self.workQueue, ^{
-        [self performStartWithDeviceId:deviceId outputPath:outputPath token:token];
+        @try {
+            [self performStartWithDeviceId:deviceId outputPath:outputPath token:token];
+        } @catch (NSException *exception) {
+            NSLog(@"[Recorder] Camera startup failed safely: %@", exception.reason);
+            [self completeStart:NO token:token];
+        }
     });
 
     return YES;
 }
 
 - (BOOL)stopRecording {
-    BOOL hasActiveSession = (self.session && [self.session isRunning]);
-    BOOL writerActive = (self.writer && self.writerStarted);
-    if (!self.isRecording && !hasActiveSession && !writerActive) {
-        [self waitForStopCompletion:5.0];
-        return YES;
-    }
-
-    if (!self.startCompleted) {
-        [self completeStart:NO token:self.activeToken];
-    }
-
+    if (self.stopInFlight) return [self waitForStopCompletion:5.0];
+    if (!self.isRecording && !self.session && !self.writer) return YES;
+    if (!self.startCompleted) [self completeStart:NO token:self.activeToken];
     self.stopInFlight = YES;
+    self.isRecording = NO;
+    [self nextToken]; // invalidate any queued startup work
 
     dispatch_semaphore_t stopSemaphore = dispatch_semaphore_create(0);
     self.stopSemaphore = stopSemaphore;
-
     dispatch_async(self.workQueue, ^{
-        // Stop video delegate
-        if (self.videoOutput) {
-            [self.videoOutput setSampleBufferDelegate:nil queue:nil];
-        }
-
-        // Finalize writer (audio_recorder.mm pattern)
-        if (self.writer && self.writerStarted) {
-            // LIP SYNC FIX: End session at stopLimit to trim excess frames
-            double stopLimit = MRSyncGetStopLimitSeconds();
-            if (stopLimit > 0) {
-                CMTime endTime = CMTimeMakeWithSeconds(stopLimit, 600);
-                [self.writer endSessionAtSourceTime:endTime];
-                MRLog(@"🎯 Camera writer session ended at %.3fs (stopLimit)", stopLimit);
+      @autoreleasepool {
+        @try {
+            @try {
+                if (self.videoOutput) [self.videoOutput setSampleBufferDelegate:nil queue:nil];
+            } @catch (NSException *exception) {
+                NSLog(@"[Recorder] Camera delegate detach failed safely: %@", exception.reason);
             }
-
-            if (self.writerInput) {
-                [self.writerInput markAsFinished];
+            // A callback already running may still use the writer/adaptor.
+            dispatch_sync(self.videoQueue, ^{});
+            MRFinishAssetWriterSafely(self.writer, 3.0, MRSyncGetStopLimitSeconds());
+            if (self.session.isRunning) [self.session stopRunning];
+            if (self.deviceInput && [self.session.inputs containsObject:self.deviceInput]) {
+                [self.session removeInput:self.deviceInput];
             }
-
-            dispatch_semaphore_t writerSemaphore = dispatch_semaphore_create(0);
-            [self.writer finishWritingWithCompletionHandler:^{
-                if (self.writer.status == AVAssetWriterStatusCompleted) {
-                    MRLog(@"✅ Camera writer finished");
-                } else if (self.writer.status == AVAssetWriterStatusFailed) {
-                    MRLog(@"❌ Camera writer failed: %@", self.writer.error);
-                }
-                dispatch_semaphore_signal(writerSemaphore);
-            }];
-
-            // 3 second timeout (matching audio_recorder.mm:269)
-            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC);
-            if (dispatch_semaphore_wait(writerSemaphore, timeout) != 0) {
-                MRLog(@"⚠️ Camera writer timeout – canceling");
-                [self.writer cancelWriting];
+            if (self.videoOutput && [self.session.outputs containsObject:self.videoOutput]) {
+                [self.session removeOutput:self.videoOutput];
             }
+        } @catch (NSException *exception) {
+            NSLog(@"[Recorder] Camera stop failed safely: %@", exception.reason);
+        } @finally {
+            [self cleanupAfterStopOnQueue];
+            // Signal only after the old session can no longer clear new state.
+            dispatch_semaphore_signal(stopSemaphore);
         }
-
-        dispatch_semaphore_signal(stopSemaphore);
-
-        // Session cleanup
-        if (self.session && [self.session isRunning]) {
-            [self.session stopRunning];
-        }
-
-        if (self.session && self.deviceInput && [self.session.inputs containsObject:self.deviceInput]) {
-            [self.session removeInput:self.deviceInput];
-        }
-        if (self.session && self.videoOutput && [self.session.outputs containsObject:self.videoOutput]) {
-            [self.session removeOutput:self.videoOutput];
-        }
-
-        [self cleanupAfterStopOnQueue];
+      }
     });
-
-    dispatch_time_t waitTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC));
-    long waitResult = dispatch_semaphore_wait(stopSemaphore, waitTime);
-    if (waitResult != 0) {
-        MRLog(@"⚠️ CameraRecorder: Stop did not finish within 5s (proceeding)");
-    } else {
-        MRLog(@"✅ CameraRecorder: Stop finalized");
-    }
-
-    self.stopSemaphore = nil;
-    self.isRecording = NO;
-    self.stopInFlight = NO;
-    return YES;
+    // A timeout does NOT release the stop-in-flight gate. A subsequent start
+    // must wait for this work queue to finish, especially after USB removal.
+    return [self waitForStopCompletion:5.0];
 }
 
 - (BOOL)waitForRecordingStartWithTimeout:(NSTimeInterval)timeout {
@@ -1020,6 +1002,15 @@ bool stopCameraRecording() {
     @autoreleasepool {
         return [[CameraRecorder sharedRecorder] stopRecording];
     }
+}
+
+bool hasCameraRecordingResources() {
+    CameraRecorder *recorder = [CameraRecorder sharedRecorder];
+    return recorder.isRecording || recorder.stopInFlight || recorder.session != nil || recorder.writer != nil;
+}
+
+bool isCameraRecordingStopping() {
+    return [CameraRecorder sharedRecorder].stopInFlight;
 }
 
 bool isCameraRecording() {

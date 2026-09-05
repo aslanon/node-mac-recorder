@@ -17,6 +17,9 @@ static BOOL g_videoHoldLogged = NO;
 static CMTime g_audioFirstTimestamp = kCMTimeInvalid;
 static CMTime g_alignmentDelta = kCMTimeInvalid;
 static double g_stopLimitSeconds = -1.0;
+static BOOL g_isPaused = NO;
+static CFAbsoluteTime g_pauseStartedAt = 0;
+static double g_totalPausedSeconds = 0;
 
 // Bidirectional barrier: camera side
 static BOOL g_expectCamera = NO;
@@ -41,6 +44,9 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_audioFirstTimestamp = kCMTimeInvalid;
         g_alignmentDelta = kCMTimeInvalid;
         g_stopLimitSeconds = -1.0;
+        g_isPaused = NO;
+        g_pauseStartedAt = 0;
+        g_totalPausedSeconds = 0;
         // Reset camera barrier state
         g_expectCamera = NO;
         g_cameraReady = YES;
@@ -53,6 +59,54 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_primaryHoldFirstTimestamp = kCMTimeInvalid;
         g_primaryHoldLogged = NO;
     });
+}
+
+void MRSyncPause(void) {
+    dispatch_sync(MRSyncQueue(), ^{
+        if (g_isPaused) return;
+        g_isPaused = YES;
+        g_pauseStartedAt = CFAbsoluteTimeGetCurrent();
+    });
+    MRLog(@"⏸️ Recording timeline paused");
+}
+
+void MRSyncResume(void) {
+    __block BOOL resumed = NO;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (!g_isPaused) return;
+        if (g_pauseStartedAt > 0) {
+            g_totalPausedSeconds += MAX(0, CFAbsoluteTimeGetCurrent() - g_pauseStartedAt);
+        }
+        g_pauseStartedAt = 0;
+        g_isPaused = NO;
+        resumed = YES;
+    });
+    if (resumed) MRLog(@"▶️ Recording timeline resumed");
+}
+
+BOOL MRSyncIsPaused(void) {
+    __block BOOL paused = NO;
+    dispatch_sync(MRSyncQueue(), ^{ paused = g_isPaused; });
+    return paused;
+}
+
+double MRSyncGetPausedDurationSeconds(void) {
+    __block double duration = 0;
+    dispatch_sync(MRSyncQueue(), ^{
+        duration = g_totalPausedSeconds;
+        if (g_isPaused && g_pauseStartedAt > 0) {
+            duration += MAX(0, CFAbsoluteTimeGetCurrent() - g_pauseStartedAt);
+        }
+    });
+    return duration;
+}
+
+CMTime MRSyncAdjustForPauses(CMTime relativeTimestamp) {
+    if (!CMTIME_IS_VALID(relativeTimestamp)) return relativeTimestamp;
+    double seconds = CMTimeGetSeconds(relativeTimestamp) - MRSyncGetPausedDurationSeconds();
+    if (!isfinite(seconds) || seconds <= 0) return kCMTimeZero;
+    int32_t timescale = relativeTimestamp.timescale > 0 ? relativeTimestamp.timescale : 600;
+    return CMTimeMakeWithSeconds(seconds, timescale);
 }
 
 BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {

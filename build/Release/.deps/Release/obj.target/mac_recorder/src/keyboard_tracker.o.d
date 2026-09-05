@@ -8,7 +8,7 @@ Release/obj.target/mac_recorder/src/keyboard_tracker.o: \
   /Users/onur/Library/Caches/node-gyp/24.5.0/include/node/node_api_types.h \
   /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.h \
   /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h \
-  ../src/logging.h
+  ../src/logging.h ../src/sync_timeline.h
 ../src/keyboard_tracker.mm:
 /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi.h:
 /Users/onur/Library/Caches/node-gyp/24.5.0/include/node/node_api.h:
@@ -18,3 +18,4 @@ Release/obj.target/mac_recorder/src/keyboard_tracker.o: \
 /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.h:
 /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h:
 ../src/logging.h:
+../src/sync_timeline.h:

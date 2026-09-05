@@ -188,6 +188,21 @@ await recorder.startRecording("./recording.mov", {
 });
 ```
 
+#### `pauseRecording()` / `resumeRecording()`
+
+Pauses every active track without closing the output files, then resumes the
+same recording session. Time spent paused is removed from the screen, camera,
+audio, cursor, and keyboard timelines.
+
+```javascript
+await recorder.pauseRecording();
+// The output writers remain open while paused.
+await recorder.resumeRecording();
+```
+
+Both calls are idempotent and emit `paused` / `resumed` events with the current
+status. `stopRecording()` may also be called while paused.
+
 #### `stopRecording()`
 
 Stops the current recording.
@@ -334,6 +349,7 @@ const status = recorder.getStatus();
 console.log(status);
 // {
 //   isRecording: true,
+//   isPaused: false,
 //   outputPath: "./recording.mov",
 //   cameraOutputPath: "./temp_camera_1720000000000.webm",
 //   audioOutputPath: "./temp_audio_1720000000000.webm",
@@ -341,7 +357,8 @@ console.log(status);
 //   audioCapturing: true,
 //   sessionTimestamp: 1720000000000,
 //   options: { ... },
-//   recordingTime: 15
+//   recordingTime: 15,
+//   pausedDuration: 3.5
 // }
 ```
 

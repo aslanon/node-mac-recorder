@@ -13,9 +13,9 @@ API_AVAILABLE(macos(12.3))
 + (void)prewarmShareableContent;
 
 // MULTI-SESSION API: New session-based recording
-+ (NSString *)startRecordingWithConfiguration:(NSDictionary *)config
++ (BOOL)startRecordingWithConfiguration:(NSDictionary *)config
                                      delegate:(id)delegate
-                                        error:(NSError **)error;  // Returns sessionId
+                                        error:(NSError **)error;
 + (BOOL)stopRecording:(NSString *)sessionId;  // Stop specific session
 + (BOOL)isRecording:(NSString *)sessionId;    // Check specific session
 + (BOOL)isFullyInitialized:(NSString *)sessionId;  // Check if session's first frames received
@@ -26,6 +26,8 @@ API_AVAILABLE(macos(12.3))
 // LEGACY API: For backward compatibility (uses implicit default session)
 + (void)stopRecording;  // Stops all sessions
 + (BOOL)isRecording;    // Returns YES if ANY session is recording
++ (BOOL)isScheduling;
++ (BOOL)isCleaningUp;
 + (BOOL)isFullyInitialized;  // Check if default session initialized
 + (NSTimeInterval)getVideoStartTimestamp;  // Get default session timestamp
 

@@ -13,6 +13,7 @@ class MacRecorderMultiProcess extends EventEmitter {
 
         this.worker = null;
         this.isRecording = false;
+        this.isPaused = false;
         this.outputPath = null;
         this.ready = false;
         this.pendingRequests = new Map();
@@ -36,6 +37,8 @@ class MacRecorderMultiProcess extends EventEmitter {
 
         this.worker.on('error', (error) => {
             console.error('❌ Worker error:', error);
+            for (const { reject } of this.pendingRequests.values()) reject(error);
+            this.pendingRequests.clear();
             this.emit('error', error);
         });
 
@@ -43,6 +46,7 @@ class MacRecorderMultiProcess extends EventEmitter {
             console.log(`🛑 Worker exited: code=${code}, signal=${signal}`);
             this.ready = false;
             this.isRecording = false;
+            this.isPaused = false;
 
             // Reject all pending requests
             for (const [id, { reject }] of this.pendingRequests) {
@@ -75,8 +79,13 @@ class MacRecorderMultiProcess extends EventEmitter {
             // Update local state based on events
             if (msg.event === 'recordingStarted') {
                 this.isRecording = true;
+            } else if (msg.event === 'paused') {
+                this.isPaused = true;
+            } else if (msg.event === 'resumed') {
+                this.isPaused = false;
             } else if (msg.event === 'stopped') {
                 this.isRecording = false;
+                this.isPaused = false;
             }
             return;
         }
@@ -84,7 +93,10 @@ class MacRecorderMultiProcess extends EventEmitter {
         // Handle errors
         if (msg.type === 'error') {
             console.error('❌ Worker error:', msg.message);
-            this.emit('error', new Error(msg.message));
+            const error = new Error(msg.message);
+            for (const { reject } of this.pendingRequests.values()) reject(error);
+            this.pendingRequests.clear();
+            this.emit('error', error);
             return;
         }
 
@@ -110,7 +122,7 @@ class MacRecorderMultiProcess extends EventEmitter {
 
     _sendRequest(type, data = null, timeout = 30000) {
         return new Promise((resolve, reject) => {
-            if (!this.worker) {
+            if (!this.worker || !this.worker.connected) {
                 return reject(new Error('Worker not initialized'));
             }
 
@@ -131,9 +143,6 @@ class MacRecorderMultiProcess extends EventEmitter {
                 }
             }, timeout);
 
-            // Send message to worker
-            this.worker.send({ type, data, id });
-
             // Clear timeout on completion
             const originalResolve = resolve;
             const originalReject = reject;
@@ -149,6 +158,16 @@ class MacRecorderMultiProcess extends EventEmitter {
                     originalReject(error);
                 }
             });
+
+            // A closed IPC pipe may fail asynchronously. Passing a callback
+            // contains that error and releases the pending request/timer.
+            const sendFailed = (error) => {
+                if (!error) return;
+                this.pendingRequests.get(id)?.reject(error);
+                this.pendingRequests.delete(id);
+            };
+            try { this.worker.send({ type, data, id }, sendFailed); }
+            catch (error) { sendFailed(error); }
         });
     }
 
@@ -186,7 +205,27 @@ class MacRecorderMultiProcess extends EventEmitter {
             options
         }, 60000); // Longer timeout for recording start
 
+        // The native first-frame event can arrive later than this response.
+        // Stop must already be available during that interval.
+        this.isRecording = true;
+        this.isPaused = false;
         return result.outputPath;
+    }
+
+    async pauseRecording() {
+        if (!this.isRecording) throw new Error('No recording in progress');
+        if (this.isPaused) return this.getStatus();
+        const status = await this._sendRequest('pauseRecording');
+        this.isPaused = true;
+        return status;
+    }
+
+    async resumeRecording() {
+        if (!this.isRecording) throw new Error('No recording in progress');
+        if (!this.isPaused) return this.getStatus();
+        const status = await this._sendRequest('resumeRecording');
+        this.isPaused = false;
+        return status;
     }
 
     async stopRecording() {
@@ -194,8 +233,9 @@ class MacRecorderMultiProcess extends EventEmitter {
             throw new Error('No recording in progress');
         }
 
-        const result = await this._sendRequest('stopRecording', null, 10000);
+        const result = await this._sendRequest('stopRecording', null, 45000);
         this.isRecording = false;
+        this.isPaused = false;
 
         return result;
     }
@@ -231,6 +271,10 @@ class MacRecorderMultiProcess extends EventEmitter {
 
         this.ready = false;
         this.isRecording = false;
+        this.isPaused = false;
+        for (const { reject } of this.pendingRequests.values()) {
+            reject(new Error('Recorder worker destroyed'));
+        }
         this.pendingRequests.clear();
     }
 }

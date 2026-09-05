@@ -7,6 +7,8 @@
 #include <string>
 #import "logging.h"
 #import "sync_timeline.h"
+#import "recording_writer_safety.h"
+#include <atomic>
 
 // Import audio recorder
 extern "C" void* createNativeAudioRecorder(void);
@@ -18,9 +20,11 @@ static AVAssetWriter *g_avWriter = nil;
 static AVAssetWriterInput *g_avVideoInput = nil;
 static AVAssetWriterInputPixelBufferAdaptor *g_avPixelBufferAdaptor = nil;
 static dispatch_source_t g_avTimer = nil;
+static dispatch_queue_t g_avCaptureQueue = nil;
+static std::atomic<bool> g_avIsStopping(false);
 static CGDirectDisplayID g_avDisplayID = 0;
 static CGRect g_avCaptureRect = CGRectZero;
-static bool g_avIsRecording = false;
+static std::atomic<bool> g_avIsRecording(false);
 static int64_t g_avFrameNumber = 0;
 static CMTime g_avStartTime;
 static void* g_avAudioRecorder = nil;
@@ -361,6 +365,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
 
         // Start capture timer using target FPS
         dispatch_queue_t captureQueue = dispatch_queue_create("AVFoundationCaptureQueue", DISPATCH_QUEUE_SERIAL);
+        g_avCaptureQueue = captureQueue;
         g_avTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, captureQueue);
         
         if (!g_avTimer) {
@@ -377,6 +382,7 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
         
         dispatch_source_set_event_handler(g_avTimer, ^{
             if (!g_avIsRecording) return;
+            if (MRSyncIsPaused()) return;
 
             // Additional null checks for Electron safety
             if (!localVideoInput || !localPixelBufferAdaptor) {
@@ -482,7 +488,8 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                 if (!CMTIME_IS_VALID(relativeTime) || CMTIME_COMPARE_INLINE(relativeTime, <, kCMTimeZero)) {
                                     relativeTime = kCMTimeZero;
                                 }
-                                CMTime presentationTime = CMTimeMakeWithSeconds(CMTimeGetSeconds(relativeTime), 600);
+                                CMTime presentationTime = MRSyncAdjustForPauses(
+                                    CMTimeMakeWithSeconds(CMTimeGetSeconds(relativeTime), 600));
 
                                 double stopLimit = MRSyncGetStopLimitSeconds();
                                 if (stopLimit > 0) {
@@ -541,75 +548,51 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
 }
 
 extern "C" bool stopAVFoundationRecording() {
-    if (!g_avIsRecording) {
-        return true;
-    }
-
+    if (g_avIsStopping.exchange(true)) return false;
     g_avIsRecording = false;
-
-    // Stop audio recording if active
-    if (g_avAudioRecorder) {
-        MRLog(@"🛑 Stopping audio recording");
-        @try {
-            stopNativeAudioRecording(g_avAudioRecorder);
-            destroyNativeAudioRecorder(g_avAudioRecorder);
-        } @catch (NSException *exception) {
-            NSLog(@"⚠️ Exception while stopping audio: %@", exception.reason);
-        }
-        g_avAudioRecorder = nil;
-        g_avAudioOutputPath = nil;
-        MRLog(@"✅ Audio recording stopped");
-    }
-
+    BOOL finished = YES;
     @try {
-        // Stop timer with Electron-safe cleanup
-        if (g_avTimer) {
-            // Mark as not recording FIRST to stop timer callbacks
-            g_avIsRecording = false;
-            
-            // Cancel timer and wait a brief moment for completion
-            dispatch_source_cancel(g_avTimer);
-            
-            // Use async to avoid deadlock in Electron
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                // Timer should be fully cancelled by now
-            });
-            
-            g_avTimer = nil;
-            MRLog(@"✅ AVFoundation timer stopped safely");
+        // Cancelling a timer does not wait for an in-flight frame. Drain its
+        // serial queue before finishing or releasing the writer it uses.
+        if (g_avTimer) dispatch_source_cancel(g_avTimer);
+        if (g_avCaptureQueue) dispatch_sync(g_avCaptureQueue, ^{});
+        if (g_avAudioRecorder) {
+            @try {
+                stopNativeAudioRecording(g_avAudioRecorder);
+                destroyNativeAudioRecorder(g_avAudioRecorder);
+            } @catch (NSException *exception) {
+                NSLog(@"[Recorder] Fallback audio stop failed safely: %@", exception.reason);
+            }
+            g_avAudioRecorder = nil;
+            [g_avAudioOutputPath release];
+            g_avAudioOutputPath = nil;
         }
-        
-        // Finish writing with null checks
-        AVAssetWriterInput *writerInput = g_avVideoInput;
-        if (writerInput) {
-            [writerInput markAsFinished];
-        }
-        
-        AVAssetWriter *writer = g_avWriter;
-        if (writer && writer.status == AVAssetWriterStatusWriting) {
-            dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-            [writer finishWritingWithCompletionHandler:^{
-                dispatch_semaphore_signal(semaphore);
-            }];
-            // Add timeout to prevent infinite wait in Electron
-            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
-            dispatch_semaphore_wait(semaphore, timeout);
-        }
-        
-        // Cleanup
+        finished = MRFinishAssetWriterSafely(g_avWriter, 5.0);
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Fallback stop failed safely: %@", exception.reason);
+        finished = NO;
+    } @finally {
+        [g_avWriter release];
         g_avWriter = nil;
         g_avVideoInput = nil;
         g_avPixelBufferAdaptor = nil;
+        if (g_avTimer) dispatch_release(g_avTimer);
+        g_avTimer = nil;
+        if (g_avCaptureQueue) dispatch_release(g_avCaptureQueue);
+        g_avCaptureQueue = nil;
         g_avFrameNumber = 0;
         g_avStartTime = kCMTimeInvalid;
-        
-        MRLog(@"✅ AVFoundation recording stopped");
-        return true;
-        
-    } @catch (NSException *exception) {
-        NSLog(@"❌ Exception stopping AVFoundation recording: %@", exception.reason);
-        return false;
+        g_avIsStopping = false;
     }
+    return finished;
+}
+
+extern "C" bool hasAVFoundationRecordingResources() {
+    return g_avIsRecording || g_avIsStopping || g_avWriter != nil || g_avTimer != nil || g_avAudioRecorder != nil;
+}
+
+extern "C" bool isAVFoundationRecordingStopping() {
+    return g_avIsStopping;
 }
 
 extern "C" bool isAVFoundationRecording() {

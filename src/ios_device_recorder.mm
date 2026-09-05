@@ -8,10 +8,13 @@
 extern "C" bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error);
 extern "C" bool waitForCameraRecordingStart(double timeoutSeconds);
 extern "C" bool stopCameraRecording(void);
+extern "C" bool stopIOSDeviceRecording(void);
 extern "C" bool isCameraRecording(void);
 extern "C" bool startStandaloneAudioRecording(NSString *outputPath, NSString *preferredDeviceId, NSError **error);
 extern "C" bool stopStandaloneAudioRecording(void);
 extern "C" bool isStandaloneAudioRecording(void);
+extern "C" bool pauseIOSDeviceRecording(void);
+extern "C" bool resumeIOSDeviceRecording(void);
 
 @interface MRIOSDeviceRecorder : NSObject <AVCaptureFileOutputRecordingDelegate>
 @property(nonatomic, strong) AVCaptureSession *session;
@@ -21,6 +24,8 @@ extern "C" bool isStandaloneAudioRecording(void);
 @property(atomic) BOOL recording;
 @property(atomic) BOOL startCompleted;
 @property(atomic) BOOL finishCompleted;
+@property(atomic) BOOL startRequested;
+@property(atomic) BOOL stopRequested;
 @property(atomic, strong) NSError *finishError;
 @property(nonatomic) BOOL captureCamera;
 @property(nonatomic) BOOL captureMicrophone;
@@ -37,7 +42,7 @@ extern "C" bool isStandaloneAudioRecording(void);
     self.recording = YES;
     self.startCompleted = YES;
     self.primaryStartedAt = [NSDate date];
-    MRSyncMarkPrimaryStarted(CMClockGetTime(CMClockGetHostTimeClock()));
+    if (!self.stopRequested) MRSyncMarkPrimaryStarted(CMClockGetTime(CMClockGetHostTimeClock()));
     MRLog(@"📱 iPhone capture started: %@", fileURL.path);
 }
 
@@ -192,8 +197,8 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
                                          NSString *audioOutputPath,
                                          NSString *audioDeviceId,
                                          NSError **errorOut) {
-    @autoreleasepool {
-        if (g_iosRecorder && (g_iosRecorder.recording || g_iosRecorder.startCompleted)) {
+    @try {
+        if (g_iosRecorder) {
             if (errorOut) {
                 *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
                                                 code:1
@@ -253,12 +258,14 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
         recorder.audioOutputPath = audioOutputPath;
         recorder.primaryStartedAt = nil;
 
+        g_iosRecorder = recorder;
         [recorder.session beginConfiguration];
         if ([recorder.session canSetSessionPreset:AVCaptureSessionPresetHigh]) {
             recorder.session.sessionPreset = AVCaptureSessionPresetHigh;
         }
         if (![recorder.session canAddInput:input]) {
             [recorder.session commitConfiguration];
+            stopIOSDeviceRecording();
             if (errorOut) {
                 *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
                                                 code:3
@@ -269,6 +276,7 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
         [recorder.session addInput:input];
         if (![recorder.session canAddOutput:recorder.movieOutput]) {
             [recorder.session commitConfiguration];
+            stopIOSDeviceRecording();
             if (errorOut) {
                 *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
                                                 code:4
@@ -297,7 +305,7 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
                 !startCameraRecording(cameraOutputPath, cameraDeviceId, &cameraError)) {
                 MRSyncConfigurePrimaryStart(NO);
                 MRSyncConfigure(NO);
-                g_iosRecorder = nil;
+                stopIOSDeviceRecording();
                 if (errorOut) {
                     *errorOut = cameraError ?: [NSError errorWithDomain:@"MacRecorderIOS"
                                                                     code:7
@@ -314,7 +322,7 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
                 if (isCameraRecording()) stopCameraRecording();
                 MRSyncConfigurePrimaryStart(NO);
                 MRSyncConfigure(NO);
-                g_iosRecorder = nil;
+                stopIOSDeviceRecording();
                 if (errorOut) {
                     *errorOut = audioError ?: [NSError errorWithDomain:@"MacRecorderIOS"
                                                                   code:8
@@ -335,23 +343,24 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
                                                 code:5
                                             userInfo:@{NSLocalizedDescriptionKey: @"The iPhone capture session did not start"}];
             }
-            g_iosRecorder = nil;
+            stopIOSDeviceRecording();
             return false;
         }
 
+        recorder.startRequested = YES;
         [recorder.movieOutput startRecordingToOutputFileURL:[NSURL fileURLWithPath:outputPath]
                                           recordingDelegate:recorder];
         bool started = MRWaitForFlag(^bool{
-            return recorder.startCompleted;
+            return recorder.startCompleted || recorder.finishCompleted;
         }, 10.0);
-        if (!started) {
+        if (!started || !recorder.startCompleted || recorder.finishCompleted) {
             if (recorder.movieOutput.isRecording) [recorder.movieOutput stopRecording];
             [recorder.session stopRunning];
             if (isCameraRecording()) stopCameraRecording();
             if (isStandaloneAudioRecording()) stopStandaloneAudioRecording();
             MRSyncConfigurePrimaryStart(NO);
             MRSyncConfigure(NO);
-            g_iosRecorder = nil;
+            stopIOSDeviceRecording();
             if (errorOut) {
                 *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
                                                 code:6
@@ -368,7 +377,7 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
             if (isStandaloneAudioRecording()) stopStandaloneAudioRecording();
             MRSyncConfigurePrimaryStart(NO);
             MRSyncConfigure(NO);
-            g_iosRecorder = nil;
+            stopIOSDeviceRecording();
             if (errorOut) {
                 *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
                                                 code:9
@@ -377,33 +386,52 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
             return false;
         }
         return true;
+    } @catch (NSException *exception) {
+        // NSError must live in the caller's autorelease pool. The previous
+        // inner pool returned a dangling NSError on device/startup failures.
+        if (g_iosRecorder && !g_iosRecorder.startCompleted && !g_iosRecorder.movieOutput.isRecording) {
+            g_iosRecorder.startRequested = NO;
+        }
+        @try { [g_iosRecorder.session commitConfiguration]; } @catch (NSException *ignored) {}
+        stopIOSDeviceRecording();
+        if (errorOut) *errorOut = [NSError errorWithDomain:@"MacRecorderIOS" code:10
+            userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"iPhone capture startup failed"}];
+        return false;
     }
 }
 
 extern "C" bool stopIOSDeviceRecording(void) {
     @autoreleasepool {
+      @try {
         MRIOSDeviceRecorder *recorder = g_iosRecorder;
         if (!recorder) return true;
 
+        recorder.stopRequested = YES;
         if (recorder.primaryStartedAt) {
-            NSTimeInterval duration = MAX(0.0, -[recorder.primaryStartedAt timeIntervalSinceNow]);
+            NSTimeInterval duration = MAX(0.0,
+                -[recorder.primaryStartedAt timeIntervalSinceNow] - MRSyncGetPausedDurationSeconds());
             MRSyncSetStopLimitSeconds(duration);
         }
 
         BOOL cameraStopped = YES;
         BOOL microphoneStopped = YES;
-        if (recorder.captureCamera && isCameraRecording()) {
+        if (recorder.captureCamera) {
             cameraStopped = stopCameraRecording();
         }
-        if (recorder.captureMicrophone && isStandaloneAudioRecording()) {
+        if (recorder.captureMicrophone) {
             microphoneStopped = stopStandaloneAudioRecording();
         }
 
         if (recorder.movieOutput.isRecording) {
             [recorder.movieOutput stopRecording];
-            MRWaitForFlag(^bool{
-                return recorder.finishCompleted;
-            }, 20.0);
+        }
+        // isRecording becomes false BEFORE the delegate finishes its file.
+        // Keep ownership until that callback, including after USB removal.
+        if (recorder.startRequested && !recorder.finishCompleted) {
+            if (!MRWaitForFlag(^bool{ return recorder.finishCompleted; }, 20.0)) {
+                NSLog(@"[Recorder] iPhone is still finalizing; retaining the session");
+                return false;
+            }
         }
         if (recorder.session.isRunning) [recorder.session stopRunning];
 
@@ -425,11 +453,58 @@ extern "C" bool stopIOSDeviceRecording(void) {
         // auxiliary source failed to finalize. The JS layer validates each
         // returned path independently before packaging it.
         return finished && fileExists;
+      } @catch (NSException *exception) {
+        NSLog(@"[Recorder] iPhone stop failed safely: %@", exception.reason);
+        return false;
+      }
     }
+}
+
+extern "C" bool isIOSDeviceRecordingPending(void) {
+    return g_iosRecorder != nil;
+}
+
+extern "C" bool isIOSDeviceRecordingStopping(void) {
+    return g_iosRecorder && g_iosRecorder.stopRequested;
 }
 
 extern "C" bool isIOSDeviceRecording(void) {
     return g_iosRecorder && (g_iosRecorder.recording || g_iosRecorder.movieOutput.isRecording);
+}
+
+extern "C" bool pauseIOSDeviceRecording(void) {
+    @autoreleasepool {
+        MRIOSDeviceRecorder *recorder = g_iosRecorder;
+        if (!recorder || !recorder.movieOutput.isRecording) return false;
+        if (recorder.movieOutput.isRecordingPaused) return true;
+        @try {
+            [recorder.movieOutput pauseRecording];
+            MRSyncPause();
+            return true;
+        } @catch (NSException *exception) {
+            MRLog(@"❌ iPhone pause failed: %@", exception.reason);
+            return false;
+        }
+    }
+}
+
+extern "C" bool resumeIOSDeviceRecording(void) {
+    @autoreleasepool {
+        MRIOSDeviceRecorder *recorder = g_iosRecorder;
+        if (!recorder || !recorder.movieOutput.isRecording) return false;
+        if (!recorder.movieOutput.isRecordingPaused) {
+            MRSyncResume();
+            return true;
+        }
+        @try {
+            [recorder.movieOutput resumeRecording];
+            MRSyncResume();
+            return true;
+        } @catch (NSException *exception) {
+            MRLog(@"❌ iPhone resume failed: %@", exception.reason);
+            return false;
+        }
+    }
 }
 
 extern "C" NSString *currentIOSDeviceRecordingPath(void) {
@@ -438,6 +513,8 @@ extern "C" NSString *currentIOSDeviceRecordingPath(void) {
 
 Napi::Value GetIOSCaptureDevices(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    @autoreleasepool {
+      @try {
     NSArray<NSDictionary *> *devices = listIOSCaptureDevices();
     Napi::Array result = Napi::Array::New(env, devices.count);
     for (NSUInteger index = 0; index < devices.count; index++) {
@@ -456,10 +533,18 @@ Napi::Value GetIOSCaptureDevices(const Napi::CallbackInfo& info) {
         result.Set(index, item);
     }
     return result;
+      } @catch (NSException *exception) {
+        Napi::Error::New(env, exception.reason.UTF8String ?: "iPhone capture failed").ThrowAsJavaScriptException();
+        return env.Null();
+      }
+    }
+
 }
 
 Napi::Value StartIOSDeviceRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    @autoreleasepool {
+      @try {
     if (info.Length() < 1 || !info[0].IsString()) {
         Napi::TypeError::New(env, "Output path is required").ThrowAsJavaScriptException();
         return env.Null();
@@ -505,21 +590,35 @@ Napi::Value StartIOSDeviceRecording(const Napi::CallbackInfo& info) {
                                            audioDeviceId,
                                            &error);
     if (!success && error) {
-        // startIOSDeviceRecording owns an inner autorelease pool. Do not bridge
-        // the NSError past that pool into V8; the JS wrapper turns false into a
-        // stable user-facing error and avoids a dangling Objective-C object.
-        MRLog(@"❌ iPhone capture could not start");
+        Napi::Error::New(env, error.localizedDescription.UTF8String ?: "iPhone capture could not start").ThrowAsJavaScriptException();
+        return env.Null();
     }
     return Napi::Boolean::New(env, success);
+      } @catch (NSException *exception) {
+        Napi::Error::New(env, exception.reason.UTF8String ?: "iPhone capture failed").ThrowAsJavaScriptException();
+        return env.Null();
+      }
+    }
+
 }
 
 Napi::Value StopIOSDeviceRecording(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), stopIOSDeviceRecording());
 }
 
+Napi::Value PauseIOSDeviceRecording(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), pauseIOSDeviceRecording());
+}
+
+Napi::Value ResumeIOSDeviceRecording(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), resumeIOSDeviceRecording());
+}
+
 Napi::Value GetIOSDeviceRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Object status = Napi::Object::New(info.Env());
     status.Set("isRecording", Napi::Boolean::New(info.Env(), isIOSDeviceRecording()));
+    status.Set("isPaused", Napi::Boolean::New(info.Env(),
+        g_iosRecorder && g_iosRecorder.movieOutput.isRecordingPaused));
     NSString *path = currentIOSDeviceRecordingPath();
     if (path.length > 0) status.Set("outputPath", Napi::String::New(info.Env(), [path UTF8String]));
     return status;
@@ -529,6 +628,8 @@ Napi::Object InitIOSDeviceRecorder(Napi::Env env, Napi::Object exports) {
     exports.Set("getIOSCaptureDevices", Napi::Function::New(env, GetIOSCaptureDevices));
     exports.Set("startIOSDeviceRecording", Napi::Function::New(env, StartIOSDeviceRecording));
     exports.Set("stopIOSDeviceRecording", Napi::Function::New(env, StopIOSDeviceRecording));
+    exports.Set("pauseIOSDeviceRecording", Napi::Function::New(env, PauseIOSDeviceRecording));
+    exports.Set("resumeIOSDeviceRecording", Napi::Function::New(env, ResumeIOSDeviceRecording));
     exports.Set("getIOSDeviceRecordingStatus", Napi::Function::New(env, GetIOSDeviceRecordingStatus));
     return exports;
 }

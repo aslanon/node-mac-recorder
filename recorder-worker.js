@@ -6,6 +6,13 @@
 
 const path = require('path');
 
+// Parent windows can disappear while a native callback is completing.
+function sendToParent(message) {
+    if (!process.connected) return;
+    try { process.send(message, () => {}); } catch (_) {}
+}
+const { waitForNativeIdle } = require('./recorder_runtime_safety.cjs');
+
 // Load native binding directly
 let nativeBinding;
 try {
@@ -14,7 +21,7 @@ try {
     try {
         nativeBinding = require('./build/Debug/mac_recorder.node');
     } catch (debugError) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: 'Native module not found',
             error: error.message
@@ -28,6 +35,12 @@ let isRecording = false;
 let outputPath = null;
 let recordingTimer = null;
 let recordingStartTime = null;
+let isPaused = false;
+let pauseStartedAt = null;
+let pausedDurationMs = 0;
+let recordingStatusInterval = null;
+let recordingStartTimeout = null;
+let captureGeneration = 0;
 
 // Cursor capture state
 let cursorCaptureInterval = null;
@@ -52,6 +65,12 @@ process.on('message', async (msg) => {
             case 'stopRecording':
                 await handleStopRecording();
                 break;
+            case 'pauseRecording':
+                handlePauseRecording();
+                break;
+            case 'resumeRecording':
+                handleResumeRecording();
+                break;
             case 'startCursorCapture':
                 await handleStartCursorCapture(msg.data);
                 break;
@@ -62,16 +81,16 @@ process.on('message', async (msg) => {
                 handleGetStatus();
                 break;
             case 'ping':
-                process.send({ type: 'pong' });
+                sendToParent({ type: 'pong' });
                 break;
             default:
-                process.send({
+                sendToParent({
                     type: 'error',
                     message: `Unknown message type: ${msg.type}`
                 });
         }
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: error.message,
             stack: error.stack
@@ -82,12 +101,12 @@ process.on('message', async (msg) => {
 function handleGetWindows() {
     try {
         const windows = nativeBinding.getWindows();
-        process.send({
+        sendToParent({
             type: 'getWindows:response',
             data: windows
         });
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: `Failed to get windows: ${error.message}`
         });
@@ -97,21 +116,30 @@ function handleGetWindows() {
 function handleGetDisplays() {
     try {
         const displays = nativeBinding.getDisplays();
-        process.send({
+        sendToParent({
             type: 'getDisplays:response',
             data: displays
         });
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: `Failed to get displays: ${error.message}`
         });
     }
 }
 
+function getPausedDurationMs(now = Date.now()) {
+    return pausedDurationMs + (isPaused && pauseStartedAt ? Math.max(0, now - pauseStartedAt) : 0);
+}
+
+function getRecordingTimeSeconds(now = Date.now()) {
+    if (!recordingStartTime) return 0;
+    return Math.floor(Math.max(0, now - recordingStartTime - getPausedDurationMs(now)) / 1000);
+}
+
 async function handleStartRecording(config) {
     if (isRecording) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: 'Recording already in progress in this worker'
         });
@@ -121,6 +149,10 @@ async function handleStartRecording(config) {
     try {
         const { outputPath: outPath, options } = config;
         outputPath = outPath;
+        isPaused = false;
+        pauseStartedAt = null;
+        pausedDurationMs = 0;
+        ++captureGeneration;
 
         console.log(`📝 Worker ${process.pid}: Starting recording to ${outputPath}`);
 
@@ -151,21 +183,21 @@ async function handleStartRecording(config) {
 
             // Start timer for timeUpdate events
             recordingTimer = setInterval(() => {
-                const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
-                process.send({
+                sendToParent({
                     type: 'event',
                     event: 'timeUpdate',
-                    data: elapsed
+                    data: getRecordingTimeSeconds()
                 });
             }, 1000);
 
             // Poll for recording status
-            const checkInterval = setInterval(() => {
+            const checkInterval = recordingStatusInterval = setInterval(() => {
+                if (!isRecording) { clearInterval(checkInterval); return; }
                 try {
                     const nativeStatus = nativeBinding.getRecordingStatus();
                     if (nativeStatus) {
                         clearInterval(checkInterval);
-                        process.send({
+                        sendToParent({
                             type: 'event',
                             event: 'recordingStarted',
                             data: {
@@ -181,11 +213,11 @@ async function handleStartRecording(config) {
             }, 50);
 
             // Timeout fallback
-            setTimeout(() => {
+            recordingStartTimeout = setTimeout(() => {
                 clearInterval(checkInterval);
             }, 5000);
 
-            process.send({
+            sendToParent({
                 type: 'startRecording:response',
                 success: true,
                 data: { outputPath }
@@ -194,8 +226,17 @@ async function handleStartRecording(config) {
             throw new Error('Native recording failed to start');
         }
     } catch (error) {
+        clearInterval(recordingTimer);
+        clearInterval(recordingStatusInterval);
+        clearTimeout(recordingStartTimeout);
+        try {
+            nativeBinding.stopRecording(0);
+            await waitForNativeIdle(nativeBinding);
+        } catch (cleanupError) {
+            console.warn('Worker startup cleanup:', cleanupError.message);
+        }
         isRecording = false;
-        process.send({
+        sendToParent({
             type: 'startRecording:response',
             success: false,
             error: error.message
@@ -203,9 +244,47 @@ async function handleStartRecording(config) {
     }
 }
 
+function handlePauseRecording() {
+    if (!isRecording) {
+        sendToParent({ type: 'pauseRecording:response', success: false, error: 'No recording in progress' });
+        return;
+    }
+    if (!isPaused) {
+        if (typeof nativeBinding.pauseRecording !== 'function' || nativeBinding.pauseRecording() !== true) {
+            sendToParent({ type: 'pauseRecording:response', success: false, error: 'Recording could not be paused' });
+            return;
+        }
+        isPaused = true;
+        pauseStartedAt = Date.now();
+    }
+    const status = buildStatus();
+    sendToParent({ type: 'event', event: 'paused', data: status });
+    sendToParent({ type: 'pauseRecording:response', success: true, data: status });
+}
+
+function handleResumeRecording() {
+    if (!isRecording) {
+        sendToParent({ type: 'resumeRecording:response', success: false, error: 'No recording in progress' });
+        return;
+    }
+    if (isPaused) {
+        if (typeof nativeBinding.resumeRecording !== 'function' || nativeBinding.resumeRecording() !== true) {
+            sendToParent({ type: 'resumeRecording:response', success: false, error: 'Recording could not be resumed' });
+            return;
+        }
+        const resumedAt = Date.now();
+        pausedDurationMs += Math.max(0, resumedAt - pauseStartedAt);
+        pauseStartedAt = null;
+        isPaused = false;
+    }
+    const status = buildStatus();
+    sendToParent({ type: 'event', event: 'resumed', data: status });
+    sendToParent({ type: 'resumeRecording:response', success: true, data: status });
+}
+
 async function handleStopRecording() {
     if (!isRecording) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: 'No recording in progress'
         });
@@ -213,6 +292,8 @@ async function handleStopRecording() {
     }
 
     try {
+        clearInterval(recordingStatusInterval);
+        clearTimeout(recordingStartTimeout);
         // Stop timer
         if (recordingTimer) {
             clearInterval(recordingTimer);
@@ -220,41 +301,47 @@ async function handleStopRecording() {
         }
 
         // Calculate elapsed time for stop limit
-        const elapsedSeconds = recordingStartTime
-            ? (Date.now() - recordingStartTime) / 1000
-            : 0;
+        const elapsedSeconds = getRecordingTimeSeconds();
+        const totalPausedSeconds = getPausedDurationMs() / 1000;
 
         // Stop native recording
         const success = nativeBinding.stopRecording(elapsedSeconds);
+        await waitForNativeIdle(nativeBinding);
 
         isRecording = false;
+        isPaused = false;
+        pauseStartedAt = null;
 
-        process.send({
+        sendToParent({
             type: 'event',
             event: 'stopped',
             data: {
                 code: success ? 0 : 1,
-                outputPath: outputPath
+                outputPath: outputPath,
+                recordingTime: elapsedSeconds,
+                pausedDuration: totalPausedSeconds
             }
         });
 
-        process.send({
+        sendToParent({
             type: 'stopRecording:response',
             success: true,
-            data: { outputPath }
+            data: { outputPath, recordingTime: elapsedSeconds, pausedDuration: totalPausedSeconds }
         });
 
-        // Small delay to ensure file is written
+        const completedPath = outputPath;
+        const completedGeneration = captureGeneration;
         setTimeout(() => {
-            process.send({
+            if (completedGeneration !== captureGeneration) return;
+            sendToParent({
                 type: 'event',
                 event: 'completed',
-                data: outputPath
+                data: completedPath
             });
         }, 1000);
 
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'stopRecording:response',
             success: false,
             error: error.message
@@ -262,21 +349,25 @@ async function handleStopRecording() {
     }
 }
 
+function buildStatus() {
+    const nativeStatus = nativeBinding.getRecordingStatus();
+    return {
+        isRecording: isRecording && nativeStatus,
+        isPaused,
+        outputPath,
+        recordingTime: getRecordingTimeSeconds(),
+        pausedDuration: getPausedDurationMs() / 1000
+    };
+}
+
 function handleGetStatus() {
     try {
-        const nativeStatus = nativeBinding.getRecordingStatus();
-        process.send({
+        sendToParent({
             type: 'getStatus:response',
-            data: {
-                isRecording: isRecording && nativeStatus,
-                outputPath: outputPath,
-                recordingTime: recordingStartTime
-                    ? Math.floor((Date.now() - recordingStartTime) / 1000)
-                    : 0
-            }
+            data: buildStatus()
         });
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: `Failed to get status: ${error.message}`
         });
@@ -287,7 +378,7 @@ async function handleStartCursorCapture(config) {
     const fs = require('fs');
 
     if (cursorCaptureInterval) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: 'Cursor capture already in progress'
         });
@@ -305,13 +396,13 @@ async function handleStartCursorCapture(config) {
             cursorCaptureStartTime = Date.now();
             cursorCaptureFirstWrite = true;
 
-            process.send({
+            sendToParent({
                 type: 'startCursorCapture:response',
                 success: true,
                 data: { filepath }
             });
 
-            process.send({
+            sendToParent({
                 type: 'event',
                 event: 'cursorCaptureStarted',
                 data: { filepath }
@@ -320,7 +411,7 @@ async function handleStartCursorCapture(config) {
             throw new Error('Native cursor capture failed to start');
         }
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'startCursorCapture:response',
             success: false,
             error: error.message
@@ -330,7 +421,7 @@ async function handleStartCursorCapture(config) {
 
 async function handleStopCursorCapture() {
     if (!cursorCaptureFile) {
-        process.send({
+        sendToParent({
             type: 'error',
             message: 'No cursor capture in progress'
         });
@@ -352,19 +443,19 @@ async function handleStopCursorCapture() {
             cursorCaptureInterval = null;
         }
 
-        process.send({
+        sendToParent({
             type: 'stopCursorCapture:response',
             success: true,
             data: { filepath }
         });
 
-        process.send({
+        sendToParent({
             type: 'event',
             event: 'cursorCaptureStopped',
             data: { filepath }
         });
     } catch (error) {
-        process.send({
+        sendToParent({
             type: 'stopCursorCapture:response',
             success: false,
             error: error.message
@@ -372,28 +463,27 @@ async function handleStopCursorCapture() {
     }
 }
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    if (isRecording) {
-        try {
-            nativeBinding.stopRecording(0);
-        } catch (error) {
-            // Ignore cleanup errors
-        }
+// Finalize writers before releasing the child process on parent cleanup.
+let shuttingDown = false;
+async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    clearInterval(recordingTimer);
+    clearInterval(recordingStatusInterval);
+    clearTimeout(recordingStartTimeout);
+    try {
+        if (cursorCaptureFile) nativeBinding.stopCursorCapture();
+        nativeBinding.stopRecording(0);
+        await waitForNativeIdle(nativeBinding);
+    } catch (error) {
+        console.warn('Worker shutdown cleanup:', error.message);
+    } finally {
+        process.exit(0);
     }
-    process.exit(0);
-});
-
-process.on('SIGINT', () => {
-    if (isRecording) {
-        try {
-            nativeBinding.stopRecording(0);
-        } catch (error) {
-            // Ignore cleanup errors
-        }
-    }
-    process.exit(0);
-});
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('disconnect', shutdown);
 
 // Signal ready
-process.send({ type: 'ready' });
+sendToParent({ type: 'ready' });

@@ -1,3 +1,4 @@
+#import "recording_writer_safety.h"
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
 #import "logging.h"
@@ -250,8 +251,8 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     MRLog(@"🛑 AudioRecorder: Stopping session (external device safe)...");
 
     // Stop session on background thread to avoid blocking
-    AVCaptureSession *sessionToStop = self.session;
-    AVCaptureAudioDataOutput *outputToStop = self.audioOutput;
+    AVCaptureSession *sessionToStop = [self.session retain];
+    AVCaptureAudioDataOutput *outputToStop = [self.audioOutput retain];
 
     // Clear references FIRST to prevent new samples
     self.session = nil;
@@ -260,51 +261,27 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     // Stop session asynchronously with timeout protection
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         @autoreleasepool {
+          @try {
             if ([sessionToStop isRunning]) {
                 MRLog(@"🛑 Stopping AVCaptureSession...");
                 [sessionToStop stopRunning];
                 MRLog(@"✅ AVCaptureSession stopped");
             }
+          } @catch (NSException *exception) {
+            NSLog(@"[Recorder] Microphone session stop failed safely: %@", exception.reason);
+          }
             // Release happens automatically when block completes
         }
     });
 
-    // CRITICAL FIX: Check if writer exists before trying to finish it
-    if (self.writer) {
-        // Only mark as finished if writerInput exists
-        if (self.writerInput) {
-            [self.writerInput markAsFinished];
-        }
-
-        __block BOOL finished = NO;
-        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-
-        [self.writer finishWritingWithCompletionHandler:^{
-            finished = YES;
-            dispatch_semaphore_signal(semaphore);
-        }];
-
-        // SYNC FIX: Match camera timeout (3 seconds) for consistent finish timing
-        const int64_t primaryWaitSeconds = 3;
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(primaryWaitSeconds * NSEC_PER_SEC));
-        long result = dispatch_semaphore_wait(semaphore, timeout);
-
-        if (result != 0 || !finished) {
-            MRLog(@"⚠️ AudioRecorder: Writer still finishing after %ds – waiting longer", (int)primaryWaitSeconds);
-            const int64_t extendedWaitSeconds = 5;
-            dispatch_time_t extendedTimeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(extendedWaitSeconds * NSEC_PER_SEC));
-            result = dispatch_semaphore_wait(semaphore, extendedTimeout);
-        }
-
-        if (result != 0 || !finished) {
-            MRLog(@"⚠️ AudioRecorder: Writer did not finish after extended wait – forcing cancel");
-            [self.writer cancelWriting];
-        } else {
-            MRLog(@"✅ AudioRecorder writer finished successfully");
-        }
-    } else {
-        MRLog(@"⚠️ AudioRecorder: No writer to finish (no audio captured)");
-    }
+    // Detach callbacks before draining; otherwise a late audio sample can
+    // recreate or append to a writer which is being finalized.
+    [sessionToStop release]; // the copied dispatch block owns it now
+    @try { [outputToStop setSampleBufferDelegate:nil queue:nil]; }
+    @catch (NSException *exception) { NSLog(@"[Recorder] Microphone delegate detach: %@", exception.reason); }
+    [outputToStop release];
+    if (g_audioCaptureQueue) dispatch_sync(g_audioCaptureQueue, ^{});
+    MRFinishAssetWriterSafely(self.writer, 8.0);
 
     self.writer = nil;
     self.writerInput = nil;
@@ -319,6 +296,11 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
 #pragma mark - AVCaptureAudioDataOutputSampleBufferDelegate
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    if (!self.session || output != self.audioOutput) return;
+    @try {
+    if (MRSyncIsPaused()) {
+        return;
+    }
     if (!CMSampleBufferDataIsReady(sampleBuffer)) {
         return;
     }
@@ -390,6 +372,7 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
                         if (CMTIME_COMPARE_INLINE(adjustedPTS, <, kCMTimeZero)) {
                             adjustedPTS = kCMTimeZero;
                         }
+                        adjustedPTS = MRSyncAdjustForPauses(adjustedPTS);
                         timingInfo[i].presentationTimeStamp = adjustedPTS;
                         
                         if (stopLimit > 0) {
@@ -409,7 +392,7 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
                         if (CMTIME_COMPARE_INLINE(adjustedDTS, <, kCMTimeZero)) {
                             adjustedDTS = kCMTimeZero;
                         }
-                        timingInfo[i].decodeTimeStamp = adjustedDTS;
+                        timingInfo[i].decodeTimeStamp = MRSyncAdjustForPauses(adjustedDTS);
                     }
                 }
                 
@@ -433,7 +416,8 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
         // No timing info available; approximate using buffer timestamp.
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
         if (CMTIME_IS_VALID(pts)) {
-            double relativeStart = CMTimeGetSeconds(CMTimeSubtract(pts, self.startTime));
+            double relativeStart = CMTimeGetSeconds(
+                MRSyncAdjustForPauses(CMTimeSubtract(pts, self.startTime)));
             if (relativeStart > stopLimit + audioTolerance) {
                 shouldDropBuffer = YES;
             }
@@ -454,6 +438,10 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     if (bufferToAppend != sampleBuffer) {
         CFRelease(bufferToAppend);
     }
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Audio sample failed safely: %@", exception.reason);
+    }
+
 }
 
 @end
@@ -532,8 +520,8 @@ bool startStandaloneAudioRecording(NSString *outputPath,
         return false;
     }
     
-    __block BOOL audioPermissionGranted = YES;
     AVAuthorizationStatus audioStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    __block BOOL audioPermissionGranted = (audioStatus == AVAuthorizationStatusAuthorized);
     if (audioStatus == AVAuthorizationStatusNotDetermined) {
         dispatch_semaphore_t permissionSemaphore = dispatch_semaphore_create(0);
         [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
@@ -555,9 +543,21 @@ bool startStandaloneAudioRecording(NSString *outputPath,
     
     g_audioRecorder = [[NativeAudioRecorder alloc] init];
     if (outputPath && [outputPath length] > 0) {
-        g_lastStandaloneAudioOutputPath = outputPath;
+        NSString *ownedOutputPath = [outputPath copy];
+        [g_lastStandaloneAudioOutputPath release];
+        g_lastStandaloneAudioOutputPath = ownedOutputPath;
     }
-    return [g_audioRecorder startRecordingWithDeviceId:preferredDeviceId outputPath:outputPath error:error];
+    @try {
+        BOOL started = [g_audioRecorder startRecordingWithDeviceId:preferredDeviceId outputPath:outputPath error:error];
+        if (!started) [g_audioRecorder stopRecording];
+        return started;
+    } @catch (NSException *exception) {
+        NSLog(@"[Recorder] Microphone startup failed safely: %@", exception.reason);
+        @try { [g_audioRecorder stopRecording]; } @catch (NSException *cleanupError) {}
+        if (error) *error = [NSError errorWithDomain:@"NativeAudioRecorder" code:-22
+            userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"Microphone startup failed"}];
+        return false;
+    }
 }
 
 bool stopStandaloneAudioRecording() {

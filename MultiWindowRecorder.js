@@ -15,6 +15,9 @@ class MultiWindowRecorder extends EventEmitter {
         this.recorders = [];
         this.windows = [];
         this.isRecording = false;
+        this.isPaused = false;
+        this.pauseStartedAt = null;
+        this.pausedDurationMs = 0;
         this.outputFiles = [];
         this.cursorFiles = [];
         this.cameraFile = null; // Camera output file (from first recorder)
@@ -51,6 +54,11 @@ class MultiWindowRecorder extends EventEmitter {
      */
     async addWindow(windowInfo) {
         const recorder = new MacRecorder();
+        // Child-process errors use EventEmitter's special "error" event.
+        // Listen before the worker can fail (including during addWindow).
+        recorder.on('error', (error) => {
+            this.emit('recorderError', { windowId: windowInfo.id, error: error.message });
+        });
 
         const recorderInfo = {
             recorder,
@@ -255,8 +263,9 @@ class MultiWindowRecorder extends EventEmitter {
             } catch (error) {
                 console.error(`   ❌ Failed to start recorder ${i + 1}:`, error.message);
 
-                // Stop all previously started recorders and cursor tracking
-                for (let j = 0; j < i; j++) {
+                // Cursor setup can fail AFTER the current video started.
+                // Reclaim that recorder too, not just previous windows.
+                for (let j = 0; j <= i; j++) {
                     try {
                         await this.recorders[j].recorder.stopRecording();
                     } catch (stopError) {
@@ -282,7 +291,7 @@ class MultiWindowRecorder extends EventEmitter {
         // Start timeUpdate timer (emit every second)
         this.timeUpdateInterval = setInterval(() => {
             if (this.isRecording && this.metadata.startTime) {
-                const elapsed = Math.floor((Date.now() - this.metadata.startTime) / 1000);
+                const elapsed = this._getRecordingTimeSeconds();
                 this.emit('timeUpdate', elapsed);
             }
         }, 1000);
@@ -301,6 +310,66 @@ class MultiWindowRecorder extends EventEmitter {
             outputFiles: this.outputFiles,
             metadata: this.metadata
         };
+    }
+
+    _getPausedDurationMs(now = Date.now()) {
+        return this.pausedDurationMs +
+            (this.isPaused && this.pauseStartedAt ? Math.max(0, now - this.pauseStartedAt) : 0);
+    }
+
+    _getRecordingTimeSeconds(now = Date.now()) {
+        if (!this.metadata.startTime) return 0;
+        return Math.floor(Math.max(0, now - this.metadata.startTime - this._getPausedDurationMs(now)) / 1000);
+    }
+
+    async pauseRecording() {
+        if (!this.isRecording) throw new Error('No recording in progress');
+        if (this.isPaused) return this.getStatus();
+
+        const pauseResults = await Promise.allSettled(
+            this.recorders.map(recInfo => recInfo.recorder.pauseRecording())
+        );
+        const pauseFailure = pauseResults.find(result => result.status === 'rejected');
+        if (pauseFailure) {
+            const pausedRecorders = this.recorders
+                .filter((_, index) => pauseResults[index].status === 'fulfilled')
+                .map(recInfo => recInfo.recorder);
+            await Promise.allSettled(pausedRecorders.map(recorder => recorder.resumeRecording()));
+            throw pauseFailure.reason;
+        }
+
+        const pausedAt = Date.now();
+        this.cursorRecorder?.pauseCursorCapture?.(pausedAt);
+        this.isPaused = true;
+        this.pauseStartedAt = pausedAt;
+        const status = this.getStatus();
+        this.emit('paused', status);
+        return status;
+    }
+
+    async resumeRecording() {
+        if (!this.isRecording) throw new Error('No recording in progress');
+        if (!this.isPaused) return this.getStatus();
+
+        const resumeResults = await Promise.allSettled(
+            this.recorders.map(recInfo => recInfo.recorder.resumeRecording())
+        );
+        const resumeFailure = resumeResults.find(result => result.status === 'rejected');
+        if (resumeFailure) {
+            const resumedRecorders = this.recorders
+                .filter((_, index) => resumeResults[index].status === 'fulfilled')
+                .map(recInfo => recInfo.recorder);
+            await Promise.allSettled(resumedRecorders.map(recorder => recorder.pauseRecording()));
+            throw resumeFailure.reason;
+        }
+        const resumedAt = Date.now();
+        this.cursorRecorder?.resumeCursorCapture?.(resumedAt);
+        this.pausedDurationMs += Math.max(0, resumedAt - this.pauseStartedAt);
+        this.pauseStartedAt = null;
+        this.isPaused = false;
+        const status = this.getStatus();
+        this.emit('resumed', status);
+        return status;
     }
 
     /**
@@ -392,7 +461,8 @@ class MultiWindowRecorder extends EventEmitter {
         }
 
         // Calculate duration
-        const duration = stopTimestamp - this.metadata.startTime;
+        const pausedDuration = this._getPausedDurationMs(stopTimestamp);
+        const duration = Math.max(0, stopTimestamp - this.metadata.startTime - pausedDuration);
 
         const result = {
             success: results.every(r => r.success),
@@ -402,6 +472,7 @@ class MultiWindowRecorder extends EventEmitter {
             cameraFile: this.cameraFile, // Camera output path (from first recorder)
             audioFile: this.audioFile,   // Audio output path (from first recorder)
             duration: duration,
+            pausedDuration,
             metadata: {
                 ...this.metadata,
                 stopTime: stopTimestamp,
@@ -426,6 +497,10 @@ class MultiWindowRecorder extends EventEmitter {
 
         this.emit('allStopped', result);
 
+        this.isPaused = false;
+        this.pauseStartedAt = null;
+        this.pausedDurationMs = 0;
+
         return result;
     }
 
@@ -435,6 +510,9 @@ class MultiWindowRecorder extends EventEmitter {
     getStatus() {
         return {
             isRecording: this.isRecording,
+            isPaused: this.isPaused,
+            recordingTime: this._getRecordingTimeSeconds(),
+            pausedDuration: this._getPausedDurationMs() / 1000,
             windowCount: this.recorders.length,
             outputFiles: this.outputFiles,
             metadata: this.metadata,
@@ -538,6 +616,9 @@ class MultiWindowRecorder extends EventEmitter {
         this.outputFiles = [];
         this.cursorFiles = [];
         this.isRecording = false;
+        this.isPaused = false;
+        this.pauseStartedAt = null;
+        this.pausedDurationMs = 0;
 
         console.log('✅ Multi-window recorder cleaned up');
     }

@@ -25,12 +25,19 @@ extern "C" {
                                    NSString* qualityPreset);
     bool stopAVFoundationRecording();
     bool isAVFoundationRecording();
+    bool hasAVFoundationRecordingResources();
+    bool isAVFoundationRecordingStopping();
     NSString* getAVFoundationAudioPath();
 
     NSArray<NSDictionary *> *listCameraDevices();
     bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error);
     bool stopCameraRecording();
     bool isCameraRecording();
+    bool isCameraRecordingStopping();
+    bool hasCameraRecordingResources();
+    bool isIOSDeviceRecording();
+    bool isIOSDeviceRecordingPending();
+    bool isIOSDeviceRecordingStopping();
     NSString *currentCameraRecordingPath();
     bool waitForCameraRecordingStart(double timeoutSeconds);
     double currentCameraRecordingStartTime(void);
@@ -85,7 +92,8 @@ static double MRComputeElapsedRecordingSeconds(void) {
     if (!g_hasRecordingStartTime) {
         return -1.0;
     }
-    CFTimeInterval elapsed = CFAbsoluteTimeGetCurrent() - g_recordingStartTime;
+    CFTimeInterval elapsed = CFAbsoluteTimeGetCurrent() - g_recordingStartTime
+        - MRSyncGetPausedDurationSeconds();
     if (elapsed <= 0.0) {
         return -1.0;
     }
@@ -218,11 +226,11 @@ void cleanupRecording() {
     }
     
     // AVFoundation cleanup (supports both Node.js and Electron)
-    if (isAVFoundationRecording()) {
+    if (hasAVFoundationRecordingResources()) {
         stopAVFoundationRecording();
     }
 
-    if (isCameraRecording()) {
+    if (hasCameraRecordingResources()) {
         stopCameraRecording();
     }
     if (isStandaloneAudioRecording()) {
@@ -240,11 +248,20 @@ void cleanupRecording() {
 Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    if (info.Length() < 1) {
+    if (info.Length() < 1 || !info[0].IsString()) {
         Napi::TypeError::New(env, "Output path required").ThrowAsJavaScriptException();
         return env.Null();
     }
     
+    // Do not tear down an active/pending capture from another invocation.
+    if (isCameraRecordingStopping() || isIOSDeviceRecordingPending() || isAVFoundationRecording() || isAVFoundationRecordingStopping()) {
+        return Napi::Boolean::New(env, false);
+    }
+    if (@available(macOS 12.3, *)) {
+        if ([ScreenCaptureKitRecorder isRecording] || [ScreenCaptureKitRecorder isScheduling] ||
+            [ScreenCaptureKitRecorder isCleaningUp]) return Napi::Boolean::New(env, false);
+    }
+
     // IMPORTANT: Clean up any stale recording state before starting
     // This fixes the issue where macOS 14/13 users get "recording already in progress"
     MRLog(@"🧹 Cleaning up any previous recording state...");
@@ -863,11 +880,12 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
 
     // Try ScreenCaptureKit first
     if (@available(macOS 12.3, *)) {
-        if ([ScreenCaptureKitRecorder isRecording]) {
+        if ([ScreenCaptureKitRecorder isRecording] || [ScreenCaptureKitRecorder isScheduling] ||
+            [ScreenCaptureKitRecorder isCleaningUp]) {
             MRLog(@"🛑 Stopping ScreenCaptureKit recording");
 
             // CRITICAL FIX: Stop camera and audio FIRST (they are synchronous)
-            if (isCameraRecording()) {
+            if (hasCameraRecordingResources()) {
                 MRLog(@"🛑 Stopping camera recording...");
                 bool cameraStopped = stopCameraRecording();
                 if (cameraStopped) {
@@ -878,7 +896,7 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
             }
 
             // Stop standalone microphone if it was used (macOS 13/14)
-            if (g_usingStandaloneAudio && isStandaloneAudioRecording()) {
+            if (g_usingStandaloneAudio) {
                 MRLog(@"🛑 Stopping standalone microphone recording...");
                 bool micStopped = stopStandaloneAudioRecording();
                 if (micStopped) {
@@ -894,8 +912,8 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
             // It will set g_isRecording = NO in its completion handler
             [ScreenCaptureKitRecorder stopRecording];
 
-            // DO NOT set g_isRecording here - let ScreenCaptureKit completion handler do it
-            // Otherwise we have a race condition where JS thinks recording stopped but it's still running
+            // Native lifecycle status separately reports asynchronous cleanup.
+            g_isRecording = false;
             g_usingStandaloneAudio = false;
             return Napi::Boolean::New(env, true);
         }
@@ -907,11 +925,11 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     extern NSString* getAVFoundationAudioPath();
     
     @try {
-        if (isAVFoundationRecording()) {
+        if (hasAVFoundationRecordingResources()) {
             MRLog(@"🛑 Stopping AVFoundation recording");
 
-            BOOL cameraWasRecording = isCameraRecording();
-            BOOL audioWasRecording = g_usingStandaloneAudio && isStandaloneAudioRecording();
+            BOOL cameraWasRecording = hasCameraRecordingResources();
+            BOOL audioWasRecording = g_usingStandaloneAudio;
             __block BOOL cameraStopResult = YES;
             __block BOOL audioStopResult = YES;
 
@@ -983,12 +1001,41 @@ Napi::Value StopRecording(const Napi::CallbackInfo& info) {
     }
     
     MRLog(@"⚠️ No active recording found to stop");
-    if (isCameraRecording()) {
+    if (hasCameraRecordingResources()) {
         stopCameraRecording();
     }
+    stopStandaloneAudioRecording();
+    g_usingStandaloneAudio = false;
     g_isRecording = false;
     MRSyncSetStopLimitSeconds(-1.0);
     return Napi::Boolean::New(env, true);
+}
+
+Napi::Value PauseRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool recording = g_isRecording || hasAVFoundationRecordingResources();
+    if (@available(macOS 12.3, *)) {
+        recording = recording || [ScreenCaptureKitRecorder isRecording];
+    }
+    if (!recording) {
+        Napi::Error::New(env, "No active recording to pause").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    MRSyncPause();
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value ResumeRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (!MRSyncIsPaused()) {
+        return Napi::Boolean::New(env, true);
+    }
+    MRSyncResume();
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value GetRecordingPauseStatus(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), MRSyncIsPaused());
 }
 
 
@@ -1375,6 +1422,26 @@ Napi::Value PrewarmScreenCapture(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, false);
 }
 
+// Actual native state, independent of the legacy first-ten-frames/UI flag.
+Napi::Value GetRecordingLifecycleStatus(const Napi::CallbackInfo& info) {
+    bool recording = hasAVFoundationRecordingResources() || isIOSDeviceRecordingPending();
+    bool starting = false;
+    bool stopping = isCameraRecordingStopping() || isIOSDeviceRecordingStopping() || isAVFoundationRecordingStopping();
+    if (@available(macOS 12.3, *)) {
+        recording = recording || [ScreenCaptureKitRecorder isRecording];
+        starting = [ScreenCaptureKitRecorder isScheduling];
+        stopping = stopping || [ScreenCaptureKitRecorder isCleaningUp];
+    }
+    Napi::Object result = Napi::Object::New(info.Env());
+    result.Set("isRecording", recording);
+    result.Set("isStarting", starting);
+    result.Set("isStopping", stopping);
+    result.Set("isPaused", MRSyncIsPaused());
+    result.Set("pausedDuration", MRSyncGetPausedDurationSeconds());
+    result.Set("hasAuxiliaryRecording", hasCameraRecordingResources() || isStandaloneAudioRecording());
+    return result;
+}
+
 Napi::Value GetRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -1755,8 +1822,12 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
 
 // Initialize NAPI Module
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    exports.Set("getRecordingLifecycleStatus", Napi::Function::New(env, GetRecordingLifecycleStatus));
     exports.Set(Napi::String::New(env, "startRecording"), Napi::Function::New(env, StartRecording));
     exports.Set(Napi::String::New(env, "stopRecording"), Napi::Function::New(env, StopRecording));
+    exports.Set(Napi::String::New(env, "pauseRecording"), Napi::Function::New(env, PauseRecording));
+    exports.Set(Napi::String::New(env, "resumeRecording"), Napi::Function::New(env, ResumeRecording));
+    exports.Set(Napi::String::New(env, "getRecordingPauseStatus"), Napi::Function::New(env, GetRecordingPauseStatus));
 
     exports.Set(Napi::String::New(env, "getAudioDevices"), Napi::Function::New(env, GetAudioDevices));
     exports.Set(Napi::String::New(env, "getCameraDevices"), Napi::Function::New(env, GetCameraDevices));

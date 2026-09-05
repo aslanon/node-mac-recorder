@@ -8,13 +8,14 @@ const fs = require("fs");
 const VIDEO_START_TIMEOUT_MS = 12000;
 const VIDEO_START_POLL_MS = 10;
 
-// Auto-switch to Electron-safe implementation when running under Electron and binary exists
+// The standard addon owns the complete writer/timeline feature set. Keep the
+// legacy Electron-safe implementation opt-in; it cannot pause a writer without
+// finalizing the current file.
 let USE_ELECTRON_SAFE = false;
 let ElectronSafeMacRecorder = null;
 try {
-  const isElectron = !!(process && process.versions && process.versions.electron);
   const preferElectronSafe = process.env.PREFER_ELECTRON_SAFE === "1" || process.env.USE_ELECTRON_SAFE === "1";
-  if (isElectron || preferElectronSafe) {
+  if (preferElectronSafe) {
     const rel = path.join(__dirname, "build", "Release", "mac_recorder_electron.node");
     const dbg = path.join(__dirname, "build", "Debug", "mac_recorder_electron.node");
     if (fs.existsSync(rel) || fs.existsSync(dbg) || preferElectronSafe) {
@@ -53,6 +54,9 @@ class MacRecorder extends EventEmitter {
 		this.outputPath = null;
 		this.recordingTimer = null;
 		this.recordingStartTime = null;
+		this.isPaused = false;
+		this.pauseStartedAt = null;
+		this.pausedDurationMs = 0;
 
 		// MULTI-SESSION: Unique session ID for this recorder instance
 		this.nativeSessionId = null;  // Will be generated when recording starts
@@ -61,6 +65,9 @@ class MacRecorder extends EventEmitter {
 		this.cursorCaptureInterval = null;
 		this.cursorCaptureFile = null;
 		this.cursorCaptureStartTime = null;
+		this.cursorCapturePaused = false;
+		this.cursorPauseStartedAt = null;
+		this.cursorPausedDurationMs = 0;
 		this.cursorCaptureFirstWrite = true;
 		this.lastCapturedData = null;
 		this.cursorDisplayInfo = null;
@@ -212,6 +219,7 @@ class MacRecorder extends EventEmitter {
 		this.audioCaptureActive = options.includeMicrophone === true;
 		this.sessionTimestamp = sessionTimestamp;
 		this.recordingMode = "iphone";
+		this._resetPauseState();
 
 		try {
 			const success = nativeBinding.startIOSDeviceRecording(
@@ -233,10 +241,7 @@ class MacRecorder extends EventEmitter {
 			this.timelineStartTimestamp = this.recordingStartTime;
 			this.syncTimestamp = this.recordingStartTime;
 			this.recordingTimer = setInterval(() => {
-				this.emit(
-					"timeUpdate",
-					Math.floor((Date.now() - this.recordingStartTime) / 1000),
-				);
+				this.emit("timeUpdate", this._getRecordingTimeSeconds());
 			}, 1000);
 
 			const event = {
@@ -272,8 +277,11 @@ class MacRecorder extends EventEmitter {
 			throw new Error("No iPhone recording in progress");
 		}
 		let success = false;
+		const recordingTime = this._getRecordingTimeSeconds();
+		const pausedDuration = this._getPausedDurationMs() / 1000;
 		try {
 			success = nativeBinding.stopIOSDeviceRecording();
+			await require("./recorder_runtime_safety.cjs").waitForNativeIdle(nativeBinding);
 		} finally {
 			if (this.recordingTimer) clearInterval(this.recordingTimer);
 			this.recordingTimer = null;
@@ -289,6 +297,8 @@ class MacRecorder extends EventEmitter {
 			sessionTimestamp: this.sessionTimestamp,
 			syncTimestamp: this.syncTimestamp,
 			sourceType: "iphone",
+			recordingTime,
+			pausedDuration,
 		};
 		if (this.cameraCaptureActive) {
 			this.emit("cameraCaptureStopped", {
@@ -314,6 +324,7 @@ class MacRecorder extends EventEmitter {
 		}
 		this.sessionTimestamp = null;
 		this.syncTimestamp = null;
+		this._resetPauseState();
 		return result;
 	}
 
@@ -525,6 +536,7 @@ class MacRecorder extends EventEmitter {
 		if (!outputPath) {
 			throw new Error("Output path is required");
 		}
+		this._resetPauseState();
 
 		// Seçenekleri güncelle
 		this.setOptions(options);
@@ -913,6 +925,8 @@ class MacRecorder extends EventEmitter {
 				// MULTI-SESSION: Generate unique session ID for this recording
 				// Use provided sessionTimestamp from options, or generate new one
 				const sessionTimestamp = this.options.sessionTimestamp || Date.now();
+                const recordingGeneration = this._captureGeneration;
+                const isCurrentRecording = () => this._captureGeneration === recordingGeneration && !this._stopPromise;
 				this.sessionTimestamp = sessionTimestamp;
 				this.nativeSessionId = `rec_${sessionTimestamp}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -1088,7 +1102,7 @@ class MacRecorder extends EventEmitter {
 						this._videoStartWatcherActive = true;
 						this._videoStartWatcher = (async () => {
 							while (
-								this._videoStartWatcherActive &&
+								this._videoStartWatcherActive && isCurrentRecording() &&
 								Date.now() - watchStart < VIDEO_START_TIMEOUT_MS
 							) {
 								const value = readVideoStart();
@@ -1225,10 +1239,7 @@ class MacRecorder extends EventEmitter {
 
 					// Timer başlat (progress tracking için)
 					this.recordingTimer = setInterval(() => {
-						const elapsed = Math.floor(
-							(Date.now() - this.recordingStartTime) / 1000
-						);
-						this.emit("timeUpdate", elapsed);
+						this.emit("timeUpdate", this._getRecordingTimeSeconds());
 					}, 1000);
 
 					// Native kayıt gerçekten başladığını kontrol etmek için polling başlat
@@ -1267,6 +1278,10 @@ class MacRecorder extends EventEmitter {
 						}
 					};
 					const pollRecordingStatus = () => {
+                        if (!isCurrentRecording() || !this.isRecording) {
+                            clearInterval(checkRecordingStatus);
+                            return;
+                        }
 						try {
 							const nativeStatus = isNativeRecordingLive();
 							if (nativeStatus && !recordingStartedEmitted) {
@@ -1314,10 +1329,11 @@ class MacRecorder extends EventEmitter {
 						}
 					};
 
-					checkRecordingStatus = setInterval(pollRecordingStatus, 50);
+					checkRecordingStatus = this.recordingStatusInterval = setInterval(pollRecordingStatus, 50);
 
 					// Timeout fallback - 5 saniye sonra hala başlamamışsa emit et
-					setTimeout(() => {
+					this.recordingStartTimeout = setTimeout(() => {
+                        if (!isCurrentRecording() || !this.isRecording) return;
 						if (!recordingStartedEmitted) {
 							recordingStartedEmitted = true;
 							clearInterval(checkRecordingStatus);
@@ -1344,25 +1360,13 @@ class MacRecorder extends EventEmitter {
 				} else {
 					this.cameraCaptureActive = false;
 					if (this.options.captureCamera === true) {
-						if (cameraFilePath && fs.existsSync(cameraFilePath)) {
-							try {
-								fs.unlinkSync(cameraFilePath);
-							} catch (cleanupError) {
-								console.warn("Camera temp file cleanup failed:", cleanupError.message);
-							}
-						}
+                        // Native cleanup owns partially written files; never unlink an active writer.
 						this.cameraCaptureFile = null;
 					}
 
 					if (captureAudio) {
 						this.audioCaptureActive = false;
-						if (audioFilePath && fs.existsSync(audioFilePath)) {
-							try {
-								fs.unlinkSync(audioFilePath);
-							} catch (cleanupError) {
-								console.warn("Audio temp file cleanup failed:", cleanupError.message);
-							}
-						}
+                        // Native cleanup owns partially written files; never unlink an active writer.
 						this.audioCaptureFile = null;
 					}
 
@@ -1383,6 +1387,86 @@ class MacRecorder extends EventEmitter {
 		});
 	}
 
+	_resetPauseState() {
+		this.isPaused = false;
+		this.pauseStartedAt = null;
+		this.pausedDurationMs = 0;
+		this.cursorCapturePaused = false;
+		this.cursorPauseStartedAt = null;
+		this.cursorPausedDurationMs = 0;
+	}
+
+	_getPausedDurationMs(now = Date.now()) {
+		return this.pausedDurationMs +
+			(this.isPaused && this.pauseStartedAt ? Math.max(0, now - this.pauseStartedAt) : 0);
+	}
+
+	_getRecordingTimeSeconds(now = Date.now()) {
+		if (!this.recordingStartTime) return 0;
+		return Math.floor(Math.max(0, now - this.recordingStartTime - this._getPausedDurationMs(now)) / 1000);
+	}
+
+	pauseCursorCapture(pausedAt = Date.now()) {
+		if (!this.cursorCaptureInterval || this.cursorCapturePaused) return false;
+		this.cursorCapturePaused = true;
+		this.cursorPauseStartedAt = pausedAt;
+		return true;
+	}
+
+	resumeCursorCapture(resumedAt = Date.now()) {
+		if (!this.cursorCapturePaused) return false;
+		if (this.cursorPauseStartedAt) {
+			this.cursorPausedDurationMs += Math.max(0, resumedAt - this.cursorPauseStartedAt);
+		}
+		this.cursorCapturePaused = false;
+		this.cursorPauseStartedAt = null;
+		return true;
+	}
+
+	async pauseRecording() {
+		if (!this.isRecording) throw new Error("No recording in progress");
+		if (this.isPaused) return this.getStatus();
+
+		const pauseMethod = this.recordingMode === "iphone"
+			? nativeBinding.pauseIOSDeviceRecording
+			: nativeBinding.pauseRecording;
+		if (typeof pauseMethod !== "function") {
+			throw new Error("This recorder build does not support pausing");
+		}
+		const pausedAt = Date.now();
+		if (pauseMethod.call(nativeBinding) !== true) {
+			throw new Error("Recording could not be paused");
+		}
+		this.isPaused = true;
+		this.pauseStartedAt = pausedAt;
+		this.pauseCursorCapture(pausedAt);
+		const status = this.getStatus();
+		this.emit("paused", status);
+		return status;
+	}
+
+	async resumeRecording() {
+		if (!this.isRecording) throw new Error("No recording in progress");
+		if (!this.isPaused) return this.getStatus();
+
+		const resumeMethod = this.recordingMode === "iphone"
+			? nativeBinding.resumeIOSDeviceRecording
+			: nativeBinding.resumeRecording;
+		if (typeof resumeMethod !== "function") {
+			throw new Error("This recorder build does not support resuming");
+		}
+		if (resumeMethod.call(nativeBinding) !== true) {
+			throw new Error("Recording could not be resumed");
+		}
+		const resumedAt = Date.now();
+		this.pausedDurationMs += Math.max(0, resumedAt - this.pauseStartedAt);
+		this.pauseStartedAt = null;
+		this.isPaused = false;
+		this.resumeCursorCapture(resumedAt);
+		const status = this.getStatus();
+		this.emit("resumed", status);
+		return status;
+	}
 
 	/**
 	 * Ekran kaydını durdurur - SYNCHRONIZED stop for all components
@@ -1400,14 +1484,23 @@ class MacRecorder extends EventEmitter {
 			// Sure, VIDEONUN baslangicindan olculur. recordingStartTime (JS'in
 			// hazir oldugunu fark ettigi an) videodan birkac on ms sonra oldugu
 			// icin buradan hesaplanan stopLimit videoyu kuyrugundan kirpiyordu.
+			// ScreenCaptureKit may publish its first frame hundreds of milliseconds
+			// after cursor capture starts. Cursor metadata compensates that offset, but
+			// the native camera/audio stop limit must use the screen's real t=0.
+			// Otherwise camera files are extended by the startup delay and lip sync
+			// changes from one recording session to the next.
+			const nativeVideoStartTimestamp = Number(this.videoStartTimestamp);
 			const durationReference =
-				this.timelineStartTimestamp && this.timelineStartTimestamp > 0
-					? this.timelineStartTimestamp
-					: this.recordingStartTime;
+				Number.isFinite(nativeVideoStartTimestamp) && nativeVideoStartTimestamp > 0
+					? nativeVideoStartTimestamp
+					: this.timelineStartTimestamp && this.timelineStartTimestamp > 0
+						? this.timelineStartTimestamp
+						: this.recordingStartTime;
 			const elapsedSeconds =
 				durationReference && durationReference > 0
-					? (stopRequestedAt - durationReference) / 1000
+					? Math.max(0, stopRequestedAt - durationReference - this._getPausedDurationMs()) / 1000
 					: -1;
+			const pausedDuration = this._getPausedDurationMs() / 1000;
 			try {
 				console.log('🛑 SYNC: Stopping all recording components simultaneously');
 
@@ -1456,6 +1549,8 @@ class MacRecorder extends EventEmitter {
 					console.log('⚠️ Native stop failed:', nativeError.message);
 					success = true; // Assume success to avoid throwing
 				}
+
+				await require("./recorder_runtime_safety.cjs").waitForNativeIdle(nativeBinding);
 
 				if (this.options.captureCamera === true) {
 					try {
@@ -1527,6 +1622,8 @@ class MacRecorder extends EventEmitter {
 					outputPath: this.outputPath,
 					cameraOutputPath: this.cameraCaptureFile || null,
 					audioOutputPath: this.audioCaptureFile || null,
+					recordingTime: elapsedSeconds > 0 ? elapsedSeconds : this._getRecordingTimeSeconds(),
+					pausedDuration,
 					sessionTimestamp: sessionId,
 					syncTimestamp: this.syncTimestamp,
 				};
@@ -1535,15 +1632,18 @@ class MacRecorder extends EventEmitter {
 
 				if (success) {
 					// Dosyanın oluşturulmasını bekle
+                    const completedOutputPath = this.outputPath;
+                    const completedGeneration = this._captureGeneration;
 					setTimeout(() => {
-						if (fs.existsSync(this.outputPath)) {
-							this.emit("completed", this.outputPath);
+						if (completedGeneration === this._captureGeneration && fs.existsSync(completedOutputPath)) {
+							this.emit("completed", completedOutputPath);
 						}
 					}, 1000);
 				}
 
 				this.sessionTimestamp = null;
 				this.syncTimestamp = null;
+				this._resetPauseState();
 				resolve(result);
 			} catch (error) {
 				this.isRecording = false;
@@ -1553,6 +1653,7 @@ class MacRecorder extends EventEmitter {
 				this.audioCaptureFile = null;
 				this.sessionTimestamp = null;
 				this.syncTimestamp = null;
+				this._resetPauseState();
 				if (this.recordingTimer) {
 					clearInterval(this.recordingTimer);
 					this.recordingTimer = null;
@@ -1566,13 +1667,17 @@ class MacRecorder extends EventEmitter {
 	 * Kayıt durumunu döndürür
 	 */
 	getStatus() {
-		const nativeStatus =
+		const iosStatus =
 			this.recordingMode === "iphone" &&
 			typeof nativeBinding.getIOSDeviceRecordingStatus === "function"
-				? nativeBinding.getIOSDeviceRecordingStatus().isRecording === true
-				: nativeBinding.getRecordingStatus();
+				? nativeBinding.getIOSDeviceRecordingStatus()
+				: null;
+		const nativeStatus = iosStatus
+			? iosStatus.isRecording === true
+			: nativeBinding.getRecordingStatus();
 		return {
 			isRecording: this.isRecording && nativeStatus,
+			isPaused: this.isPaused || iosStatus?.isPaused === true,
 			outputPath: this.outputPath,
 			cameraOutputPath: this.cameraCaptureFile || null,
 			audioOutputPath: this.audioCaptureFile || null,
@@ -1581,9 +1686,8 @@ class MacRecorder extends EventEmitter {
 			sessionTimestamp: this.sessionTimestamp,
 			syncTimestamp: this.syncTimestamp,
 			options: this.options,
-			recordingTime: this.recordingStartTime
-				? Math.floor((Date.now() - this.recordingStartTime) / 1000)
-				: 0,
+			recordingTime: this._getRecordingTimeSeconds(),
+			pausedDuration: this._getPausedDurationMs() / 1000,
 		};
 	}
 
@@ -1890,6 +1994,9 @@ class MacRecorder extends EventEmitter {
 				this.cursorCaptureFile = filepath;
 				// SYNC FIX: Use synchronized start time for accurate timestamp calculation
 				this.cursorCaptureStartTime = syncStartTime;
+				this.cursorCapturePaused = false;
+				this.cursorPauseStartedAt = null;
+				this.cursorPausedDurationMs = 0;
 				this.cursorCaptureFirstWrite = true;
 				this.lastCapturedData = null;
 				// Store session timestamp for sync metadata
@@ -1898,8 +2005,9 @@ class MacRecorder extends EventEmitter {
 				// JavaScript interval ile polling yap (daha sık - mouse event'leri yakalamak için)
 				this.cursorCaptureInterval = setInterval(() => {
 					try {
+						if (this.cursorCapturePaused) return;
 						const position = nativeBinding.getCursorPosition();
-						const timestamp = Date.now() - this.cursorCaptureStartTime;
+						const timestamp = Date.now() - this.cursorCaptureStartTime - this.cursorPausedDurationMs;
 
 						// Video-relative coordinate transformation for all recording types
 						let x = position.x;
@@ -2090,6 +2198,9 @@ class MacRecorder extends EventEmitter {
 				// Değişkenleri temizle
 				this.lastCapturedData = null;
 				this.cursorCaptureStartTime = null;
+				this.cursorCapturePaused = false;
+				this.cursorPauseStartedAt = null;
+				this.cursorPausedDurationMs = 0;
 				this.cursorCaptureFirstWrite = true;
 				this.cursorDisplayInfo = null;
 
@@ -2433,4 +2544,5 @@ class MacRecorder extends EventEmitter {
 // WindowSelector modülünü de export edelim
 MacRecorder.WindowSelector = require('./window-selector');
 
+if (!USE_ELECTRON_SAFE) require("./recorder_runtime_safety.cjs")(MacRecorder, nativeBinding);
 module.exports = USE_ELECTRON_SAFE ? ElectronSafeMacRecorder : MacRecorder;
