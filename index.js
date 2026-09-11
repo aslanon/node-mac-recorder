@@ -2007,7 +2007,8 @@ class MacRecorder extends EventEmitter {
 				this.cursorCaptureInterval = setInterval(() => {
 					try {
 						if (this.cursorCapturePaused) return;
-						const position = nativeBinding.getCursorPosition();
+						// Geometry was resolved at capture start; scaleFactor is not used here.
+						const position = nativeBinding.getCursorPosition(false);
 						const timestamp = Date.now() - this.cursorCaptureStartTime - this.cursorPausedDurationMs;
 
 						// Video-relative coordinate transformation for all recording types

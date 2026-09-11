@@ -1929,31 +1929,7 @@ NSString* getCursorType() {
     @autoreleasepool {
         g_cursorTypeCounter++;
 
-        // Get cursor position first
-        BOOL hasCursorPosition = NO;
-        CGPoint cursorPos = CGPointZero;
-
-        CGEventRef event = CGEventCreate(NULL);
-        if (event) {
-            cursorPos = CGEventGetLocation(event);
-            hasCursorPosition = YES;
-            CFRelease(event);
-        }
-
-        if (!hasCursorPosition) {
-            if ([NSThread isMainThread]) {
-                cursorPos = [NSEvent mouseLocation];
-                hasCursorPosition = YES;
-            } else {
-                __block CGPoint fallbackPos = CGPointZero;
-                dispatch_sync(dispatch_get_main_queue(), ^{
-                    fallbackPos = [NSEvent mouseLocation];
-                });
-                cursorPos = fallbackPos;
-                hasCursorPosition = YES;
-            }
-        }
-
+        // Position is sampled by the caller; cursor type detection does not use it.
         // Get seed and save to global variable for getCursorPosition()
         int currentSeed = SafeCGSCurrentCursorSeed();
         g_lastCursorSeed = currentSeed; // Save for getCursorPosition()
@@ -2390,7 +2366,11 @@ NSDictionary* getDisplayScalingInfo(CGPoint globalPoint) {
 
 // NAPI Function: Get Current Cursor Position
 Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
+    @autoreleasepool {
     Napi::Env env = info.Env();
+    // Recording already has display-relative geometry. Public callers retain
+    // the full result unless they explicitly opt out of the display query.
+    const bool includeDisplayInfo = !(info.Length() > 0 && info[0].IsBoolean() && !info[0].As<Napi::Boolean>().Value());
     
     @try {
         // Get raw cursor position (may be scaled on Retina displays)
@@ -2454,7 +2434,7 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
         result.Set("seed", Napi::Number::New(env, g_lastCursorSeed));
 
         // Basic display info
-        NSDictionary *scalingInfo = getDisplayScalingInfo(rawLocation);
+        NSDictionary *scalingInfo = includeDisplayInfo ? getDisplayScalingInfo(rawLocation) : nil;
         if (scalingInfo) {
             CGFloat scaleFactor = [[scalingInfo objectForKey:@"scaleFactor"] doubleValue];
             result.Set("scaleFactor", Napi::Number::New(env, scaleFactor));
@@ -2465,6 +2445,7 @@ Napi::Value GetCursorPosition(const Napi::CallbackInfo& info) {
     } @catch (NSException *exception) {
         return env.Null();
     }
+}
 }
 
 // NAPI Function: Get Cursor Tracking Status
