@@ -2,6 +2,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMediaIO/CMIOHardware.h>
 #import <Foundation/Foundation.h>
+#import <IOKit/IOKitLib.h>
 #import "logging.h"
 #import "sync_timeline.h"
 
@@ -27,6 +28,16 @@ extern "C" bool resumeIOSDeviceRecording(void);
 @property(atomic) BOOL startRequested;
 @property(atomic) BOOL stopRequested;
 @property(atomic, strong) NSError *finishError;
+@property(atomic) BOOL paused;
+@property(atomic) BOOL segmentStartCompleted;
+@property(atomic) BOOL segmentFinishCompleted;
+@property(atomic, strong) NSError *segmentFinishError;
+@property(nonatomic, strong) NSMutableArray<NSString *> *segmentPaths;
+@property(nonatomic, copy) NSString *currentSegmentPath;
+@property(nonatomic) NSUInteger nextSegmentIndex;
+@property(nonatomic) BOOL segmentFailure;
+@property(nonatomic, strong) NSMutableArray<NSDictionary<NSString *, NSNumber *> *> *pauseRanges;
+@property(nonatomic) NSTimeInterval pauseStartedAtSeconds;
 @property(nonatomic) BOOL captureCamera;
 @property(nonatomic) BOOL captureMicrophone;
 @property(nonatomic, copy) NSString *cameraOutputPath;
@@ -34,16 +45,45 @@ extern "C" bool resumeIOSDeviceRecording(void);
 @property(nonatomic, strong) NSDate *primaryStartedAt;
 @end
 
+static BOOL MRIOSHasProducedMedia(MRIOSDeviceRecorder *recorder) {
+    if (!recorder.movieOutput.isRecording) return NO;
+    CMTime duration = recorder.movieOutput.recordedDuration;
+    return CMTIME_IS_NUMERIC(duration) &&
+        CMTIME_COMPARE_INLINE(duration, >, kCMTimeZero);
+}
+
+static NSError *MRIOSNoFramesError(void) {
+    return [NSError errorWithDomain:@"MacRecorderIOS"
+                               code:17
+                           userInfo:@{
+        NSLocalizedDescriptionKey:
+            @"iPhone is connected but is not sending video. Unlock it, keep the screen awake, then try again."
+    }];
+}
+
+static void MRIOSMarkSegmentStarted(MRIOSDeviceRecorder *recorder,
+                                    BOOL confirmedByDelegate) {
+    recorder.recording = YES;
+    recorder.segmentStartCompleted = YES;
+    if (!recorder.startCompleted) {
+        recorder.startCompleted = YES;
+        recorder.primaryStartedAt = [NSDate date];
+        if (!recorder.stopRequested) {
+            MRSyncMarkPrimaryStarted(CMClockGetTime(CMClockGetHostTimeClock()));
+        }
+    }
+    if (!confirmedByDelegate) {
+        MRLog(@"✅ iPhone capture start confirmed from recorded media progress");
+    }
+}
+
 @implementation MRIOSDeviceRecorder
 
 - (void)captureOutput:(AVCaptureFileOutput *)captureOutput
         didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
         fromConnections:(NSArray<AVCaptureConnection *> *)connections {
-    self.recording = YES;
-    self.startCompleted = YES;
-    self.primaryStartedAt = [NSDate date];
-    if (!self.stopRequested) MRSyncMarkPrimaryStarted(CMClockGetTime(CMClockGetHostTimeClock()));
-    MRLog(@"📱 iPhone capture started: %@", fileURL.path);
+    MRIOSMarkSegmentStarted(self, YES);
+    MRLog(@"📱 iPhone capture segment started: %@", fileURL.path);
 }
 
 - (void)captureOutput:(AVCaptureFileOutput *)captureOutput
@@ -51,16 +91,26 @@ extern "C" bool resumeIOSDeviceRecording(void);
         fromConnections:(NSArray<AVCaptureConnection *> *)connections
         error:(NSError *)error {
     self.recording = NO;
-    self.finishError = error;
-    self.finishCompleted = YES;
+    self.segmentFinishError = error;
+    self.segmentFinishCompleted = YES;
+    if (self.stopRequested) {
+        self.finishError = error;
+        self.finishCompleted = YES;
+    }
     if (error) {
         NSNumber *successfullyFinished = error.userInfo[AVErrorRecordingSuccessfullyFinishedKey];
         if (![successfullyFinished boolValue]) {
-            MRLog(@"❌ iPhone capture finalize failed: %@", error.localizedDescription);
+            self.segmentFailure = YES;
+            MRLog(@"❌ iPhone capture segment finalize failed: %@ (domain=%@, code=%ld, reason=%@, userInfo=%@)",
+                  error.localizedDescription,
+                  error.domain,
+                  (long)error.code,
+                  error.localizedFailureReason ?: @"",
+                  error.userInfo ?: @{});
             return;
         }
     }
-    MRLog(@"✅ iPhone capture finalized: %@", outputFileURL.path);
+    MRLog(@"✅ iPhone capture segment finalized: %@", outputFileURL.path);
 }
 
 @end
@@ -68,28 +118,31 @@ extern "C" bool resumeIOSDeviceRecording(void);
 static MRIOSDeviceRecorder *g_iosRecorder = nil;
 
 static void MREnableIOSScreenCaptureDevices(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        CMIOObjectPropertyAddress address = {
-            kCMIOHardwarePropertyAllowScreenCaptureDevices,
-            kCMIOObjectPropertyScopeGlobal,
-            kCMIOObjectPropertyElementMain
-        };
-        UInt32 allow = 1;
-        OSStatus status = CMIOObjectSetPropertyData(
-            kCMIOObjectSystemObject,
-            &address,
-            0,
-            NULL,
-            sizeof(allow),
-            &allow
-        );
-        if (status == noErr) {
+    // Reapply this process-level opt-in before every discovery. CoreMediaIO can
+    // restart after a cable/session transition; dispatch_once would then leave
+    // the replacement service without the flag and later scans would be empty.
+    CMIOObjectPropertyAddress address = {
+        kCMIOHardwarePropertyAllowScreenCaptureDevices,
+        kCMIOObjectPropertyScopeGlobal,
+        kCMIOObjectPropertyElementMain
+    };
+    UInt32 allow = 1;
+    OSStatus status = CMIOObjectSetPropertyData(
+        kCMIOObjectSystemObject,
+        &address,
+        0,
+        NULL,
+        sizeof(allow),
+        &allow
+    );
+    if (status == noErr) {
+        static dispatch_once_t successLogToken;
+        dispatch_once(&successLogToken, ^{
             MRLog(@"✅ CoreMediaIO iPhone screen capture devices enabled");
-        } else {
-            MRLog(@"❌ CoreMediaIO could not enable iPhone screen capture devices (OSStatus=%d)", (int)status);
-        }
-    });
+        });
+    } else {
+        MRLog(@"❌ CoreMediaIO could not enable iPhone screen capture devices (OSStatus=%d)", (int)status);
+    }
 }
 
 static NSArray<AVCaptureDevice *> *MRDiscoverIOSCaptureDevices(void) {
@@ -126,17 +179,94 @@ static NSArray<AVCaptureDevice *> *MRDiscoverIOSCaptureDevices(void) {
     return result;
 }
 
-static NSArray<AVCaptureDevice *> *MRIOSCaptureDevices(void) {
+static NSString *MRUSBStringProperty(io_service_t service, CFStringRef key) {
+    CFTypeRef value = IORegistryEntryCreateCFProperty(service, key, kCFAllocatorDefault, 0);
+    if (!value) return nil;
+    NSString *result = nil;
+    if (CFGetTypeID(value) == CFStringGetTypeID()) {
+        result = [NSString stringWithString:(NSString *)value];
+    }
+    CFRelease(value);
+    return result;
+}
+
+static NSNumber *MRUSBNumberProperty(io_service_t service, CFStringRef key) {
+    CFTypeRef value = IORegistryEntryCreateCFProperty(service, key, kCFAllocatorDefault, 0);
+    if (!value) return nil;
+    NSNumber *result = nil;
+    if (CFGetTypeID(value) == CFNumberGetTypeID() ||
+        CFGetTypeID(value) == CFBooleanGetTypeID()) {
+        result = [NSNumber numberWithLongLong:[(NSNumber *)value longLongValue]];
+    }
+    CFRelease(value);
+    return result;
+}
+
+static NSArray<NSDictionary *> *MRUSBConnectedIOSDevices(void) {
+    NSMutableArray<NSDictionary *> *devices = [NSMutableArray array];
+    CFMutableDictionaryRef matching = IOServiceMatching("IOUSBHostDevice");
+    if (!matching) return devices;
+
+    io_iterator_t iterator = IO_OBJECT_NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    kern_return_t status = IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iterator);
+#pragma clang diagnostic pop
+    if (status != KERN_SUCCESS || iterator == IO_OBJECT_NULL) return devices;
+
+    io_service_t service = IO_OBJECT_NULL;
+    while ((service = IOIteratorNext(iterator))) {
+        NSNumber *supportsIOS = MRUSBNumberProperty(service, CFSTR("SupportsIPhoneOS"));
+        NSNumber *vendorId = MRUSBNumberProperty(service, CFSTR("idVendor"));
+        if (supportsIOS.boolValue && vendorId.unsignedIntegerValue == 0x05ac) {
+            NSString *name = MRUSBStringProperty(service, CFSTR("USB Product Name"));
+            NSString *serial = MRUSBStringProperty(service, CFSTR("USB Serial Number"));
+            if (serial.length == 0) {
+                serial = MRUSBStringProperty(service, CFSTR("kUSBSerialNumberString"));
+            }
+            NSNumber *location = MRUSBNumberProperty(service, CFSTR("locationID"));
+            NSString *identifier = serial.length > 0
+                ? [NSString stringWithFormat:@"usb:%@", serial]
+                : [NSString stringWithFormat:@"usb:%llu", location.unsignedLongLongValue];
+            [devices addObject:@{
+                @"id": identifier,
+                @"name": name.length > 0 ? name : @"iPhone",
+                @"manufacturer": @"Apple",
+                @"model": @"",
+                @"connected": @YES,
+                @"suspended": @YES,
+                @"captureReady": @NO,
+                @"width": @0,
+                @"height": @0,
+                @"hasAudio": @YES,
+                @"transport": @"usb"
+            }];
+        }
+        IOObjectRelease(service);
+    }
+    IOObjectRelease(iterator);
+    return devices;
+}
+
+static NSArray<AVCaptureDevice *> *MRIOSCaptureDevices(NSTimeInterval timeoutSeconds) {
     MREnableIOSScreenCaptureDevices();
 
-    // CoreMediaIO publishes the USB screen device asynchronously after the
-    // allow flag changes. Poll briefly so the first click works without asking
-    // the user to close and reopen the recorder.
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3.0];
+    // CoreMediaIO publishes and resumes the USB screen device asynchronously.
+    // Recording startup may wait briefly for that transition. Inventory scans
+    // request an immediate snapshot so renderer monitoring never blocks the UI.
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX(0.0, timeoutSeconds)];
     NSArray<AVCaptureDevice *> *devices = nil;
     do {
         devices = MRDiscoverIOSCaptureDevices();
-        if (devices.count > 0) break;
+        BOOL hasActiveDevice = NO;
+        for (AVCaptureDevice *device in devices) {
+            if (device.isConnected && !device.isSuspended) {
+                hasActiveDevice = YES;
+                break;
+            }
+        }
+        if (hasActiveDevice) break;
+        if ([deadline timeIntervalSinceNow] <= 0) break;
         [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
                                  beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
     } while ([deadline timeIntervalSinceNow] > 0);
@@ -144,10 +274,16 @@ static NSArray<AVCaptureDevice *> *MRIOSCaptureDevices(void) {
 }
 
 static AVCaptureDevice *MRIOSDeviceForId(NSString *deviceId) {
-    NSArray<AVCaptureDevice *> *devices = MRIOSCaptureDevices();
-    if (deviceId.length == 0) return devices.firstObject;
+    NSArray<AVCaptureDevice *> *devices = MRIOSCaptureDevices(3.0);
+    if (deviceId.length == 0) {
+        for (AVCaptureDevice *device in devices) {
+            if (device.isConnected && !device.isSuspended) return device;
+        }
+        return nil;
+    }
     for (AVCaptureDevice *device in devices) {
-        if ([device.uniqueID isEqualToString:deviceId]) return device;
+        if ([device.uniqueID isEqualToString:deviceId] &&
+            device.isConnected && !device.isSuspended) return device;
     }
     return nil;
 }
@@ -161,9 +297,295 @@ static bool MRWaitForFlag(bool (^readFlag)(void), NSTimeInterval timeoutSeconds)
     return readFlag();
 }
 
+static BOOL MRIOSFileOutputSucceeded(NSError *error) {
+    if (!error) return YES;
+    NSNumber *successfullyFinished = error.userInfo[AVErrorRecordingSuccessfullyFinishedKey];
+    return [successfullyFinished boolValue];
+}
+
+static NSTimeInterval MRIOSRecordedDurationSeconds(MRIOSDeviceRecorder *recorder) {
+    CMTime duration = recorder.movieOutput.recordedDuration;
+    if (CMTIME_IS_NUMERIC(duration) &&
+        CMTIME_COMPARE_INLINE(duration, >=, kCMTimeZero)) {
+        return MAX(0.0, CMTimeGetSeconds(duration));
+    }
+    if (recorder.primaryStartedAt) {
+        return MAX(0.0, -[recorder.primaryStartedAt timeIntervalSinceNow]);
+    }
+    return 0.0;
+}
+
+static void MRIOSBeginPauseRange(MRIOSDeviceRecorder *recorder) {
+    recorder.pauseStartedAtSeconds = MRIOSRecordedDurationSeconds(recorder);
+    MRLog(@"⏸️ iPhone capture pause marker at %.3f seconds",
+          recorder.pauseStartedAtSeconds);
+}
+
+static void MRIOSEndPauseRange(MRIOSDeviceRecorder *recorder) {
+    if (recorder.pauseStartedAtSeconds < 0.0) return;
+    NSTimeInterval end = MRIOSRecordedDurationSeconds(recorder);
+    NSTimeInterval start = recorder.pauseStartedAtSeconds;
+    recorder.pauseStartedAtSeconds = -1.0;
+    if (end <= start) return;
+    [recorder.pauseRanges addObject:@{
+        @"start": @(start),
+        @"end": @(end)
+    }];
+    MRLog(@"▶️ iPhone capture resume marker at %.3f seconds (trim %.3f seconds)",
+          end, end - start);
+}
+
+static NSString *MRIOSNextSegmentPath(MRIOSDeviceRecorder *recorder) {
+    NSUInteger segmentIndex = recorder.nextSegmentIndex;
+    recorder.nextSegmentIndex += 1;
+    // A single continuously captured iPhone movie does not need an intermediate
+    // filename. More importantly, some CoreMediaIO muxed devices reject a
+    // re-targeted AVCaptureMovieFileOutput URL even though the same session can
+    // record to the original requested path (the pre-segmentation behavior).
+    if (segmentIndex == 0) return recorder.outputPath;
+    NSString *base = [recorder.outputPath stringByDeletingPathExtension];
+    NSString *path = [NSString stringWithFormat:@"%@.iphone-part-%03lu.mov",
+                      base, (unsigned long)segmentIndex];
+    return path;
+}
+
+static BOOL MRIOSStartNextSegment(MRIOSDeviceRecorder *recorder, NSError **errorOut) {
+    NSString *segmentPath = MRIOSNextSegmentPath(recorder);
+    [[NSFileManager defaultManager] removeItemAtPath:segmentPath error:nil];
+    recorder.currentSegmentPath = segmentPath;
+    recorder.segmentStartCompleted = NO;
+    recorder.segmentFinishCompleted = NO;
+    recorder.segmentFinishError = nil;
+    recorder.recording = NO;
+
+    [recorder.movieOutput startRecordingToOutputFileURL:[NSURL fileURLWithPath:segmentPath]
+                                      recordingDelegate:recorder];
+    // AVCaptureMovieFileOutput can begin writing before its delegate callback
+    // is delivered. That callback may be queued behind Electron's synchronous
+    // native call, so requiring only the callback creates a false timeout even
+    // though real frames are already reaching the file. Recorded duration is
+    // an independent, frame-backed confirmation and is safe to use as the
+    // fallback start signal.
+    BOOL startObserved = MRWaitForFlag(^bool{
+        return recorder.segmentStartCompleted ||
+            recorder.segmentFinishCompleted ||
+            MRIOSHasProducedMedia(recorder);
+    }, 10.0);
+    if (!recorder.segmentStartCompleted &&
+        !recorder.segmentFinishCompleted &&
+        MRIOSHasProducedMedia(recorder)) {
+        MRIOSMarkSegmentStarted(recorder, NO);
+    }
+    BOOL started = startObserved && recorder.segmentStartCompleted &&
+        recorder.movieOutput.isRecording && !recorder.segmentFinishCompleted;
+    if (!started) {
+        CMTime duration = recorder.movieOutput.recordedDuration;
+        double durationSeconds = CMTIME_IS_NUMERIC(duration)
+            ? MAX(0.0, CMTimeGetSeconds(duration))
+            : 0.0;
+        MRLog(@"❌ iPhone segment start timed out (sessionRunning=%@, outputRecording=%@, mediaDuration=%.3f, suspended=%@, connections=%lu)",
+              recorder.session.isRunning ? @"YES" : @"NO",
+              recorder.movieOutput.isRecording ? @"YES" : @"NO",
+              durationSeconds,
+              recorder.deviceInput.device.isSuspended ? @"YES" : @"NO",
+              (unsigned long)recorder.movieOutput.connections.count);
+        if (errorOut) {
+            BOOL connectedButNoFrames = recorder.session.isRunning &&
+                recorder.movieOutput.isRecording && durationSeconds <= 0.0;
+            *errorOut = recorder.segmentFinishError ?: (connectedButNoFrames
+                ? MRIOSNoFramesError()
+                : [NSError errorWithDomain:@"MacRecorderIOS"
+                                      code:11
+                                  userInfo:@{NSLocalizedDescriptionKey: @"Timed out waiting for an iPhone recording segment"}]);
+        }
+        return NO;
+    }
+    [recorder.segmentPaths addObject:segmentPath];
+    return YES;
+}
+
+static BOOL MRIOSStopCurrentSegment(MRIOSDeviceRecorder *recorder) {
+    if (recorder.movieOutput.isRecording) {
+        [recorder.movieOutput stopRecording];
+    }
+    if (recorder.segmentStartCompleted && !recorder.segmentFinishCompleted) {
+        if (!MRWaitForFlag(^bool{ return recorder.segmentFinishCompleted; }, 20.0)) {
+            MRLog(@"⚠️ iPhone segment is still finalizing");
+            return NO;
+        }
+    }
+    if (!recorder.segmentStartCompleted) return YES;
+    BOOL exists = recorder.currentSegmentPath.length > 0 &&
+        [[NSFileManager defaultManager] fileExistsAtPath:recorder.currentSegmentPath];
+    return recorder.segmentFinishCompleted &&
+        MRIOSFileOutputSucceeded(recorder.segmentFinishError) && exists;
+}
+
+static BOOL MRIOSAssembleSegments(MRIOSDeviceRecorder *recorder, NSError **errorOut) {
+    NSArray<NSString *> *segments = recorder.segmentPaths ?: @[];
+    if (segments.count == 0 || recorder.outputPath.length == 0) {
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
+                                            code:12
+                                        userInfo:@{NSLocalizedDescriptionKey: @"No iPhone recording segments were produced"}];
+        }
+        return NO;
+    }
+
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSArray<NSDictionary<NSString *, NSNumber *> *> *pauseRanges = recorder.pauseRanges ?: @[];
+    if (segments.count == 1 && pauseRanges.count == 0) {
+        if ([segments.firstObject isEqualToString:recorder.outputPath]) {
+            BOOL exists = [fileManager fileExistsAtPath:recorder.outputPath];
+            if (exists) MRLog(@"✅ iPhone recording finalized in its destination path");
+            return exists;
+        }
+        [fileManager removeItemAtPath:recorder.outputPath error:nil];
+        BOOL moved = [fileManager moveItemAtPath:segments.firstObject
+                                         toPath:recorder.outputPath
+                                          error:errorOut];
+        if (moved) MRLog(@"✅ iPhone recording finalized without a pause merge");
+        return moved;
+    }
+
+    AVMutableComposition *composition = [AVMutableComposition composition];
+    CMTime insertionTime = kCMTimeZero;
+    for (NSUInteger segmentIndex = 0; segmentIndex < segments.count; segmentIndex++) {
+        NSString *segmentPath = segments[segmentIndex];
+        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:segmentPath]
+                                                options:nil];
+        CMTime duration = asset.duration;
+        if (!CMTIME_IS_NUMERIC(duration) || CMTIME_COMPARE_INLINE(duration, <=, kCMTimeZero)) {
+            if (errorOut) {
+                *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
+                                                code:13
+                                            userInfo:@{NSLocalizedDescriptionKey: @"An iPhone recording segment has no playable duration"}];
+            }
+            return NO;
+        }
+        // New recordings always contain one continuously written iPhone movie.
+        // Keeping AVCaptureMovieFileOutput alive across pause avoids re-arming
+        // the fragile USB muxed compressor. Remove paused ranges here instead.
+        if (segments.count == 1 && pauseRanges.count > 0) {
+            NSTimeInterval assetDuration = CMTimeGetSeconds(duration);
+            NSTimeInterval sourceCursor = 0.0;
+            int32_t timeScale = duration.timescale > 0 ? duration.timescale : 600;
+            for (NSDictionary<NSString *, NSNumber *> *range in pauseRanges) {
+                NSTimeInterval pauseStart = MIN(assetDuration,
+                    MAX(sourceCursor, range[@"start"].doubleValue));
+                NSTimeInterval pauseEnd = MIN(assetDuration,
+                    MAX(pauseStart, range[@"end"].doubleValue));
+                if (pauseStart > sourceCursor) {
+                    CMTime sourceStart = CMTimeMakeWithSeconds(sourceCursor, timeScale);
+                    CMTime keptDuration = CMTimeMakeWithSeconds(pauseStart - sourceCursor, timeScale);
+                    NSError *insertError = nil;
+                    if (![composition insertTimeRange:CMTimeRangeMake(sourceStart, keptDuration)
+                                              ofAsset:asset
+                                               atTime:insertionTime
+                                                error:&insertError]) {
+                        if (errorOut) *errorOut = insertError;
+                        return NO;
+                    }
+                    insertionTime = CMTimeAdd(insertionTime, keptDuration);
+                }
+                sourceCursor = MAX(sourceCursor, pauseEnd);
+            }
+            if (assetDuration > sourceCursor) {
+                CMTime sourceStart = CMTimeMakeWithSeconds(sourceCursor, timeScale);
+                CMTime keptDuration = CMTimeMakeWithSeconds(assetDuration - sourceCursor, timeScale);
+                NSError *insertError = nil;
+                if (![composition insertTimeRange:CMTimeRangeMake(sourceStart, keptDuration)
+                                          ofAsset:asset
+                                           atTime:insertionTime
+                                            error:&insertError]) {
+                    if (errorOut) *errorOut = insertError;
+                    return NO;
+                }
+                insertionTime = CMTimeAdd(insertionTime, keptDuration);
+            }
+        } else {
+            NSError *insertError = nil;
+            if (![composition insertTimeRange:CMTimeRangeMake(kCMTimeZero, duration)
+                                      ofAsset:asset
+                                       atTime:insertionTime
+                                        error:&insertError]) {
+                if (errorOut) *errorOut = insertError;
+                return NO;
+            }
+            insertionTime = CMTimeAdd(insertionTime, duration);
+        }
+    }
+    if (CMTIME_COMPARE_INLINE(insertionTime, <=, kCMTimeZero)) {
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
+                                            code:16
+                                        userInfo:@{NSLocalizedDescriptionKey: @"The iPhone recording contains no unpaused media"}];
+        }
+        return NO;
+    }
+
+    AVAssetExportSession *exporter = [[AVAssetExportSession alloc]
+        initWithAsset:composition presetName:AVAssetExportPresetPassthrough];
+    if (!exporter) {
+        if (errorOut) {
+            *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
+                                            code:14
+                                        userInfo:@{NSLocalizedDescriptionKey: @"The iPhone recording segments could not be joined"}];
+        }
+        return NO;
+    }
+    NSString *assembledPath = [[recorder.outputPath stringByDeletingPathExtension]
+        stringByAppendingString:@".iphone-assembled.mov"];
+    [fileManager removeItemAtPath:assembledPath error:nil];
+    exporter.outputURL = [NSURL fileURLWithPath:assembledPath];
+    exporter.outputFileType = AVFileTypeQuickTimeMovie;
+    exporter.shouldOptimizeForNetworkUse = NO;
+
+    __block volatile BOOL exportFinished = NO;
+    [exporter exportAsynchronouslyWithCompletionHandler:^{ exportFinished = YES; }];
+    BOOL completedInTime = MRWaitForFlag(^bool{ return exportFinished; }, 60.0);
+    if (!completedInTime) [exporter cancelExport];
+    BOOL completed = completedInTime && exporter.status == AVAssetExportSessionStatusCompleted;
+    NSError *exportError = [[exporter.error retain] autorelease];
+    if (!completed && errorOut) {
+        *errorOut = exportError ?: [NSError errorWithDomain:@"MacRecorderIOS"
+                                                   code:15
+                                               userInfo:@{NSLocalizedDescriptionKey: @"Timed out while joining iPhone recording segments"}];
+    }
+    [exporter release];
+    if (!completed) {
+        [fileManager removeItemAtPath:assembledPath error:nil];
+        return NO;
+    }
+
+    [fileManager removeItemAtPath:recorder.outputPath error:nil];
+    NSError *moveError = nil;
+    if (![fileManager moveItemAtPath:assembledPath
+                             toPath:recorder.outputPath
+                              error:&moveError]) {
+        if (errorOut) *errorOut = moveError;
+        return NO;
+    }
+
+    for (NSString *segmentPath in segments) {
+        if (![segmentPath isEqualToString:recorder.outputPath]) {
+            [fileManager removeItemAtPath:segmentPath error:nil];
+        }
+    }
+    if (pauseRanges.count > 0) {
+        MRLog(@"✅ Removed %lu paused range(s) from the iPhone recording",
+              (unsigned long)pauseRanges.count);
+    } else {
+        MRLog(@"✅ Joined %lu iPhone recording segments", (unsigned long)segments.count);
+    }
+    return YES;
+}
+
 extern "C" NSArray<NSDictionary *> *listIOSCaptureDevices(void) {
     NSMutableArray<NSDictionary *> *devices = [NSMutableArray array];
-    for (AVCaptureDevice *device in MRIOSCaptureDevices()) {
+    // Device listing is called by the renderer's lightweight monitor. Return a
+    // snapshot immediately; the start path still gets a bounded readiness wait.
+    for (AVCaptureDevice *device in MRIOSCaptureDevices(0.0)) {
         CMVideoDimensions largest = {0, 0};
         for (AVCaptureDeviceFormat *format in device.formats) {
             CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
@@ -179,11 +601,15 @@ extern "C" NSArray<NSDictionary *> *listIOSCaptureDevices(void) {
             @"model": device.modelID ?: @"",
             @"connected": @(device.isConnected),
             @"suspended": @(device.isSuspended),
+            @"captureReady": @(!device.isSuspended && device.isConnected),
             @"width": @(largest.width),
             @"height": @(largest.height),
             @"hasAudio": @YES,
             @"transport": @"usb"
         }];
+    }
+    if (devices.count == 0) {
+        [devices addObjectsFromArray:MRUSBConnectedIOSDevices()];
     }
     return devices;
 }
@@ -252,6 +678,16 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
         recorder.startCompleted = NO;
         recorder.finishCompleted = NO;
         recorder.finishError = nil;
+        recorder.paused = NO;
+        recorder.segmentStartCompleted = NO;
+        recorder.segmentFinishCompleted = NO;
+        recorder.segmentFinishError = nil;
+        recorder.segmentPaths = [NSMutableArray array];
+        recorder.currentSegmentPath = nil;
+        recorder.nextSegmentIndex = 0;
+        recorder.segmentFailure = NO;
+        recorder.pauseRanges = [NSMutableArray array];
+        recorder.pauseStartedAtSeconds = -1.0;
         recorder.captureCamera = captureCamera;
         recorder.captureMicrophone = captureMicrophone;
         recorder.cameraOutputPath = cameraOutputPath;
@@ -348,13 +784,10 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
         }
 
         recorder.startRequested = YES;
-        [recorder.movieOutput startRecordingToOutputFileURL:[NSURL fileURLWithPath:outputPath]
-                                          recordingDelegate:recorder];
-        bool started = MRWaitForFlag(^bool{
-            return recorder.startCompleted || recorder.finishCompleted;
-        }, 10.0);
-        if (!started || !recorder.startCompleted || recorder.finishCompleted) {
-            if (recorder.movieOutput.isRecording) [recorder.movieOutput stopRecording];
+        NSError *segmentError = nil;
+        if (!MRIOSStartNextSegment(recorder, &segmentError)) {
+            NSError *reportedSegmentError = [[segmentError retain] autorelease];
+            MRIOSStopCurrentSegment(recorder);
             [recorder.session stopRunning];
             if (isCameraRecording()) stopCameraRecording();
             if (isStandaloneAudioRecording()) stopStandaloneAudioRecording();
@@ -362,16 +795,15 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
             MRSyncConfigure(NO);
             stopIOSDeviceRecording();
             if (errorOut) {
-                *errorOut = [NSError errorWithDomain:@"MacRecorderIOS"
-                                                code:6
-                                            userInfo:@{NSLocalizedDescriptionKey: @"Timed out waiting for the first iPhone frame"}];
+                *errorOut = reportedSegmentError ?: [NSError errorWithDomain:@"MacRecorderIOS"
+                                                                         code:6
+                                                                     userInfo:@{NSLocalizedDescriptionKey: @"Timed out waiting for the first iPhone frame"}];
             }
             return false;
         }
         if (captureCamera && !waitForCameraRecordingStart(8.0)) {
             MRLog(@"❌ Camera did not produce a synchronized frame for iPhone recording");
-            if (recorder.movieOutput.isRecording) [recorder.movieOutput stopRecording];
-            MRWaitForFlag(^bool{ return recorder.finishCompleted; }, 10.0);
+            MRIOSStopCurrentSegment(recorder);
             [recorder.session stopRunning];
             if (isCameraRecording()) stopCameraRecording();
             if (isStandaloneAudioRecording()) stopStandaloneAudioRecording();
@@ -412,6 +844,9 @@ extern "C" bool stopIOSDeviceRecording(void) {
                 -[recorder.primaryStartedAt timeIntervalSinceNow] - MRSyncGetPausedDurationSeconds());
             MRSyncSetStopLimitSeconds(duration);
         }
+        if (recorder.paused) {
+            MRIOSEndPauseRange(recorder);
+        }
 
         BOOL cameraStopped = YES;
         BOOL microphoneStopped = YES;
@@ -422,30 +857,60 @@ extern "C" bool stopIOSDeviceRecording(void) {
             microphoneStopped = stopStandaloneAudioRecording();
         }
 
-        if (recorder.movieOutput.isRecording) {
-            [recorder.movieOutput stopRecording];
-        }
-        // isRecording becomes false BEFORE the delegate finishes its file.
-        // Keep ownership until that callback, including after USB removal.
-        if (recorder.startRequested && !recorder.finishCompleted) {
-            if (!MRWaitForFlag(^bool{ return recorder.finishCompleted; }, 20.0)) {
-                NSLog(@"[Recorder] iPhone is still finalizing; retaining the session");
-                return false;
-            }
+        BOOL primaryStopped = MRIOSStopCurrentSegment(recorder);
+        if (!primaryStopped && recorder.segmentStartCompleted &&
+            !recorder.segmentFinishCompleted) {
+            // Keep ownership while AVCaptureMovieFileOutput still owns the
+            // segment so a later stop retry cannot race its delegate callback.
+            NSLog(@"[Recorder] iPhone is still finalizing; retaining the session");
+            return false;
         }
         if (recorder.session.isRunning) [recorder.session stopRunning];
 
-        NSError *finishError = recorder.finishError;
-        BOOL finished = recorder.finishCompleted || !recorder.startCompleted;
+        NSError *assemblyError = nil;
+        BOOL recordingSucceeded = primaryStopped && !recorder.segmentFailure;
+        BOOL assembled = recordingSucceeded && MRIOSAssembleSegments(recorder, &assemblyError);
+        if (!assembled && recorder.startCompleted) {
+            MRLog(@"❌ iPhone recording assembly failed: %@",
+                  assemblyError.localizedDescription ?: @"Unknown segment error");
+        }
+        BOOL finished = !recorder.startCompleted || assembled;
         BOOL fileExists = [[NSFileManager defaultManager] fileExistsAtPath:recorder.outputPath];
         MRSyncConfigurePrimaryStart(NO);
         MRSyncConfigure(NO);
-        g_iosRecorder = nil;
 
-        if (finishError) {
-            NSNumber *successfullyFinished = finishError.userInfo[AVErrorRecordingSuccessfullyFinishedKey];
-            if (![successfullyFinished boolValue]) return false;
+        // AVCaptureSession keeps its input (and therefore the USB screen
+        // device) retained after stopRunning. Detach everything before dropping
+        // the recorder so the same iPhone is discoverable on the next attempt.
+        @try {
+            [recorder.session beginConfiguration];
+            if (recorder.movieOutput && [recorder.session.outputs containsObject:recorder.movieOutput]) {
+                [recorder.session removeOutput:recorder.movieOutput];
+            }
+            if (recorder.deviceInput && [recorder.session.inputs containsObject:recorder.deviceInput]) {
+                [recorder.session removeInput:recorder.deviceInput];
+            }
+            [recorder.session commitConfiguration];
+        } @catch (NSException *exception) {
+            MRLog(@"⚠️ iPhone capture teardown warning: %@", exception.reason);
         }
+        recorder.movieOutput = nil;
+        recorder.deviceInput = nil;
+        recorder.session = nil;
+        recorder.finishError = nil;
+        recorder.segmentFinishError = nil;
+        recorder.segmentPaths = nil;
+        recorder.pauseRanges = nil;
+        recorder.pauseStartedAtSeconds = -1.0;
+        recorder.currentSegmentPath = nil;
+        recorder.outputPath = nil;
+        recorder.cameraOutputPath = nil;
+        recorder.audioOutputPath = nil;
+        recorder.primaryStartedAt = nil;
+        g_iosRecorder = nil;
+        [recorder release];
+
+        if (!recordingSucceeded) return false;
         if (!cameraStopped || !microphoneStopped) {
             MRLog(@"⚠️ iPhone recording finalized, but an auxiliary camera/microphone writer reported a stop error");
         }
@@ -469,19 +934,26 @@ extern "C" bool isIOSDeviceRecordingStopping(void) {
 }
 
 extern "C" bool isIOSDeviceRecording(void) {
-    return g_iosRecorder && (g_iosRecorder.recording || g_iosRecorder.movieOutput.isRecording);
+    return g_iosRecorder && !g_iosRecorder.stopRequested &&
+        (g_iosRecorder.recording || g_iosRecorder.paused || g_iosRecorder.movieOutput.isRecording);
 }
 
 extern "C" bool pauseIOSDeviceRecording(void) {
     @autoreleasepool {
         MRIOSDeviceRecorder *recorder = g_iosRecorder;
-        if (!recorder || !recorder.movieOutput.isRecording) return false;
-        if (recorder.movieOutput.isRecordingPaused) return true;
+        if (!recorder) return false;
+        if (recorder.paused) return true;
+        if (!recorder.movieOutput.isRecording) return false;
         @try {
-            [recorder.movieOutput pauseRecording];
+            // Do not stop or pause AVCaptureMovieFileOutput here. USB iPhone
+            // muxed sources may fail to re-arm their compressor on resume.
+            // Capture continuously and trim this time range during finalization.
+            MRIOSBeginPauseRange(recorder);
             MRSyncPause();
+            recorder.paused = YES;
             return true;
         } @catch (NSException *exception) {
+            MRSyncResume();
             MRLog(@"❌ iPhone pause failed: %@", exception.reason);
             return false;
         }
@@ -491,13 +963,12 @@ extern "C" bool pauseIOSDeviceRecording(void) {
 extern "C" bool resumeIOSDeviceRecording(void) {
     @autoreleasepool {
         MRIOSDeviceRecorder *recorder = g_iosRecorder;
-        if (!recorder || !recorder.movieOutput.isRecording) return false;
-        if (!recorder.movieOutput.isRecordingPaused) {
-            MRSyncResume();
-            return true;
-        }
+        if (!recorder) return false;
+        if (!recorder.paused) return recorder.movieOutput.isRecording;
+        if (!recorder.movieOutput.isRecording) return false;
         @try {
-            [recorder.movieOutput resumeRecording];
+            MRIOSEndPauseRange(recorder);
+            recorder.paused = NO;
             MRSyncResume();
             return true;
         } @catch (NSException *exception) {
@@ -526,6 +997,7 @@ Napi::Value GetIOSCaptureDevices(const Napi::CallbackInfo& info) {
         item.Set("model", Napi::String::New(env, [device[@"model"] UTF8String]));
         item.Set("connected", Napi::Boolean::New(env, [device[@"connected"] boolValue]));
         item.Set("suspended", Napi::Boolean::New(env, [device[@"suspended"] boolValue]));
+        item.Set("captureReady", Napi::Boolean::New(env, [device[@"captureReady"] boolValue]));
         item.Set("width", Napi::Number::New(env, [device[@"width"] intValue]));
         item.Set("height", Napi::Number::New(env, [device[@"height"] intValue]));
         item.Set("hasAudio", Napi::Boolean::New(env, true));
@@ -618,7 +1090,7 @@ Napi::Value GetIOSDeviceRecordingStatus(const Napi::CallbackInfo& info) {
     Napi::Object status = Napi::Object::New(info.Env());
     status.Set("isRecording", Napi::Boolean::New(info.Env(), isIOSDeviceRecording()));
     status.Set("isPaused", Napi::Boolean::New(info.Env(),
-        g_iosRecorder && g_iosRecorder.movieOutput.isRecordingPaused));
+        g_iosRecorder && g_iosRecorder.paused));
     NSString *path = currentIOSDeviceRecordingPath();
     if (path.length > 0) status.Set("outputPath", Napi::String::New(info.Env(), [path UTF8String]));
     return status;

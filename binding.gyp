@@ -44,7 +44,8 @@
           "-framework Carbon",
           "-framework Accessibility",
           "-framework CoreAudio",
-          "-framework CoreMediaIO"
+          "-framework CoreMediaIO",
+          "-framework IOKit"
         ]
       },
       "defines": [ "NAPI_DISABLE_CPP_EXCEPTIONS" ]

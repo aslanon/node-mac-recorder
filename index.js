@@ -176,6 +176,7 @@ class MacRecorder extends EventEmitter {
 			model: device?.model || null,
 			connected: device?.connected !== false,
 			suspended: device?.suspended === true,
+			captureReady: device?.captureReady !== false,
 			width: Number(device?.width) || 0,
 			height: Number(device?.height) || 0,
 			hasAudio: device?.hasAudio !== false,
