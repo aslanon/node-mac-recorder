@@ -192,7 +192,8 @@ LIBS := \
 	-framework Carbon \
 	-framework Accessibility \
 	-framework CoreAudio \
-	-framework CoreMediaIO
+	-framework CoreMediaIO \
+	-framework IOKit
 
 $(builddir)/mac_recorder.node: GYP_LDFLAGS := $(LDFLAGS_$(BUILDTYPE))
 $(builddir)/mac_recorder.node: LIBS := $(LIBS)
