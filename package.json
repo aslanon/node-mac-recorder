@@ -34,6 +34,8 @@
 	],
 	"scripts": {
 		"test": "node test.js",
+		"test:cursor": "node --test tests/cursor-detection.test.cjs",
+		"test:cursor:electron": "node --test tests/cursor-electron.test.cjs",
 		"install": "node install.js",
 		"build": "node-gyp build",
 		"rebuild": "node-gyp rebuild",

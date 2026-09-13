@@ -72,9 +72,7 @@ static void initCGSCursorNameFunc() {
                 "CGSCopyCurrentCursorName",
                 "CGSCopyGlobalCursorName",
                 "SLSCopyCurrentCursorName",
-                "SLSCopyGlobalCursorName",
-                "CGSCopyCurrentCursor",
-                "SLSCopyCurrentCursor"
+                "SLSCopyGlobalCursorName"
             };
             size_t candidateCount = sizeof(symbolCandidates) / sizeof(symbolCandidates[0]);
             for (size_t i = 0; i < candidateCount; ++i) {
@@ -113,6 +111,10 @@ static NSString* CopyCurrentCursorNameFromCGS(void) {
     if (!cgsName) {
         return nil;
     }
+    if (CFGetTypeID(cgsName) != CFStringGetTypeID()) {
+        CFRelease(cgsName);
+        return nil;
+    }
     NSString *name = [NSString stringWithString:(NSString *)cgsName];
     CFRelease(cgsName);
     return name;
@@ -129,12 +131,10 @@ static int g_debugCallbackCount = 0;
 static NSFileHandle *g_fileHandle = nil;
 static bool g_isFirstWrite = true;
 static NSMutableDictionary<NSString*, NSString*> *g_cursorFingerprintMap = nil;
-static NSMutableDictionary<NSValue*, NSString*> *g_cursorPointerCache = nil;
 static NSMutableDictionary<NSString*, NSString*> *g_cursorNameMap = nil;
 static dispatch_once_t g_cursorFingerprintInitToken;
 static void LoadSystemCursorResourceFingerprints(void);
 static void LoadCursorMappingOverrides(void);
-static NSMutableDictionary<NSNumber*, NSString*> *g_seedOverrides = nil;
 
 typedef NSCursor* (*CursorFactoryFunc)(id, SEL);
 typedef NSString* (*CursorNameFunc)(id, SEL);
@@ -265,6 +265,28 @@ static NSArray<NSString *>* CursorImageFingerprintsAllReps(NSImage *image, NSPoi
         }
     }
 
+    NSSize size = image.size;
+    if (size.width > 0 && size.height > 0) {
+        for (NSUInteger scale = 1; scale <= 2; scale++) {
+            NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc]
+                initWithBitmapDataPlanes:NULL pixelsWide:lround(size.width * scale)
+                pixelsHigh:lround(size.height * scale) bitsPerSample:8 samplesPerPixel:4
+                hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+                bytesPerRow:0 bitsPerPixel:0] autorelease];
+            if (!bitmap) continue;
+            bitmap.size = size;
+            [NSGraphicsContext saveGraphicsState];
+            [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap]];
+            [image drawInRect:NSMakeRect(0, 0, size.width, size.height) fromRect:NSZeroRect
+                operation:NSCompositingOperationCopy fraction:1.0];
+            [NSGraphicsContext restoreGraphicsState];
+            NSString *fingerprint = CursorImageFingerprintFromCGImage(bitmap.CGImage, hotspot);
+            if (fingerprint && ![fingerprints containsObject:fingerprint]) {
+                [fingerprints addObject:fingerprint];
+            }
+        }
+    }
+
     return fingerprints;
 }
 
@@ -308,6 +330,10 @@ static NSString* CursorNameFromNSCursor(NSCursor *cursor) {
     for (NSString *selectorName in selectorNames) {
         SEL selector = NSSelectorFromString(selectorName);
         if (selector && [cursor respondsToSelector:selector]) {
+            NSMethodSignature *signature = [cursor methodSignatureForSelector:selector];
+            if (!signature || signature.methodReturnType[0] != '@') {
+                continue;
+            }
             IMP imp = [cursor methodForSelector:selector];
             if (!imp) {
                 continue;
@@ -389,13 +415,81 @@ static void AddCursorIfAvailableByName(NSString *selectorName, NSString *cursorT
     AddCursorIfAvailable(selector, cursorType);
 }
 
+// Chromium and WebKit use CoreCursor for types with no public NSCursor factory.
+// Ask AppKit to render these references, including the system's shadow; the raw
+// HIServices PDF is not pixel-identical to the cursor returned by WindowServer.
+// CoreCursor's enum is distinct from CGSCurrentCursorSeed (a change counter).
+// https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/mac/CursorMac.mm
+@interface MRSystemReferenceCursor : NSCursor {
+    NSInteger _referenceType;
+}
+- (instancetype)initWithCoreType:(NSInteger)type;
+@end
+
+@implementation MRSystemReferenceCursor
+- (instancetype)initWithCoreType:(NSInteger)type {
+    self = [super init];
+    if (self) _referenceType = type;
+    return self;
+}
+- (NSInteger)_coreCursorType { return _referenceType; }
+@end
+
+static void AddCoreCursorFingerprints(void) {
+    // This SPI is optional. Keep public factories and resource matching on
+    // macOS versions where AppKit no longer exposes it.
+    if (![NSCursor instancesRespondToSelector:NSSelectorFromString(@"_coreCursorType")]) return;
+    NSDictionary<NSNumber *, NSString *> *types = @{
+        @4: @"progress", @11: @"grabbing", @12: @"grab",
+        @27: @"ew-resize", @28: @"ew-resize", @29: @"nesw-resize",
+        @30: @"nesw-resize", @31: @"ns-resize", @32: @"ns-resize",
+        @33: @"nwse-resize", @34: @"nwse-resize", @35: @"nwse-resize",
+        @36: @"ns-resize", @37: @"nesw-resize", @38: @"ew-resize",
+        @39: @"all-scroll", @40: @"help", @41: @"crosshair",
+        @42: @"zoom-in", @43: @"zoom-out"
+    };
+    for (NSNumber *type in types) {
+        @try {
+            NSCursor *cursor = [[[MRSystemReferenceCursor alloc] initWithCoreType:type.integerValue] autorelease];
+            AddStandardCursorFingerprint(cursor, types[type]);
+        } @catch (NSException *exception) {
+            MRLog(@"CoreCursor reference %@ unavailable: %@", type, exception.reason);
+        }
+    }
+}
+
+static void AddFrameResizeCursorFingerprints(void) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+    if (@available(macOS 15.0, *)) {
+        const NSCursorFrameResizePosition positions[] = {
+            NSCursorFrameResizePositionTop, NSCursorFrameResizePositionBottom,
+            NSCursorFrameResizePositionLeft, NSCursorFrameResizePositionRight,
+            NSCursorFrameResizePositionTopLeft, NSCursorFrameResizePositionBottomRight,
+            NSCursorFrameResizePositionTopRight, NSCursorFrameResizePositionBottomLeft
+        };
+        NSArray<NSString *> *types = @[@"ns-resize", @"ns-resize", @"ew-resize", @"ew-resize",
+            @"nwse-resize", @"nwse-resize", @"nesw-resize", @"nesw-resize"];
+        for (NSUInteger direction = 1; direction <= 3; direction++) {
+            AddStandardCursorFingerprint([NSCursor columnResizeCursorInDirections:(NSHorizontalDirections)direction], @"col-resize");
+            AddStandardCursorFingerprint([NSCursor rowResizeCursorInDirections:(NSVerticalDirections)direction], @"row-resize");
+            for (NSUInteger i = 0; i < sizeof(positions) / sizeof(positions[0]); i++) {
+                AddStandardCursorFingerprint([NSCursor frameResizeCursorFromPosition:positions[i]
+                    inDirections:(NSCursorFrameResizeDirections)direction], types[i]);
+            }
+        }
+    }
+#endif
+}
+
 static void InitializeCursorFingerprintMap(void) {
     dispatch_once(&g_cursorFingerprintInitToken, ^{
         g_cursorFingerprintMap = [[NSMutableDictionary alloc] init];
-        g_cursorPointerCache = [[NSMutableDictionary alloc] init];
         g_cursorNameMap = [[NSMutableDictionary alloc] init];
 
         void (^buildMap)(void) = ^{
+            // Node worker processes may not have initialized AppKit yet. Without
+            // it arrow/I-beam images can be empty and stay absent from this map.
+            [NSApplication sharedApplication];
             AddStandardCursorFingerprint([NSCursor arrowCursor], @"default");
             AddStandardCursorFingerprint([NSCursor pointingHandCursor], @"pointer");
             AddStandardCursorFingerprint([NSCursor IBeamCursor], @"text");
@@ -413,8 +507,8 @@ static void InitializeCursorFingerprintMap(void) {
             AddCursorIfAvailable(@selector(resizeUpDownCursor), @"row-resize");
             AddCursorIfAvailableByName(@"resizeLeftCursor", @"col-resize");
             AddCursorIfAvailableByName(@"resizeRightCursor", @"col-resize");
-            AddCursorIfAvailableByName(@"resizeUpCursor", @"ns-resize");
-            AddCursorIfAvailableByName(@"resizeDownCursor", @"ns-resize");
+            AddCursorIfAvailableByName(@"resizeUpCursor", @"row-resize");
+            AddCursorIfAvailableByName(@"resizeDownCursor", @"row-resize");
             AddCursorIfAvailableByName(@"resizeNorthWestSouthEastCursor", @"nwse-resize");
             AddCursorIfAvailableByName(@"resizeNorthEastSouthWestCursor", @"nesw-resize");
             AddCursorIfAvailable(@selector(zoomInCursor), @"zoom-in");
@@ -422,6 +516,8 @@ static void InitializeCursorFingerprintMap(void) {
             AddCursorIfAvailable(@selector(columnResizeCursor), @"col-resize");
             AddCursorIfAvailable(@selector(rowResizeCursor), @"row-resize");
 
+            AddFrameResizeCursorFingerprints();
+            AddCoreCursorFingerprints();
             LoadSystemCursorResourceFingerprints();
             LoadCursorMappingOverrides();
         };
@@ -440,16 +536,6 @@ static NSString* LookupCursorTypeByFingerprint(NSCursor *cursor, NSString **outF
     }
     InitializeCursorFingerprintMap();
 
-    NSValue *pointerKey = [NSValue valueWithPointer:(__bridge const void *)cursor];
-
-    // DISABLED: Pointer cache causes stale cursor type detection
-    // Since macOS may reuse the same NSCursor object for different contexts,
-    // we need to check the actual cursor state every time for real-time accuracy
-    // NSString *cachedType = [g_cursorPointerCache objectForKey:pointerKey];
-    // if (cachedType) {
-    //     return cachedType;
-    // }
-
     NSString *fingerprint = CursorImageFingerprint(cursor);
     if (!fingerprint) {
         return nil;
@@ -459,39 +545,7 @@ static NSString* LookupCursorTypeByFingerprint(NSCursor *cursor, NSString **outF
         *outFingerprint = fingerprint;
     }
 
-    NSString *mappedType = [g_cursorFingerprintMap objectForKey:fingerprint];
-    if (mappedType) {
-        // DISABLED: Don't cache by pointer for real-time detection
-        // if (pointerKey) {
-        //     [g_cursorPointerCache setObject:mappedType forKey:pointerKey];
-        // }
-        return mappedType;
-    }
-
-    return nil;
-}
-
-static void CacheCursorFingerprint(NSCursor *cursor, NSString *cursorType, NSString *knownFingerprint) {
-    if (!cursor || !cursorType || [cursorType length] == 0) {
-        return;
-    }
-    InitializeCursorFingerprintMap();
-    NSString *fingerprint = knownFingerprint;
-    if (!fingerprint) {
-        fingerprint = CursorImageFingerprint(cursor);
-    }
-    if (!fingerprint) {
-        return;
-    }
-    // Only cache fingerprint mapping (image hash -> type), not pointer mapping
-    if (![g_cursorFingerprintMap objectForKey:fingerprint]) {
-        [g_cursorFingerprintMap setObject:cursorType forKey:fingerprint];
-    }
-    // DISABLED: Pointer cache for real-time detection
-    // NSValue *pointerKey = [NSValue valueWithPointer:(__bridge const void *)cursor];
-    // if (pointerKey && g_cursorPointerCache) {
-    //     [g_cursorPointerCache setObject:cursorType forKey:pointerKey];
-    // }
+    return [g_cursorFingerprintMap objectForKey:fingerprint];
 }
 
 // Forward declaration
@@ -553,22 +607,22 @@ static BOOL ShouldEmitCursorEvent(CGPoint location, NSString *cursorType, NSStri
     BOOL moved = fabs(location.x - g_lastCursorLocation.x) >= movementThreshold ||
                  fabs(location.y - g_lastCursorLocation.y) >= movementThreshold;
     BOOL eventChanged = !StringsEqual(eventType, g_lastCursorEventType);
-    BOOL isMoveEvent = StringsEqual(eventType, @"move") || StringsEqual(eventType, @"drag");
+    BOOL cursorChanged = !StringsEqual(cursorType, g_lastCursorType);
+    BOOL isMoveEvent = StringsEqual(eventType, @"move") || StringsEqual(eventType, @"drag") || StringsEqual(eventType, @"rightdrag");
     BOOL isClickEvent = StringsEqual(eventType, @"mousedown") ||
                         StringsEqual(eventType, @"mouseup") ||
                         StringsEqual(eventType, @"rightmousedown") ||
                         StringsEqual(eventType, @"rightmouseup");
 
     if (isMoveEvent) {
-        return moved;
+        return moved || cursorChanged || eventChanged;
     }
 
     if (isClickEvent) {
-        return eventChanged || moved;
+        return eventChanged || moved || cursorChanged;
     }
 
     // Fallback: only emit when something actually changed
-    BOOL cursorChanged = !StringsEqual(cursorType, g_lastCursorType);
     return moved || cursorChanged || eventChanged;
 }
 
@@ -932,163 +986,45 @@ static NSString* detectCursorTypeUsingAccessibility(CGPoint cursorPos) {
 }
 
 static NSString* cursorTypeFromCursorName(NSString *value) {
-    if (!value || [value length] == 0) {
-        return nil;
+    if (![value isKindOfClass:[NSString class]] || value.length == 0) return nil;
+    NSString *name = NormalizeCursorName(value);
+    // Treat separators uniformly, without letting "text" match "context" or
+    // "link" consume dragLink before the alias rule.
+    NSString *compact = [[name componentsSeparatedByCharactersInSet:
+        [[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
+    if ([compact hasSuffix:@"cursor"]) compact = [compact substringToIndex:compact.length - 6];
+
+    if ([compact containsString:@"resize"]) {
+        if ([compact containsString:@"column"] || [compact isEqualToString:@"colresize"]) return @"col-resize";
+        if ([compact containsString:@"row"]) return @"row-resize";
+        NSString *direction = [compact stringByReplacingOccurrencesOfString:@"resize" withString:@""];
+        if ([direction hasPrefix:@"frame"]) direction = [direction substringFromIndex:5];
+        if (StringEqualsAny(direction, @[@"nesw", @"ne", @"sw", @"northeast", @"southwest",
+            @"northeastsouthwest", @"topright", @"bottomleft", @"diagonalup"])) return @"nesw-resize";
+        if (StringEqualsAny(direction, @[@"nwse", @"nw", @"se", @"northwest", @"southeast",
+            @"northwestsoutheast", @"topleft", @"bottomright", @"diagonaldown"])) return @"nwse-resize";
+        if (StringEqualsAny(direction, @[@"ew", @"e", @"w", @"east", @"west", @"eastwest",
+            @"left", @"right", @"leftright", @"horizontal"])) return @"ew-resize";
+        if (StringEqualsAny(direction, @[@"ns", @"n", @"s", @"north", @"south", @"northsouth",
+            @"up", @"down", @"updown", @"top", @"bottom", @"vertical"])) return @"ns-resize";
+        return nil; // A name without an axis cannot identify a diagonal.
     }
-
-    NSString *normalized = [[value stringByReplacingOccurrencesOfString:@"_" withString:@"-"] lowercaseString];
-
-    // Arrow cursor patterns
-    if ([normalized containsString:@"arrow"] || [normalized containsString:@"default"]) {
-        return @"default";
-    }
-
-    // Text cursor patterns
-    if ([normalized containsString:@"ibeam"] ||
-        [normalized containsString:@"insertion"] ||
-        [normalized containsString:@"text"] ||
-        [normalized containsString:@"edit"]) {
-        return @"text";
-    }
-
-    // Hand cursors
-    if ([normalized containsString:@"openhand"] || [normalized containsString:@"open-hand"]) {
-        return @"grab";
-    }
-    if ([normalized containsString:@"closedhand"] || [normalized containsString:@"closed-hand"]) {
-        return @"grabbing";
-    }
-
-    // Pointer cursor patterns
-    if ([normalized containsString:@"pointing"] ||
-        [normalized containsString:@"pointinghand"] ||
-        ([normalized containsString:@"hand"] && ![normalized containsString:@"closed"] && ![normalized containsString:@"open"]) ||
-        [normalized containsString:@"link"] ||
-        [normalized containsString:@"button"]) {
-        return @"pointer";
-    }
-
-    // Crosshair patterns
-    if ([normalized containsString:@"crosshair"] || [normalized containsString:@"cross-hair"]) {
-        return @"crosshair";
-    }
-
-    // Not allowed patterns
-    if ([normalized containsString:@"not-allowed"] ||
-        [normalized containsString:@"notallowed"] ||
-        [normalized containsString:@"forbidden"] ||
-        [normalized containsString:@"operation-not-allowed"]) {
-        return @"not-allowed";
-    }
-
-    // Copy cursor patterns
-    if ([normalized containsString:@"dragcopy"] ||
-        [normalized containsString:@"drag-copy"] ||
-        [normalized containsString:@"copy"]) {
-        return @"copy";
-    }
-
-    // Alias cursor patterns
-    if ([normalized containsString:@"draglink"] ||
-        [normalized containsString:@"drag-link"] ||
-        [normalized containsString:@"alias"]) {
-        return @"alias";
-    }
-
-    // Context menu patterns
-    if (([normalized containsString:@"context"] && [normalized containsString:@"menu"]) ||
-        [normalized containsString:@"contextual-menu"]) {
-        return @"context-menu";
-    }
-
-    // Zoom patterns
-    if ([normalized containsString:@"zoom"]) {
-        if ([normalized containsString:@"out"]) {
-            return @"zoom-out";
-        }
-        return @"zoom-in";
-    }
-
-    // All-scroll pattern (move in all directions)
-    if ([normalized containsString:@"all-scroll"] ||
-        [normalized containsString:@"allscroll"] ||
-        ([normalized containsString:@"move"] && [normalized containsString:@"all"]) ||
-        [normalized containsString:@"omnidirectional"]) {
-        return @"all-scroll";
-    }
-
-    // Resize cursor patterns - more comprehensive with Electron CSS names
-    if ([normalized containsString:@"resize"] || [normalized containsString:@"size"]) {
-        // Check for specific directional patterns first
-        // North-East/South-West diagonal
-        if ([normalized containsString:@"nesw"] ||
-            ([normalized containsString:@"northeast"] && [normalized containsString:@"southwest"]) ||
-            ([normalized containsString:@"ne"] && [normalized containsString:@"sw"])) {
-            return @"nesw-resize";
-        }
-
-        // North-West/South-East diagonal
-        if ([normalized containsString:@"nwse"] ||
-            ([normalized containsString:@"northwest"] && [normalized containsString:@"southeast"]) ||
-            ([normalized containsString:@"nw"] && [normalized containsString:@"se"])) {
-            return @"nwse-resize";
-        }
-
-        // Generic diagonal patterns
-        BOOL diagonalUp = [normalized containsString:@"diagonalup"] ||
-                          [normalized containsString:@"diagonal-up"];
-        BOOL diagonalDown = [normalized containsString:@"diagonaldown"] ||
-                            [normalized containsString:@"diagonal-down"];
-
-        // Horizontal resize (East-West)
-        BOOL horizontal = [normalized containsString:@"ew-resize"] ||
-                          [normalized containsString:@"ewresize"] ||
-                          [normalized containsString:@"leftright"] ||
-                          [normalized containsString:@"left-right"] ||
-                          [normalized containsString:@"horizontal"] ||
-                          ([normalized containsString:@"left"] && [normalized containsString:@"right"]) ||
-                          [normalized containsString:@"col-resize"] ||
-                          [normalized containsString:@"column"];
-
-        // Vertical resize (North-South)
-        BOOL vertical = [normalized containsString:@"ns-resize"] ||
-                        [normalized containsString:@"nsresize"] ||
-                        [normalized containsString:@"updown"] ||
-                        [normalized containsString:@"up-down"] ||
-                        [normalized containsString:@"vertical"] ||
-                        ([normalized containsString:@"up"] && [normalized containsString:@"down"]) ||
-                        [normalized containsString:@"row-resize"];
-
-        if (diagonalUp) {
-            return @"nesw-resize";
-        }
-        if (diagonalDown) {
-            return @"nwse-resize";
-        }
-        if (horizontal) {
-            return @"col-resize"; // Desktop SVG var: col-resize
-        }
-        if (vertical) {
-            return @"ns-resize"; // Desktop SVG var: ns-resize
-        }
-
-        // If contains "resize" but no specific direction, return generic resize
-        // This catches window resize cursors
-        return @"nwse-resize"; // Default to diagonal for generic resize
-    }
-
-    // Progress/wait patterns - Electron uses 'progress'
-    if ([normalized containsString:@"wait"] ||
-        [normalized containsString:@"busy"] ||
-        [normalized containsString:@"progress"]) {
-        return @"progress";
-    }
-
-    // Help pattern
-    if ([normalized containsString:@"help"] || [normalized containsString:@"question"]) {
-        return @"help";
-    }
-
+    if ([compact containsString:@"contextualmenu"] || [compact containsString:@"contextmenu"]) return @"context-menu";
+    if ([compact containsString:@"draglink"] || [compact containsString:@"alias"]) return @"alias";
+    if ([compact containsString:@"copy"]) return @"copy";
+    if ([compact containsString:@"notallowed"] || [compact containsString:@"nodrop"]) return @"not-allowed";
+    if ([compact containsString:@"closedhand"] || [compact isEqualToString:@"grabbing"]) return @"grabbing";
+    if ([compact containsString:@"openhand"] || [compact isEqualToString:@"grab"]) return @"grab";
+    if ([compact containsString:@"pointinghand"] || StringEqualsAny(compact, @[@"pointer", @"hand", @"link"])) return @"pointer";
+    if ([compact containsString:@"ibeam"] || [compact containsString:@"insertion"] ||
+        StringEqualsAny(compact, @[@"text", @"verticaltext"])) return @"text";
+    if ([compact containsString:@"zoomout"]) return @"zoom-out";
+    if ([compact containsString:@"zoomin"]) return @"zoom-in";
+    if (StringEqualsAny(compact, @[@"move", @"allscroll", @"moveall", @"omnidirectional"])) return @"all-scroll";
+    if ([compact containsString:@"crosshair"] || StringEqualsAny(compact, @[@"cross", @"cell"])) return @"crosshair";
+    if ([compact containsString:@"wait"] || [compact containsString:@"busy"] || [compact containsString:@"progress"]) return @"progress";
+    if ([compact containsString:@"help"]) return @"help";
+    if (StringEqualsAny(compact, @[@"arrow", @"default", @"auto", @"none"])) return @"default";
     return nil;
 }
 
@@ -1111,40 +1047,19 @@ static void AddCursorFingerprintFromResource(const CursorResourceEntry &entry) {
     NSString *basePath = [@"/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/Resources/cursors" stringByAppendingPathComponent:resourceName];
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray<NSString *> *imageCandidates = @[ @"cursor_1only_.png", @"cursor.png", @"cursor.pdf" ];
-    NSString *imagePath = nil;
-    for (NSString *candidate in imageCandidates) {
-        NSString *fullPath = [basePath stringByAppendingPathComponent:candidate];
-        if ([fm fileExistsAtPath:fullPath]) {
-            imagePath = fullPath;
-            break;
-        }
-    }
-    if (!imagePath) {
-        return;
-    }
-
-    NSImage *image = [[[NSImage alloc] initWithContentsOfFile:imagePath] autorelease];
-    if (!image) {
-        return;
-    }
-
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[basePath stringByAppendingPathComponent:@"info.plist"]];
     double hotx = [[info objectForKey:@"hotx"] doubleValue];
     double hoty = [[info objectForKey:@"hoty"] doubleValue];
     NSPoint hotspot = NSMakePoint(hotx, hoty);
 
-    NSCursor *tempCursor = [[[NSCursor alloc] initWithImage:image hotSpot:hotspot] autorelease];
-    if (!tempCursor) {
-        return;
-    }
-
-    NSString *fingerprint = CursorImageFingerprintUnsafe(tempCursor);
-    if (!fingerprint) {
-        return;
-    }
-
-    if (![g_cursorFingerprintMap objectForKey:fingerprint]) {
-        [g_cursorFingerprintMap setObject:cursorType forKey:fingerprint];
+    // PNG and PDF versions can differ (notably help). Both are used by apps.
+    for (NSString *candidate in imageCandidates) {
+        NSString *imagePath = [basePath stringByAppendingPathComponent:candidate];
+        if (![fm fileExistsAtPath:imagePath]) continue;
+        NSImage *image = [[[NSImage alloc] initWithContentsOfFile:imagePath] autorelease];
+        if (!image) continue;
+        NSCursor *cursor = [[[NSCursor alloc] initWithImage:image hotSpot:hotspot] autorelease];
+        AddStandardCursorFingerprint(cursor, cursorType);
     }
 }
 
@@ -1153,7 +1068,7 @@ static void LoadSystemCursorResourceFingerprints(void) {
         {"progress", "busybutclickable"},
         {"wait", "countinguphand"},
         {"wait", "countingdownhand"},
-        {"wait", "countingupanddownhand"},
+        {"wait", "countingupandownhand"},
         {"context-menu", "contextualmenu"},
         {"copy", "copy"},
         {"alias", "makealias"},
@@ -1171,10 +1086,14 @@ static void LoadSystemCursorResourceFingerprints(void) {
         {"zoom-out", "zoomout"},
         {"text", "ibeamhorizontal"},
         {"vertical-text", "ibeamvertical"},
+        {"col-resize", "resizeleft"},
+        {"col-resize", "resizeright"},
+        {"row-resize", "resizeup"},
+        {"row-resize", "resizedown"},
         {"col-resize", "resizeleftright"},
         {"col-resize", "resizeeastwest"},
         {"row-resize", "resizeupdown"},
-        {"row-resize", "resizenorthsouth"},
+        {"ns-resize", "resizenorthsouth"},
         {"ew-resize", "resizeeastwest"},
         {"ew-resize", "resizeleftright"},
         {"ns-resize", "resizenorthsouth"},
@@ -1207,18 +1126,6 @@ static void RegisterCursorNameMapping(NSString *name, NSString *cursorType) {
     }
     if (![g_cursorNameMap objectForKey:normalized]) {
         [g_cursorNameMap setObject:cursorType forKey:normalized];
-    }
-}
-
-static void RegisterSeedMapping(NSNumber *seedValue, NSString *cursorType) {
-    if (!seedValue || !cursorType) {
-        return;
-    }
-    if (!g_seedOverrides) {
-        g_seedOverrides = [[NSMutableDictionary alloc] init];
-    }
-    if (![g_seedOverrides objectForKey:seedValue]) {
-        [g_seedOverrides setObject:cursorType forKey:seedValue];
     }
 }
 
@@ -1310,554 +1217,57 @@ static void LoadCursorMappingOverrides(void) {
             RegisterCursorNameMapping(privateName, cursorType);
         }
 
-        NSNumber *seed = entry[@"seed"];
-        if ([seed isKindOfClass:[NSNumber class]]) {
-            RegisterSeedMapping(seed, cursorType);
-        }
+        // Cursor seeds are change counters, not stable cursor identities.
+        // Old calibration files may contain them; only image/name entries apply.
     }];
 }
 
-// Runtime seed mapping - built dynamically on first use
-// Seeds change between app launches, so we build the mapping at runtime by querying NSCursor objects
-// SAFETY: Protected with try-catch to prevent crashes in Electron environments
-static BOOL g_enableSeedLearning = YES; // Runtime seed learning enabled with crash protection
-static NSMutableDictionary<NSNumber*, NSString*> *g_seedToTypeMap = nil;
-static dispatch_once_t g_seedMapInitToken;
-
-static void buildRuntimeSeedMapping() {
-    dispatch_once(&g_seedMapInitToken, ^{
-        @try {
-            @autoreleasepool {
-                g_seedToTypeMap = [[NSMutableDictionary alloc] init];
-
-                // Instead of trying to build mapping upfront (which crashes),
-                // we'll build it lazily as we encounter cursors during actual usage
-                // For now, just initialize the empty map
-
-                NSLog(@"✅ Runtime seed mapping initialized (will build lazily)");
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"⚠️ Failed to initialize runtime seed mapping: %@", exception.reason);
-            g_seedToTypeMap = nil;
-        }
-    });
-}
-
-// Add a cursor seed to the runtime mapping
-// NOTE: We don't pass cursor object to avoid potential crashes - we only need seed and type
-static void addCursorToSeedMap(NSString *detectedType, int seed) {
-    // Safety: Check if learning is enabled
-    if (!g_enableSeedLearning) return;
-
-    if (seed <= 0 || !detectedType || [detectedType length] == 0) return;
-
-    @try {
-        @autoreleasepool {
-            buildRuntimeSeedMapping(); // Ensure map is initialized
-
-            // If initialization failed, don't proceed
-            if (!g_seedToTypeMap) return;
-
-            NSNumber *key = @(seed);
-
-            // Only add if we don't have this seed yet
-            if (![g_seedToTypeMap objectForKey:key]) {
-                [g_seedToTypeMap setObject:detectedType forKey:key];
-                // Always log new seed mappings for debugging
-                NSLog(@"📝 Learned seed mapping: %d -> %@", seed, detectedType);
-            }
-        }
-    } @catch (NSException *exception) {
-        // Silently fail - don't crash the app for cursor learning
-        NSLog(@"⚠️ Failed to add cursor seed mapping: %@", exception.reason);
-    } @catch (...) {
-        NSLog(@"⚠️ Failed to add cursor seed mapping (unknown exception)");
-    }
-}
-
-static NSString* cursorTypeFromSeed(int seed) {
-    if (seed > 0) {
-        @try {
-            @autoreleasepool {
-                NSNumber *key = @(seed);
-                NSString *override = [g_seedOverrides objectForKey:key];
-                if (override) {
-                    return override;
-                }
-
-                // Only check runtime mappings if learning is enabled
-                if (g_enableSeedLearning) {
-                    buildRuntimeSeedMapping();
-                    if (g_seedToTypeMap) {
-                        NSString *runtime = [g_seedToTypeMap objectForKey:key];
-                        if (runtime) {
-                            return runtime;
-                        }
-                    }
-                }
-            }
-        } @catch (NSException *exception) {
-            // Silently fail - don't crash for cursor lookup
-            NSLog(@"⚠️ Exception in cursorTypeFromSeed: %@", exception.reason);
-        } @catch (...) {
-            NSLog(@"⚠️ Unknown exception in cursorTypeFromSeed");
-        }
-    }
-    switch(seed) {
-        // Desktop'ta SVG karşılığı olan tiplere normalize edilmiş seed map
-        case 741324: return @"default";      // auto → default
-        case 741336: return @"default";      // none → default (gizli cursor kayıtta default gösterilir)
-        case 741338: return @"default";      // context-menu → default (SVG yok)
-        case 741339: return @"pointer";
-        case 741341: return @"progress";
-        case 741343: return @"progress";     // wait → progress
-        case 741345: return @"crosshair";    // cell → crosshair (en yakın SVG)
-        case 741347: return @"crosshair";
-        case 741357: return @"text";
-        case 741359: return @"text";         // vertical-text → text
-        case 741361: return @"alias";
-        case 741362: return @"copy";
-        case 741364: return @"all-scroll";   // move → all-scroll
-        case 741368: return @"not-allowed";  // no-drop → not-allowed
-        case 741370: return @"not-allowed";
-        case 741381: return @"grab";
-        case 741385: return @"grabbing";
-        case 741389: return @"col-resize";
-        case 741393: return @"row-resize";
-        case 741397: return @"ns-resize";    // n-resize → ns-resize
-        case 741398: return @"col-resize";   // e-resize → col-resize
-        case 741409: return @"ns-resize";    // s-resize → ns-resize
-        case 741413: return @"col-resize";   // w-resize → col-resize
-        case 741417: return @"nesw-resize";  // ne-resize → nesw-resize
-        case 741418: return @"nwse-resize";  // nw-resize → nwse-resize
-        case 741420: return @"nwse-resize";  // se-resize → nwse-resize
-        case 741424: return @"nesw-resize";  // sw-resize → nesw-resize
-        case 741426: return @"col-resize";   // ew-resize → col-resize
-        case 741436: return @"ns-resize";
-        case 741438: return @"nesw-resize";
-        case 741442: return @"nwse-resize";
-        case 741444: return @"zoom-in";
-        case 741446: return @"zoom-out";
-        default: return nil;
-    }
-}
-
-// Image-based cursor detection using known patterns from mapping
-static NSString* cursorTypeFromImageSignature(NSImage *image, NSPoint hotspot, NSCursor *cursor) {
-    if (!image) {
-        return nil;
-    }
-
-    NSSize size = [image size];
-    CGFloat width = size.width;
-    CGFloat height = size.height;
-    CGFloat aspectRatio = width > 0 ? width / height : 0;
-    CGFloat relativeX = width > 0 ? hotspot.x / width : 0;
-    CGFloat relativeY = height > 0 ? hotspot.y / height : 0;
-
-    // Tolerance for floating point comparison
-    CGFloat tolerance = 0.05;
-    CGFloat tightTolerance = 0.02; // For precise hotspot matching
-
-    // Helper lambda for approximate comparison
-    auto approx = [tolerance](CGFloat a, CGFloat b) -> BOOL {
-        return fabs(a - b) < tolerance;
-    };
-
-    auto approxTight = [tightTolerance](CGFloat a, CGFloat b) -> BOOL {
-        return fabs(a - b) < tightTolerance;
-    };
-
-    // Pattern matching based on cursor-nscursor-mapping.json
-
-    // none: 1x1, ratio=1.0, hotspot=(0,0)
-    if (approx(width, 1) && approx(height, 1)) {
-        return @"none";
-    }
-
-    // text: 22x23, ratio=0.956, hotspot rel=(0.52, 0.48)
-    if (approx(width, 22) && approx(height, 23) && approx(aspectRatio, 0.956)) {
-        return @"text";
-    }
-
-    // vertical-text: 22x21, ratio=1.047, hotspot rel=(0.5, 0.476)
-    if (approx(width, 22) && approx(height, 21) && approx(aspectRatio, 1.047)) {
-        return @"vertical-text";
-    }
-
-    // pointer: 32x32, ratio=1.0, hotspot rel=(0.406, 0.25)
-    if (approx(width, 32) && approx(height, 32) && approx(relativeY, 0.25)) {
-        return @"pointer";
-    }
-
-    // grab/grabbing: 32x32, ratio=1.0, hotspot rel=(0.5, 0.531)
-    // Distinguished by pointer equality
-    if (approx(width, 32) && approx(height, 32) && approx(relativeY, 0.531)) {
-        if (cursor) {
-            if (cursor == [NSCursor closedHandCursor]) {
-                return @"grabbing";
-            }
-            if (cursor == [NSCursor openHandCursor]) {
-                return @"grab";
-            }
-        }
-        return @"grab"; // Default to grab if can't distinguish
-    }
-
-    // 24x24 cursors: crosshair vs move/all-scroll
-    // Distinguished by precise hotspot position
-    if (approx(width, 24) && approx(height, 24)) {
-        // crosshair: hotspot rel=(0.458, 0.458)
-        if (approxTight(relativeX, 0.458) && approxTight(relativeY, 0.458)) {
-            return @"crosshair";
-        }
-        // move/all-scroll: hotspot rel=(0.5, 0.5)
-        if (approxTight(relativeX, 0.5) && approxTight(relativeY, 0.5)) {
-            return @"move"; // or all-scroll, they're identical
-        }
-        // Fallback for 24x24
-        return @"crosshair";
-    }
-
-    // help/cell: 18x18, ratio=1.0, hotspot rel=(0.5, 0.5)
-    // NOTE: Cannot distinguish between help and cell by image alone
-    if (approx(width, 18) && approx(height, 18)) {
-        return @"cell"; // Default to cell for compatibility
-    }
-
-    // col-resize: 30x24, ratio=1.25, hotspot rel=(0.5, 0.5)
-    if (approx(width, 30) && approx(height, 24) && approx(aspectRatio, 1.25)) {
-        return @"col-resize";
-    }
-
-    // e-resize/w-resize/ew-resize: 24x18, ratio=1.333, hotspot rel=(0.5, 0.5)
-    // Distinguish using pointer equality
-    if (approx(width, 24) && approx(height, 18) && approx(aspectRatio, 1.333)) {
-        if (cursor) {
-            if ([NSCursor respondsToSelector:@selector(resizeLeftCursor)] &&
-                cursor == [NSCursor resizeLeftCursor]) {
-                return @"w-resize";
-            }
-            if ([NSCursor respondsToSelector:@selector(resizeRightCursor)] &&
-                cursor == [NSCursor resizeRightCursor]) {
-                return @"e-resize";
-            }
-            if ([NSCursor respondsToSelector:@selector(resizeLeftRightCursor)] &&
-                cursor == [NSCursor resizeLeftRightCursor]) {
-                return @"ew-resize";
-            }
-        }
-        return @"ew-resize"; // Default to ew-resize
-    }
-
-    // row-resize: 24x28, ratio=0.857, hotspot rel=(0.5, 0.5)
-    if (approx(width, 24) && approx(height, 28) && approx(aspectRatio, 0.857)) {
-        return @"row-resize";
-    }
-
-    // n-resize/s-resize/ns-resize: 18x28, ratio=0.643, hotspot rel=(0.5, 0.5)
-    // Distinguish using pointer equality
-    if (approx(width, 18) && approx(height, 28) && approx(aspectRatio, 0.643)) {
-        if (cursor) {
-            if ([NSCursor respondsToSelector:@selector(resizeUpCursor)] &&
-                cursor == [NSCursor resizeUpCursor]) {
-                return @"n-resize";
-            }
-            if ([NSCursor respondsToSelector:@selector(resizeDownCursor)] &&
-                cursor == [NSCursor resizeDownCursor]) {
-                return @"s-resize";
-            }
-            if ([NSCursor respondsToSelector:@selector(resizeUpDownCursor)] &&
-                cursor == [NSCursor resizeUpDownCursor]) {
-                return @"ns-resize";
-            }
-        }
-        return @"ns-resize"; // Default to ns-resize
-    }
-
-    // ne-resize/nw-resize/se-resize/sw-resize/nesw-resize/nwse-resize: 22x22, ratio=1.0, hotspot rel=(0.5, 0.5)
-    if (approx(width, 22) && approx(height, 22)) {
-        return @"nwse-resize"; // Default to nwse-resize for all diagonal cursors
-    }
-
-    // zoom-in/zoom-out: 28x26, ratio=1.077, hotspot rel=(0.428, 0.423)
-    // NOTE: Cannot distinguish between zoom-in and zoom-out by image or pointer alone
-    // They use the same image and there's no standard NSCursor for zoom
-    if (approx(width, 28) && approx(height, 26) && approx(aspectRatio, 1.077)) {
-        return @"zoom-in"; // Default to zoom-in (cannot distinguish from zoom-out)
-    }
-
-    // alias: 16x21, ratio=0.762, hotspot rel=(0.688, 0.143)
-    if (approx(width, 16) && approx(height, 21) && approx(aspectRatio, 0.762)) {
-        return @"alias";
-    }
-
-    // 28x40 cursors: default/auto vs context-menu/progress/wait/copy/no-drop/not-allowed
-    // Distinguished by precise hotspot position and pointer equality
-    if (approx(width, 28) && approx(height, 40) && approx(aspectRatio, 0.7)) {
-        // auto/default: hotspot rel=(0.161, 0.1) - hotspot at (4.5, 4)
-        if (approxTight(relativeX, 0.161) && approxTight(relativeY, 0.1)) {
-            return @"default";
-        }
-        // context-menu/progress/wait/copy/no-drop/not-allowed: hotspot rel=(0.179, 0.125) - hotspot at (5, 5)
-        if (approxTight(relativeX, 0.179) && approxTight(relativeY, 0.125)) {
-            // Try pointer equality for standard cursors
-            if (cursor) {
-                if (cursor == [NSCursor contextualMenuCursor]) {
-                    return @"context-menu";
-                }
-                if (cursor == [NSCursor dragCopyCursor]) {
-                    return @"copy";
-                }
-                if (cursor == [NSCursor operationNotAllowedCursor]) {
-                    return @"not-allowed";
-                }
-            }
-            // NOTE: progress, wait, no-drop don't have standard NSCursor pointers
-            // Return "progress" as default for this hotspot pattern (better than "default")
-            // Let cursor name detection in caller distinguish between progress/wait
-            return @"progress";
-        }
-        return @"default";
-    }
-
-    return nil;
-}
-
 static NSString* cursorTypeFromNSCursor(NSCursor *cursor) {
-    if (!cursor) {
-        return @"default";
-    }
+    if (!cursor) return @"default";
+    InitializeCursorFingerprintMap();
 
-    // PRIORITY 1: Standard macOS cursor pointer equality (fastest and most reliable)
-    if (cursor == [NSCursor arrowCursor]) {
-        return @"default";
-    }
-    if (cursor == [NSCursor IBeamCursor]) {
-        return @"text";
-    }
-    if ([NSCursor respondsToSelector:@selector(IBeamCursorForVerticalLayout)] &&
-        cursor == [NSCursor IBeamCursorForVerticalLayout]) {
-        return @"text";
-    }
-    if (cursor == [NSCursor pointingHandCursor]) {
-        return @"pointer";
-    }
-    if (cursor == [NSCursor crosshairCursor]) {
-        return @"crosshair";
-    }
-    if (cursor == [NSCursor openHandCursor]) {
-        return @"grab";
-    }
-    if (cursor == [NSCursor closedHandCursor]) {
-        return @"grabbing";
-    }
-    if (cursor == [NSCursor operationNotAllowedCursor]) {
-        return @"not-allowed";
-    }
-    if (cursor == [NSCursor dragCopyCursor]) {
-        return @"copy";
-    }
-    if (cursor == [NSCursor dragLinkCursor]) {
-        return @"alias";
-    }
-    if (cursor == [NSCursor contextualMenuCursor]) {
-        return @"context-menu";
-    }
+    // Image evidence is authoritative. currentSystemCursor returns detached
+    // NSCursor objects, so pointer identity and image dimensions cannot identify
+    // the shape (opposite diagonals and zoom +/- share the same dimensions).
+    NSString *fingerprintType = LookupCursorTypeByFingerprint(cursor, NULL);
+    if (fingerprintType) return fingerprintType;
 
-    // Resize cursors
-    if ([NSCursor respondsToSelector:@selector(resizeLeftRightCursor)]) {
-        if (cursor == [NSCursor resizeLeftRightCursor]) {
-            return @"col-resize";
-        }
-    }
-    if ([NSCursor respondsToSelector:@selector(resizeUpDownCursor)]) {
-        if (cursor == [NSCursor resizeUpDownCursor]) {
-            return @"row-resize";
-        }
-    }
+    // Some standard cursors have lazily populated images in headless Node hosts.
+    if (cursor == [NSCursor arrowCursor]) return @"default";
+    if (cursor == [NSCursor IBeamCursor] || cursor == [NSCursor IBeamCursorForVerticalLayout]) return @"text";
 
-    NSString *privateCursorName = CursorNameFromNSCursor(cursor);
-    if (privateCursorName) {
-        NSString *normalizedName = NormalizeCursorName(privateCursorName);
-        NSString *mappedType = normalizedName ? [g_cursorNameMap objectForKey:normalizedName] : nil;
-        if (mappedType) {
-            CacheCursorFingerprint(cursor, mappedType, nil);
-            return mappedType;
-        }
-        NSString *typeFromName = cursorTypeFromCursorName(privateCursorName);
-        if (typeFromName) {
-            RegisterCursorNameMapping(privateCursorName, typeFromName);
-            CacheCursorFingerprint(cursor, typeFromName, nil);
-            return typeFromName;
-        }
-    }
-
-    NSString *fingerprintHint = nil;
-    NSString *fingerprintMatch = LookupCursorTypeByFingerprint(cursor, &fingerprintHint);
-    if (fingerprintMatch) {
-        return fingerprintMatch;
-    }
-
-    // PRIORITY 2: Image-based detection (for browser custom cursors)
-    NSImage *cursorImage = [cursor image];
-    NSPoint hotspot = [cursor hotSpot];
-    NSString *imageBasedType = cursorTypeFromImageSignature(cursorImage, hotspot, cursor);
-    if (imageBasedType) {
-        if (![imageBasedType isEqualToString:@"default"]) {
-            CacheCursorFingerprint(cursor, imageBasedType, fingerprintHint);
-        }
-        return imageBasedType;
-    }
-
-    // PRIORITY 3: Name-based detection
-    NSString *className = NSStringFromClass([cursor class]);
-    NSString *derived = cursorTypeFromCursorName(className);
-    if (derived) {
-        if (![derived isEqualToString:@"default"]) {
-            CacheCursorFingerprint(cursor, derived, fingerprintHint);
-        }
-        return derived;
-    }
-
-    // Default fallback
-    return @"default";
+    NSString *name = CursorNameFromNSCursor(cursor);
+    NSString *mapped = name ? [g_cursorNameMap objectForKey:NormalizeCursorName(name)] : nil;
+    return mapped ?: cursorTypeFromCursorName(name) ?: @"default";
 }
 
 static NSString* detectSystemCursorType(void) {
     InitializeCursorFingerprintMap();
     __block NSString *cursorType = nil;
-    __block NSCursor *detectedCursor = nil;
-
-    NSString *cgsName = CopyCurrentCursorNameFromCGS();
-    if (cgsName && [cgsName length] > 0) {
-        NSString *normalized = NormalizeCursorName(cgsName);
-        NSString *mapped = normalized ? [g_cursorNameMap objectForKey:normalized] : nil;
-        if (mapped) {
-            return mapped;
-        }
-        NSString *derivedFromName = cursorTypeFromCursorName(cgsName);
-        if (derivedFromName) {
-            RegisterCursorNameMapping(cgsName, derivedFromName);
-            return derivedFromName;
-        }
-    }
-
-    int cursorSeed = SafeCGSCurrentCursorSeed();
-    if (cursorSeed > 0) {
-        NSString *seedType = cursorTypeFromSeed(cursorSeed);
-        if (seedType) {
-            return seedType;
-        }
-    }
-
     void (^fetchCursorBlock)(void) = ^{
-        NSCursor *currentCursor = nil;
-
-        // Try different methods to get current cursor
+        NSCursor *cursor = nil;
         if ([NSCursor respondsToSelector:@selector(currentSystemCursor)]) {
-            currentCursor = [NSCursor currentSystemCursor];
+            cursor = [NSCursor currentSystemCursor];
         }
-
-        if (!currentCursor) {
-            currentCursor = [NSCursor currentCursor];
+        if (cursor && cursor.image.size.width > 0 && cursor.image.size.height > 0) {
+            cursorType = cursorTypeFromNSCursor(cursor);
+            return;
         }
-
-        detectedCursor = currentCursor; // Save for seed learning
-
-        if (currentCursor) {
-            NSString *directType = cursorTypeFromNSCursor(currentCursor);
-            NSString *fallbackType = directType;
-
-            if (directType && ![directType isEqualToString:@"default"]) {
-                cursorType = directType;
-                return;
-            }
-
-            NSString *className = NSStringFromClass([currentCursor class]);
-            NSString *description = [currentCursor description];
-            // Use more direct cursor detection approach
-            NSImage *cursorImage = [currentCursor image];
-            NSPoint hotspot = [currentCursor hotSpot];
-            NSSize imageSize = [cursorImage size];
-
-            // ROBUST cursor detection - works with any cursor size
-            CGFloat aspectRatio = imageSize.width / imageSize.height;
-            CGFloat relativeHotspotX = hotspot.x / imageSize.width;
-            CGFloat relativeHotspotY = hotspot.y / imageSize.height;
-            BOOL fallbackDefaults = (fallbackType && [fallbackType isEqualToString:@"default"]);
-            BOOL cursorNameSuggestsText = NO;
-            if (className && ([className localizedCaseInsensitiveContainsString:@"ibeam"] ||
-                              [className localizedCaseInsensitiveContainsString:@"text"])) {
-                cursorNameSuggestsText = YES;
-            }
-            if (description && ([description localizedCaseInsensitiveContainsString:@"ibeam"] ||
-                                 [description localizedCaseInsensitiveContainsString:@"text"])) {
-                cursorNameSuggestsText = YES;
-            }
-
-
-
-            // UPDATED with real cursor data:
-            // Arrow: 17x23 ratio=0.74 hotspot=(0.24,0.17)
-            // Text: 9x18 ratio=0.50 hotspot=(0.44,0.50)
-            // Pointer: 32x32 ratio=1.00 hotspot=(0.41,0.25)
-
-            // 1. TEXT/I-BEAM CURSOR - narrow ratio, center hotspot
-            if (aspectRatio >= 0.45 && aspectRatio <= 0.60 && // Narrow (0.50 typical)
-                relativeHotspotX >= 0.35 && relativeHotspotX <= 0.55 && // Center X (0.44 typical)
-                relativeHotspotY >= 0.40 && relativeHotspotY <= 0.60) { // Center Y (0.50 typical)
-                BOOL directSaysText = (directType && [directType isEqualToString:@"text"]);
-                if (cursorNameSuggestsText || directSaysText) {
-                    cursorType = @"text";
-                } else {
-                    cursorType = fallbackType ?: @"default";
-                }
-            }
-            // 2. ARROW CURSOR - medium ratio, top-left hotspot
-            else if (aspectRatio >= 0.65 && aspectRatio <= 0.85 && // Medium (0.74 typical)
-                     relativeHotspotX >= 0.15 && relativeHotspotX <= 0.35 && // Left side (0.24 typical)
-                     relativeHotspotY >= 0.10 && relativeHotspotY <= 0.25) { // Top area (0.17 typical)
-                cursorType = @"default";
-            }
-            // 3. POINTER CURSOR - square ratio, left-center hotspot
-            else if (aspectRatio >= 0.90 && aspectRatio <= 1.10 && // Square (1.00 typical)
-                     relativeHotspotX >= 0.30 && relativeHotspotX <= 0.50 && // Left-center (0.41 typical)
-                     relativeHotspotY >= 0.15 && relativeHotspotY <= 0.35) { // Upper area (0.25 typical)
-                cursorType = @"pointer";
-            }
-            else {
-                // Try to use a different approach - cursor name introspection
-                NSString *derived = cursorTypeFromNSCursor(currentCursor);
-                if (derived && ![derived isEqualToString:@"default"]) {
-                    cursorType = derived;
-                    // NSLog(@"🎯 DERIVED FROM ANALYSIS: %@", cursorType);
-                } else {
-                    cursorType = fallbackType ?: @"default";
-                    // NSLog(@"🎯 FALLBACK TO DEFAULT (will check AX)");
-                }
-            }
-
-            if (cursorType && ![cursorType isEqualToString:@"default"]) {
-                CacheCursorFingerprint(currentCursor, cursorType, nil);
-            }
-        } else {
-            // NSLog(@"🖱️ No current cursor found");
-            cursorType = @"default";
+        NSString *name = CopyCurrentCursorNameFromCGS();
+        NSString *mapped = name ? [g_cursorNameMap objectForKey:NormalizeCursorName(name)] : nil;
+        cursorType = mapped ?: cursorTypeFromCursorName(name);
+        // currentCursor belongs to this process. It must never replace another
+        // application's system cursor while the recorder runs in the background.
+        if (!cursorType && NSApp.isActive) {
+            cursorType = cursorTypeFromNSCursor([NSCursor currentCursor]);
         }
     };
-
     if ([NSThread isMainThread]) {
         fetchCursorBlock();
     } else {
         dispatch_sync(dispatch_get_main_queue(), fetchCursorBlock);
     }
-
-    if (cursorType && ![cursorType isEqualToString:@"default"] && cursorSeed > 0) {
-        addCursorToSeedMap(cursorType, cursorSeed);
-    }
-
-    return cursorType;
+    return cursorType ?: @"default";
 }
 
 // Desktop'ta SVG karşılığı olmayan cursor tiplerini desteklenen tiplere normalize et
@@ -1950,6 +1360,7 @@ NSString* getCursorType() {
             } else {
                 NSLog(@"🎯 %@", finalType);
             }
+            [lastLoggedType release];
             lastLoggedType = [finalType copy];
         }
         return finalType;

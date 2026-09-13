@@ -19,25 +19,25 @@ Bu dosya, macOS native cursor type'larının Electron/CSS cursor constant'ların
 | `CURSOR_TYPES.copy` | `copy` | `NSCursor.dragCopyCursor` | ✅ |
 | `CURSOR_TYPES.alias` | `alias` | `NSCursor.dragLinkCursor` | ✅ |
 | `CURSOR_TYPES["not-allowed"]` | `not-allowed` | `NSCursor.operationNotAllowedCursor` | ✅ |
-| `CURSOR_TYPES.help` | `help` | Pattern: "help", "question" | ✅ |
-| `CURSOR_TYPES.progress` | `progress` | Pattern: "progress", "wait", "busy" | ✅ |
+| `CURSOR_TYPES.help` | `help` | HIServices `help` PNG/PDF | ✅ |
+| `CURSOR_TYPES.progress` | `progress` | HIServices `busybutclickable` | ✅ |
 
 ### Zoom Cursor'lar
 | Electron Constant | CSS Value | macOS Native | Durum |
 |-------------------|-----------|--------------|--------|
 | `CURSOR_TYPES.crosshair` | `crosshair` | `NSCursor.crosshairCursor` | ✅ |
-| `CURSOR_TYPES["zoom-in"]` | `zoom-in` | Pattern: "zoom" + NOT "out" | ✅ |
-| `CURSOR_TYPES["zoom-out"]` | `zoom-out` | Pattern: "zoom" + "out" | ✅ |
+| `CURSOR_TYPES["zoom-in"]` | `zoom-in` | `NSCursor.zoomInCursor` / HIServices `zoomin` | ✅ |
+| `CURSOR_TYPES["zoom-out"]` | `zoom-out` | `NSCursor.zoomOutCursor` / HIServices `zoomout` | ✅ |
 
 ### Resize Cursor'lar
 | Electron Constant | CSS Value | macOS Native | Durum |
 |-------------------|-----------|--------------|--------|
 | `CURSOR_TYPES["row-resize"]` | `row-resize` | `NSCursor.resizeUpDownCursor` | ✅ |
 | `CURSOR_TYPES["col-resize"]` | `col-resize` | `NSCursor.resizeLeftRightCursor` | ✅ |
-| `CURSOR_TYPES["ns-resize"]` | `ns-resize` | → maps to `row-resize` | ✅ |
-| `CURSOR_TYPES["nwse-resize"]` | `nwse-resize` | Pattern: "diagonal-down", "nwse" | ✅ |
-| `CURSOR_TYPES["nesw-resize"]` | `nesw-resize` | Pattern: "diagonal-up", "nesw" | ✅ |
-| `CURSOR_TYPES["all-scroll"]` | `all-scroll` | Pattern: "all-scroll", "omnidirectional" | ✅ |
+| `CURSOR_TYPES["ns-resize"]` | `ns-resize` | Dikey frame resize; `row-resize` ayrı tutulur | ✅ |
+| `CURSOR_TYPES["nwse-resize"]` | `nwse-resize` | Frame resize: sol üst / sağ alt | ✅ |
+| `CURSOR_TYPES["nesw-resize"]` | `nesw-resize` | Frame resize: sağ üst / sol alt | ✅ |
+| `CURSOR_TYPES["all-scroll"]` | `all-scroll` | HIServices `move` | ✅ |
 
 ### Mouse Events
 | Electron Constant | Event Type | Native Detection | Durum |
@@ -50,63 +50,42 @@ Bu dosya, macOS native cursor type'larının Electron/CSS cursor constant'ların
 | `MOUSE_EVENTS.WHEEL` | `wheel` | Scroll wheel events | ✅ |
 | `MOUSE_EVENTS.HOVER` | `hover` | Position stability | ✅ |
 
-## 🔧 Detection Methods
+## Algılama sırası
 
-### 1. Direct NSCursor Equality (En Güvenilir)
-```objc
-if (cursor == [NSCursor arrowCursor]) return @"default";
-if (cursor == [NSCursor IBeamCursor]) return @"text";
+1. `NSCursor.currentSystemCursor` ile ekranın gerçek imleci alınır. Kayıt işlemi arka plandayken uygulamanın kendi `currentCursor` değeri kullanılmaz.
+2. Görselin piksel içeriği ve hotspot'u sistem imleçlerinin fingerprint'leriyle karşılaştırılır. AppKit görselleri ile HIServices PNG/PDF kaynaklarının 1x ve 2x temsilleri tanıtılır. Chromium/WebKit'in `move` gibi CoreCursor varyantları AppKit üzerinden, sistem gölgesi dahil render edilir; ham PDF aynı piksel görüntüsünü üretmez.
+3. macOS 15 ve üzerinde frame resize'ın sekiz kenar/köşe konumu ve içe/dışa/iki yönlü çeşitleri; row/column resize'ın tek ve çift yönleri ayrı ayrı tanıtılır.
+4. Görsel eşleşmezse bilinen imleç adları kullanılır. Tanınmayan görseller `default` olur; sadece boyutuna bakarak resize, zoom veya hand tipi atanmaz.
+5. Sonuç desktop'taki SVG tiplerine normalize edilir. `context-menu` → `default`, `wait` → `progress`, `move` → `all-scroll`; tek yönlü resize tipleri ilgili eksene dönüştürülür.
+
+`CGSCurrentCursorSeed` bir değişiklik sayacıdır; tip kimliği olarak kullanılmaz. Eski `MAC_RECORDER_CURSOR_MAP` dosyalarındaki `seed` alanları yok sayılır, fingerprint ve privateName eşleştirmeleri desteklenir. Accessibility tahminleri yalnızca debug çıktısındadır.
+
+Konum değişmese bile cursor tipi değiştiğinde hareket/drag örneği kaydedilir.
+
+## Test
+
+macOS'ta, kurulu Node header'ları ve Xcode Command Line Tools ile:
+
+```sh
+npm run test:cursor
 ```
 
-### 2. Pattern Matching (Cursor Name/Description)
-```objc
-if ([normalized containsString:@"resize"]) { ... }
-if ([normalized containsString:@"zoom"]) { ... }
+Test üretim kodunu derleyerek AppKit imleçlerini, bunların bağımsız 1x/2x bitmap kopyalarını, eski sistem kaynaklarını, isim eşleştirmelerini ve sabit konumdaki şekil değişikliklerini kontrol eder. AppKit sistem görsellerine erişim gerekir.
+
+Gerçek WindowServer imlecini de doğrulamak için:
+
+```sh
+MAC_RECORDER_TEST_LIVE_CURSOR=1 npm run test:cursor
 ```
 
-### 3. Shape-Based Detection (Hotspot + Aspect Ratio)
-```objc
-// Text cursor: narrow (0.50), center hotspot (0.44, 0.50)
-// Arrow cursor: medium (0.74), top-left hotspot (0.24, 0.17)
-// Pointer cursor: square (1.00), left-center hotspot (0.41, 0.25)
+Bu seçenek imlecin altında kısa süreli bir test penceresi açar; test bitince pencere kapanır, önceki uygulama ve imleç geri yüklenir. Test sırasında fareyi hareket ettirmeyin.
+
+Gerçek Chromium CSS imleçleri ve `grab → grabbing → grab` basma/bırakma geçişi için (önce `npm run build`):
+
+```sh
+MAC_RECORDER_ELECTRON=/path/to/Electron.app/Contents/MacOS/Electron npm run test:cursor:electron
 ```
 
-### 4. Accessibility API (Context-Aware)
-```objc
-AXUIElementCopyElementAtPosition() → role → cursor type
-```
+Bu test de kısa süreli bir pencere açar. Electron zaten test ortamında kuruluysa executable değişkeni gerekmez.
 
-## 📝 Notlar
-
-### İyileştirmeler (Latest)
-- ✅ `ns-resize` → `row-resize` mapping (Electron uyumluluğu)
-- ✅ `all-scroll` pattern detection eklendi
-- ✅ `progress` (wait/busy yerine)
-- ✅ `contextualMenuCursor` → `pointer` mapping
-
-### Bilinen Sınırlamalar
-- Custom cursor'lar (resim-based) sadece pattern matching ile detect edilir
-- Bazı uygulamalar custom cursor implementation kullanır (tam detection garanti edilemez)
-- Shape-based detection sadece temel cursor'lar için optimize edilmiş
-
-## 🧪 Test Etme
-
-Cursor detection'ı test etmek için:
-
-```javascript
-const MacRecorder = require('./index.js');
-const recorder = new MacRecorder();
-
-// Start cursor tracking
-await recorder.startCursorCapture('cursor-test.json', {
-    videoRelative: false
-});
-
-// Move mouse over different UI elements
-// Stop after a few seconds
-await recorder.stopCursorCapture();
-
-// Check cursor-test.json for detected cursor types
-```
-
-Her cursor event'inde `cursorType` field'ı Electron constant'larınızla uyumlu olacaktır.
+Bilinmeyen özel uygulama görselleri veya gelecekte macOS'un sistem imleç görüntüsünü sağlamadığı durumlar `default` dönebilir. macOS 15 öncesindeki sistemler HIServices kaynakları ve mevcut NSCursor factory'leri üzerinden desteklenir.
