@@ -1,5 +1,6 @@
 #import "sync_timeline.h"
 #import "logging.h"
+#include <vector>
 
 static dispatch_queue_t MRSyncQueue() {
     static dispatch_once_t onceToken;
@@ -34,6 +35,8 @@ static BOOL g_primaryReady = YES;
 static CMTime g_primaryStartTimestamp = kCMTimeInvalid;
 static CMTime g_primaryHoldFirstTimestamp = kCMTimeInvalid;
 static BOOL g_primaryHoldLogged = NO;
+struct MRPrimaryPauseRange { CMTime start; CMTime end; };
+static std::vector<MRPrimaryPauseRange> g_primaryPauses;
 
 void MRSyncConfigure(BOOL expectAudio) {
     dispatch_sync(MRSyncQueue(), ^{
@@ -58,6 +61,7 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_primaryStartTimestamp = kCMTimeInvalid;
         g_primaryHoldFirstTimestamp = kCMTimeInvalid;
         g_primaryHoldLogged = NO;
+        g_primaryPauses.clear();
     });
 }
 
@@ -94,7 +98,10 @@ double MRSyncGetPausedDurationSeconds(void) {
     __block double duration = 0;
     dispatch_sync(MRSyncQueue(), ^{
         duration = g_totalPausedSeconds;
-        if (g_isPaused && g_pauseStartedAt > 0) {
+        if (g_expectPrimary && g_isPaused && !g_primaryPauses.empty()) {
+            duration += MAX(0, CMTimeGetSeconds(CMTimeSubtract(
+                CMClockGetTime(CMClockGetHostTimeClock()), g_primaryPauses.back().start)));
+        } else if (g_isPaused && g_pauseStartedAt > 0) {
             duration += MAX(0, CFAbsoluteTimeGetCurrent() - g_pauseStartedAt);
         }
     });
@@ -318,10 +325,65 @@ void MRSyncConfigurePrimaryStart(BOOL expectPrimary) {
         g_primaryStartTimestamp = kCMTimeInvalid;
         g_primaryHoldFirstTimestamp = kCMTimeInvalid;
         g_primaryHoldLogged = NO;
+        g_primaryPauses.clear();
     });
     if (expectPrimary) {
         MRLog(@"🔄 A/V SYNC: Primary-source start barrier enabled");
     }
+}
+
+BOOL MRSyncUsesPrimaryTimeline(void) {
+    __block BOOL enabled = NO;
+    dispatch_sync(MRSyncQueue(), ^{ enabled = g_expectPrimary; });
+    return enabled;
+}
+
+CMTime MRSyncPrimaryStartTimestamp(void) {
+    __block CMTime timestamp = kCMTimeInvalid;
+    dispatch_sync(MRSyncQueue(), ^{ timestamp = g_primaryStartTimestamp; });
+    return timestamp;
+}
+
+CMTime MRSyncHostTimestamp(CMTime timestamp, CMClockRef captureClock) {
+    if (!CMTIME_IS_NUMERIC(timestamp) || !captureClock) return kCMTimeInvalid;
+    return CMSyncConvertTime(timestamp, captureClock, CMClockGetHostTimeClock());
+}
+
+CMTime MRSyncPrimaryMediaTime(CMTime hostTimestamp) {
+    if (!CMTIME_IS_NUMERIC(hostTimestamp)) return kCMTimeInvalid;
+    __block CMTime result = kCMTimeInvalid;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (!g_expectPrimary || !CMTIME_IS_NUMERIC(g_primaryStartTimestamp) ||
+            CMTimeCompare(hostTimestamp, g_primaryStartTimestamp) < 0) return;
+        CMTime paused = kCMTimeZero;
+        for (const auto &range : g_primaryPauses) {
+            if (CMTimeCompare(hostTimestamp, range.start) < 0) break;
+            if (!CMTIME_IS_NUMERIC(range.end) || CMTimeCompare(hostTimestamp, range.end) < 0) return;
+            paused = CMTimeAdd(paused, CMTimeSubtract(range.end, range.start));
+        }
+        result = CMTimeSubtract(CMTimeSubtract(hostTimestamp, g_primaryStartTimestamp), paused);
+    });
+    return result;
+}
+
+void MRSyncPauseAtHostTime(CMTime timestamp) {
+    if (!CMTIME_IS_NUMERIC(timestamp)) return;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (!g_expectPrimary || g_isPaused) return;
+        g_primaryPauses.push_back({timestamp, kCMTimeInvalid});
+        g_isPaused = YES;
+    });
+}
+
+void MRSyncResumeAtHostTime(CMTime timestamp) {
+    if (!CMTIME_IS_NUMERIC(timestamp)) return;
+    dispatch_sync(MRSyncQueue(), ^{
+        if (!g_expectPrimary || !g_isPaused || g_primaryPauses.empty()) return;
+        auto &range = g_primaryPauses.back();
+        range.end = CMTimeMaximum(timestamp, range.start);
+        g_totalPausedSeconds += CMTimeGetSeconds(CMTimeSubtract(range.end, range.start));
+        g_isPaused = NO;
+    });
 }
 
 void MRSyncMarkPrimaryStarted(CMTime timestamp) {

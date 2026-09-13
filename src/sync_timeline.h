@@ -40,6 +40,16 @@ void MRSyncConfigurePrimaryStart(BOOL expectPrimary);
 void MRSyncMarkPrimaryStarted(CMTime timestamp);
 BOOL MRSyncShouldHoldForPrimary(CMTime timestamp);
 
+// iPhone-only timeline. Convert each capture session's PTS to the host clock
+// before comparing sources; preserve late arrivals instead of rebasing each
+// file to its own first sample. Invalid media time means discard the sample.
+BOOL MRSyncUsesPrimaryTimeline(void);
+CMTime MRSyncPrimaryStartTimestamp(void);
+CMTime MRSyncHostTimestamp(CMTime timestamp, CMClockRef captureClock);
+CMTime MRSyncPrimaryMediaTime(CMTime hostTimestamp);
+void MRSyncPauseAtHostTime(CMTime timestamp);
+void MRSyncResumeAtHostTime(CMTime timestamp);
+
 // Optional hard stop limit (seconds) shared across capture components.
 void MRSyncSetStopLimitSeconds(double seconds);
 double MRSyncGetStopLimitSeconds(void);

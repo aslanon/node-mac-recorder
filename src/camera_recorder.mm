@@ -111,6 +111,7 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
 @property (nonatomic, strong) AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor;
 @property (nonatomic, assign) CMTime startTime;
 @property (nonatomic, assign) BOOL writerStarted;
+@property (nonatomic, assign) BOOL primaryPrefixWritten;
 @property (nonatomic, copy) NSString *outputPath;
 @property (nonatomic, copy) NSString *lastFinishedOutputPath;
 
@@ -510,7 +511,8 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     if (self.stopInFlight || !self.isRecording || output != self.videoOutput) return;
     @try {
 
-    if (MRSyncIsPaused()) {
+    BOOL primaryTimeline = MRSyncUsesPrimaryTimeline();
+    if (!primaryTimeline && MRSyncIsPaused()) {
         return;
     }
 
@@ -532,6 +534,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     }
 
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    CMTime primaryMediaTime = kCMTimeInvalid;
+    if (primaryTimeline) {
+        timestamp = MRSyncHostTimestamp(timestamp, self.session.masterClock);
+        primaryMediaTime = MRSyncPrimaryMediaTime(timestamp);
+        if (!CMTIME_IS_NUMERIC(primaryMediaTime)) return;
+    }
 
     // Drop camera warm-up frames until the primary source (USB iPhone screen)
     // has committed its first frame. This keeps all files on one t=0 boundary.
@@ -549,7 +557,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     [self completeStart:YES token:self.activeToken];
 
     // Hold camera frames until we see audio so timelines stay aligned
-    if (MRSyncShouldHoldVideoFrame(timestamp)) {
+    if (!primaryTimeline && MRSyncShouldHoldVideoFrame(timestamp)) {
         return;
     }
 
@@ -561,13 +569,16 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         }
         [self.writer startSessionAtSourceTime:kCMTimeZero];  // CRITICAL: t=0 timeline
         self.writerStarted = YES;
+        self.primaryPrefixWritten = NO;
         
         // LIP SYNC FIX: Align camera startTime with audio's first timestamp for perfect lip sync
         // This ensures camera and audio start from the same reference point
         CMTime audioFirstTimestamp = MRSyncAudioFirstTimestamp();
         CMTime alignmentOffset = MRSyncVideoAlignmentOffset();
         
-        if (CMTIME_IS_VALID(audioFirstTimestamp)) {
+        if (primaryTimeline) {
+            self.startTime = MRSyncPrimaryStartTimestamp();
+        } else if (CMTIME_IS_VALID(audioFirstTimestamp)) {
             // Use audio's first timestamp as reference - this is the key to lip sync
             self.startTime = audioFirstTimestamp;
             CMTime offset = CMTimeSubtract(timestamp, audioFirstTimestamp);
@@ -606,7 +617,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         // This should not happen if sync is working correctly
         adjustedTimestamp = kCMTimeZero;
     }
-    adjustedTimestamp = MRSyncAdjustForPauses(adjustedTimestamp);
+    adjustedTimestamp = primaryTimeline ? primaryMediaTime : MRSyncAdjustForPauses(adjustedTimestamp);
 
     // LIP SYNC FIX: Check stopLimit OR elapsed time to drop frames after recording duration
     // This prevents camera from recording longer than audio
@@ -648,6 +659,15 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     if (!pixelBuffer) {
         MRLog(@"⚠️ No pixel buffer in camera sample");
         return;
+    }
+
+    // Keep a late camera's initial delay in the media itself. Some demuxers
+    // discard MOV empty edits and would otherwise pull the camera ahead of mic.
+    if (primaryTimeline && !self.primaryPrefixWritten) {
+        if (CMTimeCompare(adjustedTimestamp, kCMTimeZero) > 0 &&
+            ![self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:kCMTimeZero]) return;
+        self.primaryPrefixWritten = YES;
+        if (!self.writerInput.readyForMoreMediaData) return;
     }
 
     // Append to writer with normalized timestamp

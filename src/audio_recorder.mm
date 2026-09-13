@@ -7,6 +7,34 @@
 static dispatch_queue_t g_audioCaptureQueue = nil;
 static NSString *g_lastStandaloneAudioOutputPath = nil;
 
+// A real PCM prefix survives readers/exporters that normalize track timestamps
+// and ignore MOV empty edits. Allocation is bounded even for a bad device PTS.
+static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, double seconds) {
+    CMAudioFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sample);
+    const AudioStreamBasicDescription *asbd = format ? CMAudioFormatDescriptionGetStreamBasicDescription(format) : NULL;
+    if (!asbd || asbd->mFormatID != kAudioFormatLinearPCM ||
+        !isfinite(seconds) || seconds <= 0 || seconds > 30 ||
+        !isfinite(asbd->mSampleRate) || asbd->mSampleRate <= 0 ||
+        asbd->mBytesPerFrame == 0) return NULL;
+    double frameCount = floor(seconds * asbd->mSampleRate);
+    double byteCount = frameCount * asbd->mBytesPerFrame;
+    if (frameCount < 1 || byteCount > 32 * 1024 * 1024) return NULL;
+    CMBlockBufferRef block = NULL;
+    OSStatus status = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, NULL, (size_t)byteCount,
+        kCFAllocatorDefault, NULL, 0, (size_t)byteCount, 0, &block);
+    if (status != noErr || !block) return NULL;
+    status = CMBlockBufferFillDataBytes(0, block, 0, (size_t)byteCount);
+    CMSampleBufferRef silence = NULL;
+    if (status == noErr) {
+        CMSampleTimingInfo timing = { CMTimeMake(1, (int32_t)asbd->mSampleRate), kCMTimeZero, kCMTimeInvalid };
+        size_t frameSize = asbd->mBytesPerFrame;
+        CMSampleBufferCreateReady(kCFAllocatorDefault, block, format, (CMItemCount)frameCount,
+            1, &timing, 1, &frameSize, &silence);
+    }
+    CFRelease(block);
+    return silence;
+}
+
 @interface NativeAudioRecorder : NSObject<AVCaptureAudioDataOutputSampleBufferDelegate>
 
 @property (nonatomic, strong) AVAssetWriter *writer;
@@ -14,6 +42,7 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
 @property (nonatomic, strong) AVCaptureSession *session;
 @property (nonatomic, strong) AVCaptureAudioDataOutput *audioOutput;
 @property (nonatomic, assign) BOOL writerStarted;
+@property (nonatomic, assign) BOOL primaryPrefixWritten;
 @property (nonatomic, assign) CMTime startTime;
 @property (nonatomic, strong) NSString *outputPath;
 
@@ -78,8 +107,10 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     AVFileType requestedFileType = AVFileTypeQuickTimeMovie;
     BOOL requestedWebM = NO;
     if (@available(macOS 15.0, *)) {
-        requestedFileType = @"public.webm";
-        requestedWebM = YES;
+        if (!MRSyncUsesPrimaryTimeline()) {
+            requestedFileType = @"public.webm";
+            requestedWebM = YES;
+        }
     }
     
     @try {
@@ -281,7 +312,8 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     @catch (NSException *exception) { NSLog(@"[Recorder] Microphone delegate detach: %@", exception.reason); }
     [outputToStop release];
     if (g_audioCaptureQueue) dispatch_sync(g_audioCaptureQueue, ^{});
-    MRFinishAssetWriterSafely(self.writer, 8.0);
+    MRFinishAssetWriterSafely(self.writer, 8.0,
+        MRSyncUsesPrimaryTimeline() ? MRSyncGetStopLimitSeconds() : -1.0);
 
     self.writer = nil;
     self.writerInput = nil;
@@ -298,7 +330,8 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     if (!self.session || output != self.audioOutput) return;
     @try {
-    if (MRSyncIsPaused()) {
+    BOOL primaryTimeline = MRSyncUsesPrimaryTimeline();
+    if (!primaryTimeline && MRSyncIsPaused()) {
         return;
     }
     if (!CMSampleBufferDataIsReady(sampleBuffer)) {
@@ -318,6 +351,11 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
     }
     
     CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    CMClockRef captureClock = self.session.masterClock;
+    if (primaryTimeline) {
+        timestamp = MRSyncHostTimestamp(timestamp, captureClock);
+        if (!CMTIME_IS_NUMERIC(MRSyncPrimaryMediaTime(timestamp))) return;
+    }
 
     // Keep microphone warm-up outside the recording until the USB iPhone movie
     // output has actually started writing its first frame.
@@ -327,7 +365,7 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
 
     // A/V SYNC: Hold audio samples until camera produces first frame
     // This ensures both audio and camera files start from the same wall-clock moment
-    if (MRSyncShouldHoldAudioSample(timestamp)) {
+    if (!primaryTimeline && MRSyncShouldHoldAudioSample(timestamp)) {
         return;
     }
 
@@ -340,11 +378,24 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
         }
         [self.writer startSessionAtSourceTime:kCMTimeZero];
         self.writerStarted = YES;
-        self.startTime = timestamp;
+        self.primaryPrefixWritten = NO;
+        self.startTime = primaryTimeline ? MRSyncPrimaryStartTimestamp() : timestamp;
     }
     
     if (!self.writerInput.readyForMoreMediaData) {
         return;
+    }
+
+    if (primaryTimeline && !self.primaryPrefixWritten) {
+        double leadingSeconds = CMTimeGetSeconds(MRSyncPrimaryMediaTime(timestamp));
+        CMSampleBufferRef silence = MRCreateSilentAudioPrefix(sampleBuffer, leadingSeconds);
+        if (silence) {
+            BOOL appended = [self.writerInput appendSampleBuffer:silence];
+            CFRelease(silence);
+            if (!appended) return;
+        }
+        self.primaryPrefixWritten = YES;
+        if (!self.writerInput.readyForMoreMediaData) return;
     }
     
     if (CMTIME_IS_INVALID(self.startTime)) {
@@ -372,7 +423,10 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
                         if (CMTIME_COMPARE_INLINE(adjustedPTS, <, kCMTimeZero)) {
                             adjustedPTS = kCMTimeZero;
                         }
-                        adjustedPTS = MRSyncAdjustForPauses(adjustedPTS);
+                        adjustedPTS = primaryTimeline
+                            ? MRSyncPrimaryMediaTime(MRSyncHostTimestamp(timingInfo[i].presentationTimeStamp, captureClock))
+                            : MRSyncAdjustForPauses(adjustedPTS);
+                        if (!CMTIME_IS_NUMERIC(adjustedPTS)) shouldDropBuffer = YES;
                         timingInfo[i].presentationTimeStamp = adjustedPTS;
                         
                         if (stopLimit > 0) {
@@ -392,7 +446,9 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
                         if (CMTIME_COMPARE_INLINE(adjustedDTS, <, kCMTimeZero)) {
                             adjustedDTS = kCMTimeZero;
                         }
-                        timingInfo[i].decodeTimeStamp = MRSyncAdjustForPauses(adjustedDTS);
+                        timingInfo[i].decodeTimeStamp = primaryTimeline
+                            ? MRSyncPrimaryMediaTime(MRSyncHostTimestamp(timingInfo[i].decodeTimeStamp, captureClock))
+                            : MRSyncAdjustForPauses(adjustedDTS);
                     }
                 }
                 
@@ -412,6 +468,9 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
         }
     }
 
+    // Never feed absolute device-clock timestamps into a zero-based iPhone
+    // writer if allocation or retiming failed.
+    if (primaryTimeline && bufferToAppend == sampleBuffer) shouldDropBuffer = YES;
     if (stopLimit > 0 && !shouldDropBuffer && bufferToAppend == sampleBuffer) {
         // No timing info available; approximate using buffer timestamp.
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);

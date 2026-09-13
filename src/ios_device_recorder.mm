@@ -17,7 +17,7 @@ extern "C" bool isStandaloneAudioRecording(void);
 extern "C" bool pauseIOSDeviceRecording(void);
 extern "C" bool resumeIOSDeviceRecording(void);
 
-@interface MRIOSDeviceRecorder : NSObject <AVCaptureFileOutputRecordingDelegate>
+@interface MRIOSDeviceRecorder : NSObject <AVCaptureFileOutputRecordingDelegate, AVCaptureFileOutputDelegate>
 @property(nonatomic, strong) AVCaptureSession *session;
 @property(nonatomic, strong) AVCaptureDeviceInput *deviceInput;
 @property(nonatomic, strong) AVCaptureMovieFileOutput *movieOutput;
@@ -27,6 +27,7 @@ extern "C" bool resumeIOSDeviceRecording(void);
 @property(atomic) BOOL finishCompleted;
 @property(atomic) BOOL startRequested;
 @property(atomic) BOOL stopRequested;
+@property(atomic) BOOL segmentStartPending;
 @property(atomic, strong) NSError *finishError;
 @property(atomic) BOOL paused;
 @property(atomic) BOOL segmentStartCompleted;
@@ -42,7 +43,8 @@ extern "C" bool resumeIOSDeviceRecording(void);
 @property(nonatomic) BOOL captureMicrophone;
 @property(nonatomic, copy) NSString *cameraOutputPath;
 @property(nonatomic, copy) NSString *audioOutputPath;
-@property(nonatomic, strong) NSDate *primaryStartedAt;
+@property(atomic) CMTime primaryStartHostTime;
+@property(atomic) CMTime stopHostTime;
 @end
 
 static BOOL MRIOSHasProducedMedia(MRIOSDeviceRecorder *recorder) {
@@ -67,10 +69,6 @@ static void MRIOSMarkSegmentStarted(MRIOSDeviceRecorder *recorder,
     recorder.segmentStartCompleted = YES;
     if (!recorder.startCompleted) {
         recorder.startCompleted = YES;
-        recorder.primaryStartedAt = [NSDate date];
-        if (!recorder.stopRequested) {
-            MRSyncMarkPrimaryStarted(CMClockGetTime(CMClockGetHostTimeClock()));
-        }
     }
     if (!confirmedByDelegate) {
         MRLog(@"✅ iPhone capture start confirmed from recorded media progress");
@@ -78,6 +76,36 @@ static void MRIOSMarkSegmentStarted(MRIOSDeviceRecorder *recorder,
 }
 
 @implementation MRIOSDeviceRecorder
+
+- (BOOL)captureOutputShouldProvideSampleAccurateRecordingStart:(AVCaptureOutput *)output {
+    return YES;
+}
+
+- (void)captureOutput:(AVCaptureFileOutput *)output
+        didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+        fromConnection:(AVCaptureConnection *)connection {
+    if (!self.segmentStartPending || !CMSampleBufferDataIsReady(sampleBuffer)) return;
+    @synchronized (self) {
+        if (!self.segmentStartPending || self.stopRequested) return;
+        CMTime hostTime = MRSyncHostTimestamp(
+            CMSampleBufferGetPresentationTimeStamp(sampleBuffer), self.session.masterClock);
+        if (!CMTIME_IS_NUMERIC(hostTime)) return;
+        self.segmentStartPending = NO;
+        @try {
+            // macOS guarantees that a start requested inside this delegate
+            // includes this exact sample. The later didStart/progress signal
+            // confirms success but must never redefine the media's origin.
+            [output startRecordingToOutputFileURL:[NSURL fileURLWithPath:self.currentSegmentPath]
+                               recordingDelegate:self];
+            self.primaryStartHostTime = hostTime;
+            MRSyncMarkPrimaryStarted(hostTime);
+        } @catch (NSException *exception) {
+            self.segmentFinishError = [NSError errorWithDomain:@"MacRecorderIOS" code:18
+                userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"iPhone sample start failed"}];
+            self.segmentFinishCompleted = YES;
+        }
+    }
+}
 
 - (void)captureOutput:(AVCaptureFileOutput *)captureOutput
         didStartRecordingToOutputFileAtURL:(NSURL *)fileURL
@@ -303,27 +331,27 @@ static BOOL MRIOSFileOutputSucceeded(NSError *error) {
     return [successfullyFinished boolValue];
 }
 
-static NSTimeInterval MRIOSRecordedDurationSeconds(MRIOSDeviceRecorder *recorder) {
+static NSTimeInterval MRIOSRecordedDurationSeconds(MRIOSDeviceRecorder *recorder, CMTime hostTime) {
+    if (CMTIME_IS_NUMERIC(recorder.primaryStartHostTime)) {
+        return MAX(0.0, CMTimeGetSeconds(CMTimeSubtract(hostTime, recorder.primaryStartHostTime)));
+    }
     CMTime duration = recorder.movieOutput.recordedDuration;
     if (CMTIME_IS_NUMERIC(duration) &&
         CMTIME_COMPARE_INLINE(duration, >=, kCMTimeZero)) {
         return MAX(0.0, CMTimeGetSeconds(duration));
     }
-    if (recorder.primaryStartedAt) {
-        return MAX(0.0, -[recorder.primaryStartedAt timeIntervalSinceNow]);
-    }
     return 0.0;
 }
 
-static void MRIOSBeginPauseRange(MRIOSDeviceRecorder *recorder) {
-    recorder.pauseStartedAtSeconds = MRIOSRecordedDurationSeconds(recorder);
+static void MRIOSBeginPauseRange(MRIOSDeviceRecorder *recorder, CMTime hostTime) {
+    recorder.pauseStartedAtSeconds = MRIOSRecordedDurationSeconds(recorder, hostTime);
     MRLog(@"⏸️ iPhone capture pause marker at %.3f seconds",
           recorder.pauseStartedAtSeconds);
 }
 
-static void MRIOSEndPauseRange(MRIOSDeviceRecorder *recorder) {
+static void MRIOSEndPauseRange(MRIOSDeviceRecorder *recorder, CMTime hostTime) {
     if (recorder.pauseStartedAtSeconds < 0.0) return;
-    NSTimeInterval end = MRIOSRecordedDurationSeconds(recorder);
+    NSTimeInterval end = MRIOSRecordedDurationSeconds(recorder, hostTime);
     NSTimeInterval start = recorder.pauseStartedAtSeconds;
     recorder.pauseStartedAtSeconds = -1.0;
     if (end <= start) return;
@@ -358,8 +386,7 @@ static BOOL MRIOSStartNextSegment(MRIOSDeviceRecorder *recorder, NSError **error
     recorder.segmentFinishError = nil;
     recorder.recording = NO;
 
-    [recorder.movieOutput startRecordingToOutputFileURL:[NSURL fileURLWithPath:segmentPath]
-                                      recordingDelegate:recorder];
+    recorder.segmentStartPending = YES;
     // AVCaptureMovieFileOutput can begin writing before its delegate callback
     // is delivered. That callback may be queued behind Electron's synchronous
     // native call, so requiring only the callback creates a false timeout even
@@ -391,7 +418,7 @@ static BOOL MRIOSStartNextSegment(MRIOSDeviceRecorder *recorder, NSError **error
               (unsigned long)recorder.movieOutput.connections.count);
         if (errorOut) {
             BOOL connectedButNoFrames = recorder.session.isRunning &&
-                recorder.movieOutput.isRecording && durationSeconds <= 0.0;
+                (recorder.segmentStartPending || recorder.movieOutput.isRecording) && durationSeconds <= 0.0;
             *errorOut = recorder.segmentFinishError ?: (connectedButNoFrames
                 ? MRIOSNoFramesError()
                 : [NSError errorWithDomain:@"MacRecorderIOS"
@@ -405,9 +432,10 @@ static BOOL MRIOSStartNextSegment(MRIOSDeviceRecorder *recorder, NSError **error
 }
 
 static BOOL MRIOSStopCurrentSegment(MRIOSDeviceRecorder *recorder) {
-    if (recorder.movieOutput.isRecording) {
-        [recorder.movieOutput stopRecording];
+    @synchronized (recorder) {
+        recorder.segmentStartPending = NO;
     }
+    if (recorder.movieOutput.isRecording) [recorder.movieOutput stopRecording];
     if (recorder.segmentStartCompleted && !recorder.segmentFinishCompleted) {
         if (!MRWaitForFlag(^bool{ return recorder.segmentFinishCompleted; }, 20.0)) {
             MRLog(@"⚠️ iPhone segment is still finalizing");
@@ -692,7 +720,9 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
         recorder.captureMicrophone = captureMicrophone;
         recorder.cameraOutputPath = cameraOutputPath;
         recorder.audioOutputPath = audioOutputPath;
-        recorder.primaryStartedAt = nil;
+        recorder.primaryStartHostTime = kCMTimeInvalid;
+        recorder.stopHostTime = kCMTimeInvalid;
+        recorder.movieOutput.delegate = recorder;
 
         g_iosRecorder = recorder;
         [recorder.session beginConfiguration];
@@ -728,12 +758,11 @@ extern "C" bool startIOSDeviceRecording(NSString *outputPath,
         recorder.movieOutput.movieFragmentInterval = CMTimeMakeWithSeconds(2.0, 600);
         g_iosRecorder = recorder;
 
-        // Camera and microphone sessions are prepared first but discard their
-        // warm-up samples until AVCaptureMovieFileOutput confirms the iPhone's
-        // first frame. Every produced file therefore starts at the same t=0.
+        // Use the sample-accurate USB origin for every file, including a camera
+        // or microphone whose first callback arrives later.
         MRSyncConfigure(captureMicrophone);
         MRSyncConfigureCamera(captureCamera);
-        MRSyncConfigurePrimaryStart(captureCamera || captureMicrophone);
+        MRSyncConfigurePrimaryStart(YES);
 
         if (captureCamera) {
             NSError *cameraError = nil;
@@ -838,15 +867,24 @@ extern "C" bool stopIOSDeviceRecording(void) {
         MRIOSDeviceRecorder *recorder = g_iosRecorder;
         if (!recorder) return true;
 
-        recorder.stopRequested = YES;
-        if (recorder.primaryStartedAt) {
-            NSTimeInterval duration = MAX(0.0,
-                -[recorder.primaryStartedAt timeIntervalSinceNow] - MRSyncGetPausedDurationSeconds());
-            MRSyncSetStopLimitSeconds(duration);
+        CMTime stopHostTime;
+        @synchronized (recorder) {
+            if (!CMTIME_IS_NUMERIC(recorder.stopHostTime)) {
+                recorder.stopHostTime = CMClockGetTime(CMClockGetHostTimeClock());
+            }
+            stopHostTime = recorder.stopHostTime;
+            recorder.stopRequested = YES;
+            recorder.segmentStartPending = NO;
         }
+        // Request the USB stop before waiting for either auxiliary writer.
+        // Do not hold the delegate lock across an AVFoundation stop call.
+        if (recorder.movieOutput.isRecording) [recorder.movieOutput stopRecording];
         if (recorder.paused) {
-            MRIOSEndPauseRange(recorder);
+            MRIOSEndPauseRange(recorder, stopHostTime);
+            MRSyncResumeAtHostTime(stopHostTime);
         }
+        CMTime mediaStopTime = MRSyncPrimaryMediaTime(stopHostTime);
+        if (CMTIME_IS_NUMERIC(mediaStopTime)) MRSyncSetStopLimitSeconds(CMTimeGetSeconds(mediaStopTime));
 
         BOOL cameraStopped = YES;
         BOOL microphoneStopped = YES;
@@ -894,6 +932,7 @@ extern "C" bool stopIOSDeviceRecording(void) {
         } @catch (NSException *exception) {
             MRLog(@"⚠️ iPhone capture teardown warning: %@", exception.reason);
         }
+        recorder.movieOutput.delegate = nil;
         recorder.movieOutput = nil;
         recorder.deviceInput = nil;
         recorder.session = nil;
@@ -906,7 +945,7 @@ extern "C" bool stopIOSDeviceRecording(void) {
         recorder.outputPath = nil;
         recorder.cameraOutputPath = nil;
         recorder.audioOutputPath = nil;
-        recorder.primaryStartedAt = nil;
+        recorder.primaryStartHostTime = kCMTimeInvalid;
         g_iosRecorder = nil;
         [recorder release];
 
@@ -948,12 +987,13 @@ extern "C" bool pauseIOSDeviceRecording(void) {
             // Do not stop or pause AVCaptureMovieFileOutput here. USB iPhone
             // muxed sources may fail to re-arm their compressor on resume.
             // Capture continuously and trim this time range during finalization.
-            MRIOSBeginPauseRange(recorder);
-            MRSyncPause();
+            CMTime pauseHostTime = CMClockGetTime(CMClockGetHostTimeClock());
+            MRIOSBeginPauseRange(recorder, pauseHostTime);
+            MRSyncPauseAtHostTime(pauseHostTime);
             recorder.paused = YES;
             return true;
         } @catch (NSException *exception) {
-            MRSyncResume();
+            MRSyncResumeAtHostTime(CMClockGetTime(CMClockGetHostTimeClock()));
             MRLog(@"❌ iPhone pause failed: %@", exception.reason);
             return false;
         }
@@ -967,9 +1007,10 @@ extern "C" bool resumeIOSDeviceRecording(void) {
         if (!recorder.paused) return recorder.movieOutput.isRecording;
         if (!recorder.movieOutput.isRecording) return false;
         @try {
-            MRIOSEndPauseRange(recorder);
+            CMTime resumeHostTime = CMClockGetTime(CMClockGetHostTimeClock());
+            MRIOSEndPauseRange(recorder, resumeHostTime);
             recorder.paused = NO;
-            MRSyncResume();
+            MRSyncResumeAtHostTime(resumeHostTime);
             return true;
         } @catch (NSException *exception) {
             MRLog(@"❌ iPhone resume failed: %@", exception.reason);
