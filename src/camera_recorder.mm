@@ -121,6 +121,7 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
 @property (atomic, assign) BOOL startCompleted;
 @property (atomic, assign) BOOL startSucceeded;
 @property (nonatomic, strong) dispatch_semaphore_t startSemaphore;
+@property (atomic, assign) BOOL warmupFrameReceived;
 
 @property (nonatomic, strong) dispatch_semaphore_t stopSemaphore;
 @property (atomic, assign) uint64_t activeToken;
@@ -134,6 +135,7 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
                              error:(NSError **)error;
 - (BOOL)stopRecording;
 - (BOOL)waitForRecordingStartWithTimeout:(NSTimeInterval)timeout;
+- (BOOL)waitForWarmupFrameWithTimeout:(NSTimeInterval)timeout;
 
 @end
 
@@ -537,6 +539,17 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     CMTime primaryMediaTime = kCMTimeInvalid;
     if (primaryTimeline) {
         timestamp = MRSyncHostTimestamp(timestamp, self.session.masterClock);
+        if (!CMTIME_IS_NUMERIC(timestamp)) return;
+    }
+
+    // Confirm the camera is delivering timestamped frames before the iPhone
+    // movie starts. The writer still waits for the primary source; this
+    // signal only finishes device warm-up.
+    if (!self.warmupFrameReceived) {
+        self.warmupFrameReceived = YES;
+    }
+
+    if (primaryTimeline) {
         primaryMediaTime = MRSyncPrimaryMediaTime(timestamp);
         if (!CMTIME_IS_NUMERIC(primaryMediaTime)) return;
     }
@@ -917,6 +930,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     self.startCompleted = NO;
     self.startSucceeded = NO;
     self.startSemaphore = dispatch_semaphore_create(0);
+    self.warmupFrameReceived = NO;
     self.stopInFlight = NO;
     self.isRecording = YES;
     self.unexpectedRestartAttempted = NO;
@@ -994,6 +1008,17 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     return self.startSucceeded;
 }
 
+- (BOOL)waitForWarmupFrameWithTimeout:(NSTimeInterval)timeout {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while (!self.warmupFrameReceived &&
+           !(self.startCompleted && !self.startSucceeded) &&
+           [deadline timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    return self.warmupFrameReceived && self.isRecording;
+}
+
 @end
 
 // MARK: - C Interface
@@ -1012,6 +1037,10 @@ bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **er
 
 bool waitForCameraRecordingStart(double timeoutSeconds) {
     return [[CameraRecorder sharedRecorder] waitForRecordingStartWithTimeout:timeoutSeconds];
+}
+
+bool waitForCameraRecordingWarmup(double timeoutSeconds) {
+    return [[CameraRecorder sharedRecorder] waitForWarmupFrameWithTimeout:timeoutSeconds];
 }
 
 double currentCameraRecordingStartTime(void) {

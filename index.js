@@ -221,6 +221,7 @@ class MacRecorder extends EventEmitter {
 		this.sessionTimestamp = sessionTimestamp;
 		this.recordingMode = "iphone";
 		this._resetPauseState();
+		this._iosCaptureInterrupted = false;
 
 		try {
 			const success = nativeBinding.startIOSDeviceRecording(
@@ -238,10 +239,23 @@ class MacRecorder extends EventEmitter {
 			if (!success) throw new Error("The iPhone capture session could not be started");
 
 			this.isRecording = true;
-			this.recordingStartTime = Date.now();
+			// Native startup can wait for the USB video and an optional camera.
+			// Anchor metadata to the first captured picture, not the end of that wait.
+			const initialVideoDuration = nativeBinding.getIOSDeviceRecordingStatus?.()?.videoDuration;
+			this.recordingStartTime = Date.now() -
+				(Number.isFinite(initialVideoDuration) ? Math.max(0, initialVideoDuration) * 1000 : 0);
 			this.timelineStartTimestamp = this.recordingStartTime;
 			this.syncTimestamp = this.recordingStartTime;
 			this.recordingTimer = setInterval(() => {
+				const status = nativeBinding.getIOSDeviceRecordingStatus?.();
+				if (status?.interrupted && !this._iosCaptureInterrupted) {
+					this._iosCaptureInterrupted = true;
+					this.emit("captureInterrupted", {
+						outputPath: this.outputPath,
+						videoDuration: status.videoDuration,
+						message: "The iPhone stopped sending video frames. Stop the recording to save the captured portion.",
+					});
+				}
 				this.emit("timeUpdate", this._getRecordingTimeSeconds());
 			}, 1000);
 
@@ -260,11 +274,13 @@ class MacRecorder extends EventEmitter {
 				sourceType: "iphone",
 			};
 			this.emit("recordingStarted", event);
+			this.emit("timeUpdate", this._getRecordingTimeSeconds());
 			this.emit("started", outputPath);
 			return outputPath;
 		} catch (error) {
 			this.recordingMode = null;
 			this.isRecording = false;
+			this._iosCaptureInterrupted = false;
 			this.cameraCaptureActive = false;
 			this.audioCaptureActive = false;
 			this.cameraCaptureFile = null;
@@ -278,16 +294,24 @@ class MacRecorder extends EventEmitter {
 			throw new Error("No iPhone recording in progress");
 		}
 		let success = false;
+		const nativeStatus = nativeBinding.getIOSDeviceRecordingStatus?.();
+		let interrupted = this._iosCaptureInterrupted || nativeStatus?.interrupted === true;
+		let stopIncomplete = false;
 		const recordingTime = this._getRecordingTimeSeconds();
 		const pausedDuration = this._getPausedDurationMs() / 1000;
 		try {
 			success = nativeBinding.stopIOSDeviceRecording();
+			stopIncomplete = nativeBinding.getIOSDeviceRecordingStatus?.()?.lastStopIncomplete === true;
+			interrupted = interrupted || stopIncomplete;
 			await require("./recorder_runtime_safety.cjs").waitForNativeIdle(nativeBinding);
 		} finally {
 			if (this.recordingTimer) clearInterval(this.recordingTimer);
 			this.recordingTimer = null;
-			this.isRecording = false;
-			this.recordingMode = null;
+			const lifecycle = nativeBinding.getRecordingLifecycleStatus?.();
+			const stillFinalizing = lifecycle?.isRecording || lifecycle?.isStarting || lifecycle?.isStopping ||
+				lifecycle?.hasAuxiliaryRecording;
+			this.isRecording = !!stillFinalizing;
+			this.recordingMode = stillFinalizing ? "iphone" : null;
 		}
 
 		const result = {
@@ -300,6 +324,12 @@ class MacRecorder extends EventEmitter {
 			sourceType: "iphone",
 			recordingTime,
 			pausedDuration,
+			interrupted,
+			warning: stopIncomplete
+				? "The iPhone video did not reach the requested stop time. The available recording was saved."
+				: interrupted
+					? "The iPhone stopped sending video before recording ended. The captured portion was saved."
+					: null,
 		};
 		if (this.cameraCaptureActive) {
 			this.emit("cameraCaptureStopped", {
@@ -325,6 +355,7 @@ class MacRecorder extends EventEmitter {
 		}
 		this.sessionTimestamp = null;
 		this.syncTimestamp = null;
+		this._iosCaptureInterrupted = false;
 		this._resetPauseState();
 		return result;
 	}
@@ -1404,6 +1435,11 @@ class MacRecorder extends EventEmitter {
 
 	_getRecordingTimeSeconds(now = Date.now()) {
 		if (!this.recordingStartTime) return 0;
+		if (this.recordingMode === "iphone" &&
+			typeof nativeBinding.getIOSDeviceRecordingStatus === "function") {
+			const duration = nativeBinding.getIOSDeviceRecordingStatus()?.videoDuration;
+			if (Number.isFinite(duration)) return Math.floor(Math.max(0, duration));
+		}
 		return Math.floor(Math.max(0, now - this.recordingStartTime - this._getPausedDurationMs(now)) / 1000);
 	}
 
