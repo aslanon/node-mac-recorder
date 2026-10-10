@@ -478,7 +478,8 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                 CMTime currentTimestamp = CMClockGetTime(CMClockGetHostTimeClock());
 
                                 if (CMTIME_IS_INVALID(g_avStartTime)) {
-                                    g_avStartTime = currentTimestamp;
+                                    // Join the shared t=0 used by camera/audio.
+                                    g_avStartTime = MRSyncWriterStartTime(currentTimestamp);
                                     [g_avWriter startSessionAtSourceTime:kCMTimeZero];
                                     g_avFrameNumber = 0;
                                     MRLog(@"🎞️ AVFoundation writer session started (zero-based timeline)");
@@ -507,6 +508,11 @@ extern "C" bool startAVFoundationRecording(const std::string& outputPath,
                                     }
                                 }
 
+                                if (g_avFrameNumber == 0 &&
+                                    CMTimeCompare(presentationTime, kCMTimeZero) > 0) {
+                                    // Late start vs shared t=0: hold first frame from 0.
+                                    [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:kCMTimeZero];
+                                }
                                 BOOL appendSuccess = [localPixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:presentationTime];
                                 if (appendSuccess) {
                                     g_avFrameNumber++;

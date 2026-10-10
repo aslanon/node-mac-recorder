@@ -10,29 +10,7 @@ static NSString *g_lastStandaloneAudioOutputPath = nil;
 // A real PCM prefix survives readers/exporters that normalize track timestamps
 // and ignore MOV empty edits. Allocation is bounded even for a bad device PTS.
 static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, double seconds) {
-    CMAudioFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sample);
-    const AudioStreamBasicDescription *asbd = format ? CMAudioFormatDescriptionGetStreamBasicDescription(format) : NULL;
-    if (!asbd || asbd->mFormatID != kAudioFormatLinearPCM ||
-        !isfinite(seconds) || seconds <= 0 || seconds > 30 ||
-        !isfinite(asbd->mSampleRate) || asbd->mSampleRate <= 0 ||
-        asbd->mBytesPerFrame == 0) return NULL;
-    double frameCount = floor(seconds * asbd->mSampleRate);
-    double byteCount = frameCount * asbd->mBytesPerFrame;
-    if (frameCount < 1 || byteCount > 32 * 1024 * 1024) return NULL;
-    CMBlockBufferRef block = NULL;
-    OSStatus status = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, NULL, (size_t)byteCount,
-        kCFAllocatorDefault, NULL, 0, (size_t)byteCount, 0, &block);
-    if (status != noErr || !block) return NULL;
-    status = CMBlockBufferFillDataBytes(0, block, 0, (size_t)byteCount);
-    CMSampleBufferRef silence = NULL;
-    if (status == noErr) {
-        CMSampleTimingInfo timing = { CMTimeMake(1, (int32_t)asbd->mSampleRate), kCMTimeZero, kCMTimeInvalid };
-        size_t frameSize = asbd->mBytesPerFrame;
-        CMSampleBufferCreateReady(kCFAllocatorDefault, block, format, (CMItemCount)frameCount,
-            1, &timing, 1, &frameSize, &silence);
-    }
-    CFRelease(block);
-    return silence;
+    return MRSyncCreateSilentAudio(sample, seconds);
 }
 
 @interface NativeAudioRecorder : NSObject<AVCaptureAudioDataOutputSampleBufferDelegate>
@@ -355,6 +333,9 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
     if (primaryTimeline) {
         timestamp = MRSyncHostTimestamp(timestamp, captureClock);
         if (!CMTIME_IS_NUMERIC(MRSyncPrimaryMediaTime(timestamp))) return;
+    } else {
+        // Same host clock as camera/screen so the shared anchor is comparable.
+        timestamp = MRSyncToHostTime(timestamp, captureClock);
     }
 
     // Keep microphone warm-up outside the recording until the USB iPhone movie
@@ -379,15 +360,19 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
         [self.writer startSessionAtSourceTime:kCMTimeZero];
         self.writerStarted = YES;
         self.primaryPrefixWritten = NO;
-        self.startTime = primaryTimeline ? MRSyncPrimaryStartTimestamp() : timestamp;
+        self.startTime = primaryTimeline ? MRSyncPrimaryStartTimestamp() : MRSyncWriterStartTime(timestamp);
     }
     
     if (!self.writerInput.readyForMoreMediaData) {
         return;
     }
 
-    if (primaryTimeline && !self.primaryPrefixWritten) {
-        double leadingSeconds = CMTimeGetSeconds(MRSyncPrimaryMediaTime(timestamp));
+    if (!self.primaryPrefixWritten) {
+        // Audio that starts after the shared t=0 (late mic) is padded with
+        // silence so it lines up with camera/screen instead of starting early.
+        double leadingSeconds = primaryTimeline
+            ? CMTimeGetSeconds(MRSyncPrimaryMediaTime(timestamp))
+            : CMTimeGetSeconds(CMTimeSubtract(timestamp, self.startTime));
         CMSampleBufferRef silence = MRCreateSilentAudioPrefix(sampleBuffer, leadingSeconds);
         if (silence) {
             BOOL appended = [self.writerInput appendSampleBuffer:silence];
@@ -419,7 +404,8 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
                 for (CMItemCount i = 0; i < timingEntryCount; ++i) {
                     // Shift audio timestamps to begin at t=0 so they align with camera capture
                     if (CMTIME_IS_VALID(timingInfo[i].presentationTimeStamp)) {
-                        CMTime adjustedPTS = CMTimeSubtract(timingInfo[i].presentationTimeStamp, self.startTime);
+                        CMTime adjustedPTS = CMTimeSubtract(
+                            MRSyncToHostTime(timingInfo[i].presentationTimeStamp, captureClock), self.startTime);
                         if (CMTIME_COMPARE_INLINE(adjustedPTS, <, kCMTimeZero)) {
                             adjustedPTS = kCMTimeZero;
                         }
@@ -442,7 +428,8 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
                     }
                     
                     if (CMTIME_IS_VALID(timingInfo[i].decodeTimeStamp)) {
-                        CMTime adjustedDTS = CMTimeSubtract(timingInfo[i].decodeTimeStamp, self.startTime);
+                        CMTime adjustedDTS = CMTimeSubtract(
+                            MRSyncToHostTime(timingInfo[i].decodeTimeStamp, captureClock), self.startTime);
                         if (CMTIME_COMPARE_INLINE(adjustedDTS, <, kCMTimeZero)) {
                             adjustedDTS = kCMTimeZero;
                         }
@@ -476,7 +463,7 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
         if (CMTIME_IS_VALID(pts)) {
             double relativeStart = CMTimeGetSeconds(
-                MRSyncAdjustForPauses(CMTimeSubtract(pts, self.startTime)));
+                MRSyncAdjustForPauses(CMTimeSubtract(MRSyncToHostTime(pts, captureClock), self.startTime)));
             if (relativeStart > stopLimit + audioTolerance) {
                 shouldDropBuffer = YES;
             }

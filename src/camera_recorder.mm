@@ -540,6 +540,10 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     if (primaryTimeline) {
         timestamp = MRSyncHostTimestamp(timestamp, self.session.masterClock);
         if (!CMTIME_IS_NUMERIC(timestamp)) return;
+    } else {
+        // Compare against screen/microphone on the host clock, not the camera
+        // session's own clock.
+        timestamp = MRSyncToHostTime(timestamp, self.session.masterClock);
     }
 
     // Confirm the camera is delivering timestamped frames before the iPhone
@@ -584,28 +588,15 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         self.writerStarted = YES;
         self.primaryPrefixWritten = NO;
         
-        // LIP SYNC FIX: Align camera startTime with audio's first timestamp for perfect lip sync
-        // This ensures camera and audio start from the same reference point
-        CMTime audioFirstTimestamp = MRSyncAudioFirstTimestamp();
-        CMTime alignmentOffset = MRSyncVideoAlignmentOffset();
-        
+        // LIP SYNC: every writer shares one t=0 (MRSyncSessionAnchor). If the
+        // camera's first frame comes after it, the gap is filled below by
+        // repeating that first frame at t=0 instead of shifting the camera.
         if (primaryTimeline) {
             self.startTime = MRSyncPrimaryStartTimestamp();
-        } else if (CMTIME_IS_VALID(audioFirstTimestamp)) {
-            // Use audio's first timestamp as reference - this is the key to lip sync
-            self.startTime = audioFirstTimestamp;
-            CMTime offset = CMTimeSubtract(timestamp, audioFirstTimestamp);
-            double offsetMs = CMTimeGetSeconds(offset) * 1000.0;
-            MRLog(@"🎥 Camera writer started @ t=0 (aligned with audio first timestamp, offset: %.1fms)", offsetMs);
-        } else if (CMTIME_IS_VALID(alignmentOffset)) {
-            // If audio came first, use the alignment offset to sync
-            self.startTime = CMTimeSubtract(timestamp, alignmentOffset);
-            double offsetMs = CMTimeGetSeconds(alignmentOffset) * 1000.0;
-            MRLog(@"🎥 Camera writer started @ t=0 (using alignment offset: %.1fms)", offsetMs);
         } else {
-            // Fallback: use camera's own timestamp (should not happen if sync is configured)
-            self.startTime = timestamp;
-            MRLog(@"🎥 Camera writer started @ t=0 (source PTS: %.3fs, no audio sync available)", CMTimeGetSeconds(timestamp));
+            self.startTime = MRSyncWriterStartTime(timestamp);
+            double leadMs = CMTimeGetSeconds(CMTimeSubtract(timestamp, self.startTime)) * 1000.0;
+            MRLog(@"🎥 Camera writer started @ t=0 (shared anchor, first frame +%.1fms)", leadMs);
         }
         
         g_cameraStartTimestamp = CFAbsoluteTimeGetCurrent();
@@ -676,7 +667,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
     // Keep a late camera's initial delay in the media itself. Some demuxers
     // discard MOV empty edits and would otherwise pull the camera ahead of mic.
-    if (primaryTimeline && !self.primaryPrefixWritten) {
+    if (!self.primaryPrefixWritten) {
         if (CMTimeCompare(adjustedTimestamp, kCMTimeZero) > 0 &&
             ![self.pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:kCMTimeZero]) return;
         self.primaryPrefixWritten = YES;

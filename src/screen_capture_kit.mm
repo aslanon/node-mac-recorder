@@ -150,6 +150,11 @@ static AVAssetWriterInput *g_videoInput = nil;
 static CFTypeRef g_pixelBufferAdaptorRef = NULL;
 static CMTime g_videoStartTime = kCMTimeInvalid;
 static BOOL g_videoWriterStarted = NO;
+// Late-start padding: a source whose first sample comes after the shared t=0
+// fills the gap (first frame repeated / silence) so every file stays aligned.
+static BOOL g_videoPrefixWritten = NO;
+static BOOL g_micPrefixWritten = NO;
+static BOOL g_systemPrefixWritten = NO;
 static BOOL g_shouldCaptureAudio = NO;
 static NSString *g_audioOutputPath = nil;
 static AVAssetWriter *g_audioWriter = nil;
@@ -468,6 +473,7 @@ static void CleanupWriters(void) {
         }
         g_videoWriterStarted = NO;
         g_videoStartTime = kCMTimeInvalid;
+        g_videoPrefixWritten = NO;
 
         // Kayit sonu ozeti: kare dusme orani gorunur kalsin, aksi halde "video
         // kalitesiz" sikayeti olcusuz kaliyor.
@@ -506,6 +512,8 @@ static void CleanupWriters(void) {
         g_microphoneAudioInput = nil;
         g_audioWriterStarted = NO;
         g_audioStartTime = kCMTimeInvalid;
+        g_micPrefixWritten = NO;
+        g_systemPrefixWritten = NO;
         g_captureMicrophoneEnabled = NO;
         g_captureSystemAudioEnabled = NO;
     }
@@ -646,10 +654,15 @@ static void SCKRequestStop(SCStream *expectedStream) {
             return;
         }
         [g_videoWriter startSessionAtSourceTime:kCMTimeZero];
-        g_videoStartTime = presentationTime;
+        // Shared t=0: if camera/audio already fixed the anchor, the screen
+        // joins that timeline (getVideoStartTimestamp and JS stopLimit follow).
+        g_videoStartTime = MRSyncWriterStartTime(presentationTime);
         g_videoWriterStarted = YES;
+        g_videoPrefixWritten = NO;
         g_frameCountSinceStart = 0;
-        MRLog(@"🎞️ Video writer session started @ %.3f (zero-based timeline)", CMTimeGetSeconds(presentationTime));
+        MRLog(@"🎞️ Video writer session started @ %.3f (zero-based timeline, first frame +%.1fms)",
+              CMTimeGetSeconds(g_videoStartTime),
+              CMTimeGetSeconds(CMTimeSubtract(presentationTime, g_videoStartTime)) * 1000.0);
     }
 
     // ELECTRON FIX: Track frame count to ensure ScreenCaptureKit is fully running
@@ -723,6 +736,19 @@ static void SCKRequestStop(SCStream *expectedStream) {
     }
     
     AVAssetWriterInputPixelBufferAdaptor *adaptor = adaptorCandidate;
+    if (!g_videoPrefixWritten) {
+        // Screen started after the shared t=0: hold the first frame from 0 so
+        // the gap stays in the media (some demuxers drop MOV empty edits).
+        if (CMTimeCompare(relativePresentation, kCMTimeZero) > 0 &&
+            ![adaptor appendPixelBuffer:pixelBuffer withPresentationTime:kCMTimeZero]) {
+            NSLog(@"⚠️ Failed appending screen lead-in frame: %@", g_videoWriter.error);
+            return;
+        }
+        g_videoPrefixWritten = YES;
+        if (!g_videoInput.readyForMoreMediaData) {
+            return;
+        }
+    }
     BOOL appended = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativePresentation];
     if (!appended) {
         NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
@@ -841,8 +867,12 @@ static void SCKRequestStop(SCStream *expectedStream) {
             return;
         }
         [g_audioWriter startSessionAtSourceTime:kCMTimeZero];
-        g_audioStartTime = presentationTime;
+        // Shared t=0: when video was released before the (late) mic arrived,
+        // audio starts at the video anchor and the gap is filled with silence.
+        g_audioStartTime = MRSyncWriterStartTime(presentationTime);
         g_audioWriterStarted = YES;
+        g_micPrefixWritten = NO;
+        g_systemPrefixWritten = NO;
         MRLog(@"🔊 Audio writer session started @ %.3f (source=%@)",
               CMTimeGetSeconds(presentationTime),
               routeToMicrophoneTrack ? @"microphone" : @"system");
@@ -863,6 +893,40 @@ static void SCKRequestStop(SCStream *expectedStream) {
 
     if (CMTIME_IS_INVALID(g_audioStartTime)) {
         g_audioStartTime = presentationTime;
+    }
+
+    // Samples captured before t=0 would be clamped onto 0 and overlap the
+    // next buffer; drop them instead.
+    if (CMTimeCompare(presentationTime, g_audioStartTime) < 0) {
+        return;
+    }
+
+    // Each track (mic / system) that starts after t=0 gets a silent lead-in,
+    // otherwise its first sample would sit at an empty edit or shift to 0.
+    BOOL *prefixWritten = routeToMicrophoneTrack ? &g_micPrefixWritten : &g_systemPrefixWritten;
+    if (!*prefixWritten) {
+        double leadSeconds = CMTimeGetSeconds(
+            MRSyncAdjustForPauses(CMTimeSubtract(presentationTime, g_audioStartTime)));
+        if (leadSeconds > 0.001) {
+            CMSampleBufferRef silence = MRSyncCreateSilentAudio(sampleBuffer, leadSeconds);
+            if (silence) {
+                BOOL silenceAppended = [targetInput appendSampleBuffer:silence];
+                CFRelease(silence);
+                if (!silenceAppended) {
+                    NSLog(@"⚠️ Failed appending %@ silent lead-in: %@",
+                          routeToMicrophoneTrack ? @"microphone" : @"system", g_audioWriter.error);
+                    return;
+                }
+                MRLog(@"🔇 %@ track lead-in: %.0f ms of silence (late start)",
+                      routeToMicrophoneTrack ? @"Microphone" : @"System", leadSeconds * 1000.0);
+            } else {
+                MRLog(@"⚠️ Could not build %.0f ms silent lead-in (non-PCM format?)", leadSeconds * 1000.0);
+            }
+        }
+        *prefixWritten = YES;
+        if (!targetInput.readyForMoreMediaData) {
+            return;
+        }
     }
     
     CMSampleBufferRef bufferToAppend = sampleBuffer;
@@ -1134,6 +1198,7 @@ static void SCKRequestStop(SCStream *expectedStream) {
     }
     g_videoWriterStarted = NO;
     g_videoStartTime = kCMTimeInvalid;
+    g_videoPrefixWritten = NO;
     MRLog(@"✅ Video writer ready %ldx%ld", (long)width, (long)height);
 
     return YES;
@@ -1198,6 +1263,8 @@ static void SCKRequestStop(SCStream *expectedStream) {
         // Reset tracking flags whenever we create a new writer
         g_audioWriterStarted = NO;
         g_audioStartTime = kCMTimeInvalid;
+        g_micPrefixWritten = NO;
+        g_systemPrefixWritten = NO;
 
         // CRITICAL FIX: Add BOTH system and microphone inputs NOW (before startWriting)
         // if both are enabled. AVAssetWriter cannot add inputs after startWriting() is called.

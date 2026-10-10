@@ -1,6 +1,7 @@
 #import "sync_timeline.h"
 #import "logging.h"
 #include <vector>
+#include <math.h>
 
 static dispatch_queue_t MRSyncQueue() {
     static dispatch_once_t onceToken;
@@ -17,6 +18,7 @@ static CMTime g_videoFirstTimestamp = kCMTimeInvalid;
 static BOOL g_videoHoldLogged = NO;
 static CMTime g_audioFirstTimestamp = kCMTimeInvalid;
 static CMTime g_alignmentDelta = kCMTimeInvalid;
+static CMTime g_sessionAnchor = kCMTimeInvalid;
 static double g_stopLimitSeconds = -1.0;
 static BOOL g_isPaused = NO;
 static CFAbsoluteTime g_pauseStartedAt = 0;
@@ -46,6 +48,7 @@ void MRSyncConfigure(BOOL expectAudio) {
         g_videoHoldLogged = NO;
         g_audioFirstTimestamp = kCMTimeInvalid;
         g_alignmentDelta = kCMTimeInvalid;
+        g_sessionAnchor = kCMTimeInvalid;
         g_stopLimitSeconds = -1.0;
         g_isPaused = NO;
         g_pauseStartedAt = 0;
@@ -126,25 +129,22 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
     __block BOOL logRelease = NO;
 
     dispatch_sync(MRSyncQueue(), ^{
-        if (!g_expectAudio || g_audioReady) {
-            if (!g_expectAudio) {
-                g_videoFirstTimestamp = kCMTimeInvalid;
-                g_audioFirstTimestamp = kCMTimeInvalid;
-                g_alignmentDelta = kCMTimeInvalid;
-                g_videoHoldLogged = NO;
-                shouldHold = NO;
-                return;
+        if (!g_expectAudio) {
+            // No audio track: the first video frame (from any source) is t=0.
+            // Later sources pad their start instead of rebasing to themselves,
+            // so camera and screen stay on one timeline.
+            if (!CMTIME_IS_VALID(g_sessionAnchor)) {
+                g_sessionAnchor = timestamp;
             }
-            
-            if (CMTIME_IS_VALID(g_audioFirstTimestamp) &&
-                CMTIME_COMPARE_INLINE(timestamp, <, g_audioFirstTimestamp)) {
-                shouldHold = YES;
-                return;
-            }
-            
-            g_videoFirstTimestamp = kCMTimeInvalid;
-            g_videoHoldLogged = NO;
-            shouldHold = NO;
+            shouldHold = CMTIME_COMPARE_INLINE(timestamp, <, g_sessionAnchor);
+            return;
+        }
+
+        if (g_audioReady) {
+            // t=0 is fixed (audio start or forced video release). Drop anything
+            // captured before it.
+            shouldHold = CMTIME_IS_VALID(g_sessionAnchor) &&
+                         CMTIME_COMPARE_INLINE(timestamp, <, g_sessionAnchor);
             return;
         }
 
@@ -159,9 +159,15 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
         }
 
         CMTime elapsed = CMTimeSubtract(timestamp, g_videoFirstTimestamp);
-        CMTime maxWait = CMTimeMakeWithSeconds(1.0, 600); // SYNC FIX: Increased from 0.25s to 1.0s for better sync tolerance
+        CMTime maxWait = CMTimeMakeWithSeconds(1.0, 600);
         if (CMTIME_COMPARE_INLINE(elapsed, >, maxWait)) {
+            // Audio is late (cold Continuity/USB/Bluetooth mic, slow SCK
+            // start...). Fix t=0 here; when audio finally arrives its writer
+            // pads the gap with silence so lip sync is preserved.
             g_audioReady = YES;
+            if (!CMTIME_IS_VALID(g_sessionAnchor)) {
+                g_sessionAnchor = timestamp;
+            }
             g_videoFirstTimestamp = kCMTimeInvalid;
             g_videoHoldLogged = NO;
             shouldHold = NO;
@@ -175,7 +181,7 @@ BOOL MRSyncShouldHoldVideoFrame(CMTime timestamp) {
     if (logHold) {
         MRLog(@"⏸️ Video pipeline waiting for audio to begin (holding frames up to 1.0s)");
     } else if (logRelease) {
-        MRLog(@"▶️ Video pipeline resume forced (audio not detected within 1.0s)");
+        MRLog(@"▶️ Video pipeline resume forced (audio not detected within 1.0s) - late audio will be padded with silence");
     }
 
     return shouldHold;
@@ -187,17 +193,29 @@ void MRSyncMarkAudioSample(CMTime timestamp) {
     }
 
     __block BOOL logRelease = NO;
+    __block BOOL logLate = NO;
     __block CMTime delta = kCMTimeInvalid;
+    __block CMTime lateBy = kCMTimeInvalid;
     dispatch_sync(MRSyncQueue(), ^{
-        if (g_audioReady) {
-            return;
-        }
-        if (!CMTIME_IS_VALID(g_audioFirstTimestamp)) {
+        BOOL firstAudio = !CMTIME_IS_VALID(g_audioFirstTimestamp);
+        if (firstAudio) {
             g_audioFirstTimestamp = timestamp;
+        }
+        if (g_audioReady) {
+            // Video was already released by timeout. Keep the video-defined
+            // t=0; record the audio start so writers can pad the gap.
+            if (firstAudio && g_expectAudio && CMTIME_IS_VALID(g_sessionAnchor)) {
+                lateBy = CMTimeSubtract(timestamp, g_sessionAnchor);
+                logLate = YES;
+            }
+            return;
         }
         if (CMTIME_IS_VALID(g_videoFirstTimestamp)) {
             delta = CMTimeSubtract(timestamp, g_videoFirstTimestamp);
             g_alignmentDelta = delta;
+        }
+        if (!CMTIME_IS_VALID(g_sessionAnchor)) {
+            g_sessionAnchor = timestamp;
         }
         g_audioReady = YES;
         g_videoFirstTimestamp = kCMTimeInvalid;
@@ -212,7 +230,65 @@ void MRSyncMarkAudioSample(CMTime timestamp) {
         } else {
             MRLog(@"🎯 Audio capture detected - releasing video sync hold");
         }
+    } else if (logLate) {
+        MRLog(@"🎯 A/V SYNC: Audio started %.0f ms after t=0 - padding with silence",
+              CMTimeGetSeconds(lateBy) * 1000.0);
     }
+}
+
+CMTime MRSyncSessionAnchor(void) {
+    __block CMTime anchor = kCMTimeInvalid;
+    dispatch_sync(MRSyncQueue(), ^{
+        anchor = g_sessionAnchor;
+    });
+    return anchor;
+}
+
+CMTime MRSyncWriterStartTime(CMTime firstTimestamp) {
+    CMTime anchor = MRSyncSessionAnchor();
+    if (CMTIME_IS_NUMERIC(anchor) && CMTIME_IS_NUMERIC(firstTimestamp) &&
+        CMTimeCompare(anchor, firstTimestamp) <= 0) {
+        return anchor;
+    }
+    return firstTimestamp;
+}
+
+CMTime MRSyncToHostTime(CMTime timestamp, CMClockRef captureClock) {
+    if (!CMTIME_IS_NUMERIC(timestamp) || !captureClock) return timestamp;
+    CMTime converted = CMSyncConvertTime(timestamp, captureClock, CMClockGetHostTimeClock());
+    return CMTIME_IS_NUMERIC(converted) ? converted : timestamp;
+}
+
+CMSampleBufferRef MRSyncCreateSilentAudio(CMSampleBufferRef templateSample, double seconds) {
+    if (!templateSample || !isfinite(seconds) || seconds <= 0 || seconds > 30) return NULL;
+    CMAudioFormatDescriptionRef format = CMSampleBufferGetFormatDescription(templateSample);
+    const AudioStreamBasicDescription *asbd =
+        format ? CMAudioFormatDescriptionGetStreamBasicDescription(format) : NULL;
+    if (!asbd || asbd->mFormatID != kAudioFormatLinearPCM ||
+        !isfinite(asbd->mSampleRate) || asbd->mSampleRate <= 0 ||
+        asbd->mBytesPerFrame == 0) return NULL;
+
+    BOOL nonInterleaved = (asbd->mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+    size_t channels = asbd->mChannelsPerFrame > 0 ? asbd->mChannelsPerFrame : 1;
+    size_t bytesPerFrame = (size_t)asbd->mBytesPerFrame * (nonInterleaved ? channels : 1);
+    double frameCount = floor(seconds * asbd->mSampleRate);
+    double byteCount = frameCount * (double)bytesPerFrame;
+    if (frameCount < 1 || byteCount > 64.0 * 1024 * 1024) return NULL;
+
+    CMBlockBufferRef block = NULL;
+    OSStatus status = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, NULL, (size_t)byteCount,
+        kCFAllocatorDefault, NULL, 0, (size_t)byteCount, 0, &block);
+    if (status != noErr || !block) return NULL;
+    status = CMBlockBufferFillDataBytes(0, block, 0, (size_t)byteCount);
+
+    CMSampleBufferRef silence = NULL;
+    if (status == noErr) {
+        status = CMAudioSampleBufferCreateReadyWithPacketDescriptions(kCFAllocatorDefault, block, format,
+            (CMItemCount)frameCount, kCMTimeZero, NULL, &silence);
+        if (status != noErr) silence = NULL;
+    }
+    CFRelease(block);
+    return silence;
 }
 
 CMTime MRSyncVideoAlignmentOffset(void) {

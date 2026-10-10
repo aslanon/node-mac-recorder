@@ -26,6 +26,26 @@ CMTime MRSyncVideoAlignmentOffset(void);
 // Returns the first audio timestamp observed for the current session.
 CMTime MRSyncAudioFirstTimestamp(void);
 
+// Shared t=0 (host clock) for every non-primary writer (screen, camera,
+// microphone/system audio). Normally this is the first audio sample. If audio
+// is late and the video hold times out, it is the instant video was released;
+// sources that begin after the anchor must pad their start (first frame /
+// silence) instead of rebasing to their own first sample. Invalid until set.
+CMTime MRSyncSessionAnchor(void);
+
+// Start time a writer should subtract from its timestamps: the session anchor
+// when it precedes the writer's first sample, otherwise the sample itself.
+CMTime MRSyncWriterStartTime(CMTime firstTimestamp);
+
+// Converts a capture-session timestamp to the host clock. Falls back to the
+// original value when the clock is unavailable or conversion fails.
+CMTime MRSyncToHostTime(CMTime timestamp, CMClockRef captureClock);
+
+// Creates a zero-filled LPCM sample buffer (PTS 0) in the same format as the
+// template sample. Handles interleaved and non-interleaved layouts. Caller
+// releases the result. Returns NULL for non-PCM formats or invalid durations.
+CMSampleBufferRef MRSyncCreateSilentAudio(CMSampleBufferRef templateSample, double seconds);
+
 // Bidirectional camera-audio barrier: ensures both start writing from the
 // same wall-clock moment for perfect lip sync.
 void MRSyncConfigureCamera(BOOL expectCamera);
