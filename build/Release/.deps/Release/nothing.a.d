@@ -1,1 +1,1 @@
-cmd_Release/nothing.a := rm -f Release/nothing.a && ./gyp-mac-tool filter-libtool libtool  -static -o Release/nothing.a Release/obj.target/nothing/node_modules/node-addon-api/nothing.o
+cmd_Release/nothing.a := rm -f Release/nothing.a && /opt/homebrew/opt/python@3.14/bin/python3.14 gyp-mac-tool filter-libtool libtool  -static -o Release/nothing.a Release/obj.target/nothing/node_modules/node-addon-api/nothing.o

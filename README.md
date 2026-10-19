@@ -1,6 +1,6 @@
 # node-mac-recorder
 
-*This package was developed for [https://creavit.studio](https://creavit.studio)*
+*Powers [Creavit Studio](https://creavit.studio) — a Mac screen recorder and video editor.*
 
 A powerful native macOS screen recording Node.js package with advanced window selection, multi-display support, and automatic overlay window exclusion. Built with ScreenCaptureKit for modern macOS with intelligent window filtering and Electron compatibility.
 

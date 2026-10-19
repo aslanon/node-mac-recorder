@@ -499,16 +499,17 @@ extern "C" {
 NSArray<NSDictionary *> *listAudioCaptureDevices() {
     NSMutableArray<NSDictionary *> *devicesInfo = [NSMutableArray array];
 
-    // CRITICAL FIX: Include all audio device types including external and Continuity
-    NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray arrayWithArray:@[
-        AVCaptureDeviceTypeBuiltInMicrophone,
-        AVCaptureDeviceTypeExternalUnknown
-    ]];
-
-    // Add external microphones (includes Continuity Microphone on macOS 14+)
+    // macOS 14+: AVCaptureDeviceTypeMicrophone is the type for every
+    // microphone (built-in, USB, Bluetooth, hot-plugged); the older
+    // BuiltInMicrophone / ExternalUnknown pair is deprecated there and can miss
+    // a mic plugged in after launch. External adds Continuity microphones.
+    NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray array];
     if (@available(macOS 14.0, *)) {
+        [deviceTypes addObject:AVCaptureDeviceTypeMicrophone];
         [deviceTypes addObject:AVCaptureDeviceTypeExternal];
-        MRLog(@"✅ Added External audio device type (iPhone microphone will be visible)");
+    } else {
+        [deviceTypes addObject:AVCaptureDeviceTypeBuiltInMicrophone];
+        [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
     }
 
     AVCaptureDeviceDiscoverySession *session = [AVCaptureDeviceDiscoverySession

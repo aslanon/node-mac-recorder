@@ -2038,11 +2038,15 @@ class MacRecorder extends EventEmitter {
 				this.lastCapturedData = null;
 				// Store session timestamp for sync metadata
 				this.cursorCaptureSessionTimestamp = this.sessionTimestamp;
+				// Sayfa kaydirma girdisi (tekerlek / trackpad / kaydirma tuslari).
+				// Eski native binary'de fonksiyon yoksa sessizce atlanir.
+				this._startScrollInputTracking();
 
 				// JavaScript interval ile polling yap (daha sık - mouse event'leri yakalamak için)
 				this.cursorCaptureInterval = setInterval(() => {
 					try {
 						if (this.cursorCapturePaused) return;
+						this._writeScrollInput(filepath);
 						// Geometry was resolved at capture start; scaleFactor is not used here.
 						const position = nativeBinding.getCursorPosition(false);
 						const timestamp = Date.now() - this.cursorCaptureStartTime - this.cursorPausedDurationMs;
@@ -2218,6 +2222,10 @@ class MacRecorder extends EventEmitter {
 				clearInterval(this.cursorCaptureInterval);
 				this.cursorCaptureInterval = null;
 
+				// Son kaydirma olaylarini yaz, sonra izlemeyi kapat.
+				if (this.cursorCaptureFile) this._writeScrollInput(this.cursorCaptureFile);
+				this._stopScrollInputTracking();
+
 				// Dosyayı kapat
 				let closedCursorFile = null;
 				if (this.cursorCaptureFile) {
@@ -2248,6 +2256,90 @@ class MacRecorder extends EventEmitter {
 				reject(error);
 			}
 		});
+	}
+
+	/**
+	 * Sayfa kaydirma girdisini (Creavit Scroll Reconstruction) native tampondan
+	 * alip cursor dosyasina `type: "scroll"` kaydi olarak yazar. Zaman ve
+	 * koordinatlar cursor kayitlariyla AYNI donusumden gecer, boylece editor
+	 * ikisini ayni saatle okur.
+	 *
+	 * Kayit: { type: "scroll", source: "wheel" | "trackpad" | "key",
+	 *   x, y, timestamp, unixTimeMs, deltaY, deltaX, phase, momentumPhase, key? }
+	 * Cursor okuyuculari bu kayitlari atlar; yalnizca scroll analizi kullanir.
+	 */
+	_startScrollInputTracking() {
+		this._scrollInputActive = false;
+		try {
+			if (nativeBinding && typeof nativeBinding.startScrollTracking === "function") {
+				this._scrollInputActive = nativeBinding.startScrollTracking() === true;
+			}
+		} catch (error) {
+			console.warn("Scroll input tracking unavailable:", error.message);
+			this._scrollInputActive = false;
+		}
+		return this._scrollInputActive;
+	}
+
+	_stopScrollInputTracking() {
+		if (!this._scrollInputActive) return;
+		this._scrollInputActive = false;
+		try {
+			nativeBinding.stopScrollTracking();
+		} catch (_) {}
+	}
+
+	_writeScrollInput(filepath) {
+		if (!this._scrollInputActive || !filepath) return;
+		// Ilk kayit her zaman bir cursor kaydi olmali (sync metadata onda).
+		if (this.cursorCaptureFirstWrite) return;
+		let events;
+		try {
+			events = nativeBinding.drainScrollEvents();
+		} catch (_) {
+			return;
+		}
+		if (!Array.isArray(events) || events.length === 0) return;
+		const info = this.cursorDisplayInfo;
+		let chunk = "";
+		for (const e of events) {
+			const unixTimeMs = Number(e.unixTimeMs);
+			if (!Number.isFinite(unixTimeMs)) continue;
+			const timestamp = unixTimeMs - this.cursorCaptureStartTime - this.cursorPausedDurationMs;
+			if (timestamp < 0) continue;
+			let x = Number(e.x) || 0;
+			let y = Number(e.y) || 0;
+			let coordinateSystem = "global";
+			if (info && info.videoRelative) {
+				x = x - info.displayX - info.videoOffsetX;
+				y = y - info.displayY - info.videoOffsetY;
+				coordinateSystem =
+					x < 0 || y < 0 || x >= info.videoWidth || y >= info.videoHeight
+						? "video-relative-outside"
+						: "video-relative";
+			}
+			const entry = {
+				x,
+				y,
+				timestamp,
+				unixTimeMs,
+				type: "scroll",
+				source: e.key ? "key" : e.continuous ? "trackpad" : "wheel",
+				deltaY: Number(e.deltaY) || 0,
+				deltaX: Number(e.deltaX) || 0,
+				phase: Number(e.phase) || 0,
+				momentumPhase: Number(e.momentumPhase) || 0,
+				coordinateSystem,
+			};
+			if (e.key) entry.key = String(e.key);
+			chunk += "," + JSON.stringify(entry);
+		}
+		if (!chunk) return;
+		try {
+			require("fs").appendFileSync(filepath, chunk);
+		} catch (error) {
+			console.warn("Scroll input write failed:", error.message);
+		}
 	}
 
 	/**
