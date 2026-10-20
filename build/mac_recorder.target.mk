@@ -124,6 +124,7 @@ OBJS := \
 	$(obj).target/$(TARGET)/src/cursor_tracker.o \
 	$(obj).target/$(TARGET)/src/keyboard_tracker.o \
 	$(obj).target/$(TARGET)/src/scroll_tracker.o \
+	$(obj).target/$(TARGET)/src/text_input_tracker.o \
 	$(obj).target/$(TARGET)/src/window_selector.o
 
 # Add to the list of files we specially track dependencies for.

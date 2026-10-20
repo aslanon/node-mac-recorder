@@ -2041,12 +2041,16 @@ class MacRecorder extends EventEmitter {
 				// Sayfa kaydirma girdisi (tekerlek / trackpad / kaydirma tuslari).
 				// Eski native binary'de fonksiyon yoksa sessizce atlanir.
 				this._startScrollInputTracking();
+				// Yazma anlari + caret konumu (LeadCam: yazarken zoom'u tut, caret'i takip et).
+				this._startTextInputTracking();
+				this._lastCursorWriteTs = 0;
 
 				// JavaScript interval ile polling yap (daha sık - mouse event'leri yakalamak için)
 				this.cursorCaptureInterval = setInterval(() => {
 					try {
 						if (this.cursorCapturePaused) return;
 						this._writeScrollInput(filepath);
+						this._writeTextInput(filepath);
 						// Geometry was resolved at capture start; scaleFactor is not used here.
 						const position = nativeBinding.getCursorPosition(false);
 						const timestamp = Date.now() - this.cursorCaptureStartTime - this.cursorPausedDurationMs;
@@ -2191,6 +2195,7 @@ class MacRecorder extends EventEmitter {
 							} else {
 								fs.appendFileSync(filepath, "," + jsonString);
 							}
+							this._lastCursorWriteTs = Math.max(this._lastCursorWriteTs || 0, timestamp);
 
 							// Son pozisyonu sakla
 							this.lastCapturedData = { ...cursorData };
@@ -2225,6 +2230,8 @@ class MacRecorder extends EventEmitter {
 				// Son kaydirma olaylarini yaz, sonra izlemeyi kapat.
 				if (this.cursorCaptureFile) this._writeScrollInput(this.cursorCaptureFile);
 				this._stopScrollInputTracking();
+				if (this.cursorCaptureFile) this._writeTextInput(this.cursorCaptureFile);
+				this._stopTextInputTracking();
 
 				// Dosyayı kapat
 				let closedCursorFile = null;
@@ -2339,6 +2346,124 @@ class MacRecorder extends EventEmitter {
 			require("fs").appendFileSync(filepath, chunk);
 		} catch (error) {
 			console.warn("Scroll input write failed:", error.message);
+		}
+	}
+
+	/**
+	 * Yazma anlari ve metin imlecinin (caret) yeri (Creavit LeadCam).
+	 * Native taraf tus anini kaydeder, Accessibility ile caret dikdortgenini
+	 * sorar; burada cursor ile AYNI zaman / koordinat donusumunden gecirilip
+	 * cursor dosyasina `type: "textinput"` kaydi olarak yazilir.
+	 *
+	 * Kayit: { type: "textinput", x, y (mouse), timestamp, unixTimeMs, keys,
+	 *   textTarget: true|false|null, caretX?, caretY? (caret merkezi),
+	 *   caretWidth?, caretHeight?, inputFrame?: {x, y, width, height} }
+	 * GIZLILIK: hangi tusa basildigi / yazilan metin kaydedilmez.
+	 * Zaman damgasi son yazilan cursor kaydindan geriye gitmez (dosya
+	 * okuyuculari zamani artan sirada bekliyor; kayma en fazla bir dongu).
+	 */
+	_startTextInputTracking() {
+		this._textInputActive = false;
+		try {
+			if (nativeBinding && typeof nativeBinding.startTextInputTracking === "function") {
+				this._textInputActive = nativeBinding.startTextInputTracking() === true;
+			}
+		} catch (error) {
+			console.warn("Text input tracking unavailable:", error.message);
+			this._textInputActive = false;
+		}
+		return this._textInputActive;
+	}
+
+	_stopTextInputTracking() {
+		if (!this._textInputActive) return;
+		this._textInputActive = false;
+		try {
+			nativeBinding.stopTextInputTracking();
+		} catch (_) {}
+	}
+
+	_writeTextInput(filepath) {
+		if (!this._textInputActive || !filepath) return;
+		// Ilk kayit her zaman bir cursor kaydi olmali (sync metadata onda).
+		if (this.cursorCaptureFirstWrite) return;
+		let events;
+		try {
+			events = nativeBinding.drainTextInputEvents();
+		} catch (_) {
+			return;
+		}
+		if (!Array.isArray(events) || events.length === 0) return;
+		const info = this.cursorDisplayInfo;
+		const toVideo = (gx, gy) => {
+			if (info && info.videoRelative) {
+				return {
+					x: gx - info.displayX - info.videoOffsetX,
+					y: gy - info.displayY - info.videoOffsetY,
+				};
+			}
+			return { x: gx, y: gy };
+		};
+		const round = (v) => Math.round(v * 10) / 10;
+		let chunk = "";
+		for (const e of events) {
+			const unixTimeMs = Number(e.unixTimeMs);
+			if (!Number.isFinite(unixTimeMs)) continue;
+			let timestamp = unixTimeMs - this.cursorCaptureStartTime - this.cursorPausedDurationMs;
+			if (timestamp < 0) continue;
+			timestamp = Math.max(timestamp, this._lastCursorWriteTs || 0);
+			const mouse = toVideo(Number(e.x) || 0, Number(e.y) || 0);
+			let coordinateSystem = "global";
+			if (info && info.videoRelative) {
+				coordinateSystem =
+					mouse.x < 0 || mouse.y < 0 || mouse.x >= info.videoWidth || mouse.y >= info.videoHeight
+						? "video-relative-outside"
+						: "video-relative";
+			}
+			const entry = {
+				x: mouse.x,
+				y: mouse.y,
+				timestamp,
+				unixTimeMs,
+				type: "textinput",
+				keys: Number(e.keys) || 1,
+				textTarget: typeof e.textTarget === "boolean" ? e.textTarget : null,
+				coordinateSystem,
+			};
+			// Imlec tipi son cursor kaydindan (cizimde tip titremesin).
+			if (this.lastCapturedData?.cursorType) entry.cursorType = this.lastCapturedData.cursorType;
+			if (e.caret && Number.isFinite(Number(e.caret.x)) && Number.isFinite(Number(e.caret.y))) {
+				const c = toVideo(Number(e.caret.x), Number(e.caret.y));
+				entry.caretX = round(c.x);
+				entry.caretY = round(c.y);
+				entry.caretWidth = round(Number(e.caret.width) || 0);
+				entry.caretHeight = round(Number(e.caret.height) || 0);
+			}
+			if (e.field && Number(e.field.width) > 0 && Number(e.field.height) > 0) {
+				const f = toVideo(Number(e.field.x), Number(e.field.y));
+				entry.inputFrame = {
+					x: round(f.x),
+					y: round(f.y),
+					width: round(Number(e.field.width)),
+					height: round(Number(e.field.height)),
+				};
+			}
+			if (info) {
+				entry.videoInfo = {
+					width: info.videoWidth,
+					height: info.videoHeight,
+					offsetX: info.videoOffsetX,
+					offsetY: info.videoOffsetY,
+				};
+			}
+			chunk += "," + JSON.stringify(entry);
+			this._lastCursorWriteTs = timestamp;
+		}
+		if (!chunk) return;
+		try {
+			require("fs").appendFileSync(filepath, chunk);
+		} catch (error) {
+			console.warn("Text input write failed:", error.message);
 		}
 	}
 

@@ -62,6 +62,9 @@ Napi::Object InitKeyboardTracker(Napi::Env env, Napi::Object exports);
 // Scroll input tracker (wheel / trackpad / scroll keys) declarations
 Napi::Object InitScrollTracker(Napi::Env env, Napi::Object exports);
 
+// Text input tracker (typing moments + caret rect, Creavit LeadCam)
+Napi::Object InitTextInputTracker(Napi::Env env, Napi::Object exports);
+
 // Window selector function declarations
 Napi::Object InitWindowSelector(Napi::Env env, Napi::Object exports);
 
@@ -1856,6 +1859,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     // Initialize scroll input tracker (Creavit Scroll Reconstruction)
     InitScrollTracker(env, exports);
+
+    // Initialize text input tracker (typing + caret, Creavit LeadCam)
+    InitTextInputTracker(env, exports);
 
     // Initialize window selector
     InitWindowSelector(env, exports);

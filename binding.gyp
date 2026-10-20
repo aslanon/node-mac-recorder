@@ -14,6 +14,7 @@
         "src/cursor_tracker.mm",
         "src/keyboard_tracker.mm",
         "src/scroll_tracker.mm",
+        "src/text_input_tracker.mm",
         "src/window_selector.mm"
       ],
       "include_dirs": [
