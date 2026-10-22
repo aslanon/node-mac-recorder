@@ -222,6 +222,7 @@ class MacRecorder extends EventEmitter {
 		this.recordingMode = "iphone";
 		this._resetPauseState();
 		this._iosCaptureInterrupted = false;
+		this._applyMicFilters();
 
 		try {
 			const success = nativeBinding.startIOSDeviceRecording(
@@ -454,11 +455,37 @@ class MacRecorder extends EventEmitter {
 		if (options.preferScreenCaptureKit !== undefined) {
 			this.options.preferScreenCaptureKit = options.preferScreenCaptureKit === true;
 		}
+		// Mic filter chain (noise gate, expander, EQ, compressor, limiter) applied
+		// to the microphone track while it is written. null/undefined = off.
+		if (options.micFilters !== undefined) {
+			this.options.micFilters =
+				options.micFilters && typeof options.micFilters === "object"
+					? options.micFilters
+					: null;
+		}
 		if (options.cameraDeviceId !== undefined) {
 			this.options.cameraDeviceId =
 				typeof options.cameraDeviceId === "string" && options.cameraDeviceId.length > 0
 					? options.cameraDeviceId
 					: null;
+		}
+	}
+
+	/**
+	 * Sends the mic filter chain to the native recorder. Called right before
+	 * every native start so an earlier recording's filters never carry over.
+	 */
+	_applyMicFilters() {
+		if (typeof nativeBinding.setMicFilters !== "function") return false;
+		const filters =
+			this.options.includeMicrophone === true && this.options.micFilters
+				? this.options.micFilters
+				: null;
+		try {
+			return nativeBinding.setMicFilters(filters ? JSON.stringify(filters) : "");
+		} catch (error) {
+			console.warn("Mic filters could not be applied:", error.message);
+			return false;
 		}
 	}
 
@@ -572,6 +599,7 @@ class MacRecorder extends EventEmitter {
 
 		// Seçenekleri güncelle
 		this.setOptions(options);
+		this._applyMicFilters();
 
 		// Cache display list so we don't fetch multiple times during preparation
 		let cachedDisplays = null;

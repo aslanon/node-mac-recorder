@@ -2,9 +2,10 @@ cmd_Release/obj.target/mac_recorder/src/audio_recorder.o := c++ '-DNODE_GYP_MODU
 Release/obj.target/mac_recorder/src/audio_recorder.o: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json \
   ../src/audio_recorder.mm ../src/recording_writer_safety.h \
-  ../src/logging.h ../src/sync_timeline.h
+  ../src/logging.h ../src/sync_timeline.h ../src/mic_filter.h
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json:
 ../src/audio_recorder.mm:
 ../src/recording_writer_safety.h:
 ../src/logging.h:
 ../src/sync_timeline.h:
+../src/mic_filter.h:

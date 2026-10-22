@@ -2,11 +2,12 @@ cmd_Release/obj.target/mac_recorder/src/screen_capture_kit.o := c++ '-DNODE_GYP_
 Release/obj.target/mac_recorder/src/screen_capture_kit.o: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json \
   ../src/screen_capture_kit.mm ../src/screen_capture_kit.h \
-  ../src/logging.h ../src/sync_timeline.h \
+  ../src/logging.h ../src/sync_timeline.h ../src/mic_filter.h \
   ../src/recording_writer_safety.h
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json:
 ../src/screen_capture_kit.mm:
 ../src/screen_capture_kit.h:
 ../src/logging.h:
 ../src/sync_timeline.h:
+../src/mic_filter.h:
 ../src/recording_writer_safety.h:

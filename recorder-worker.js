@@ -174,6 +174,13 @@ async function handleStartRecording(config) {
             preferScreenCaptureKit: options.preferScreenCaptureKit || false
         };
 
+        // Mic filter chain for this worker's microphone track (only the first
+        // window records the mic).
+        if (typeof nativeBinding.setMicFilters === 'function') {
+            const micFilters = recordingOptions.includeMicrophone && options.micFilters ? options.micFilters : null;
+            nativeBinding.setMicFilters(micFilters ? JSON.stringify(micFilters) : '');
+        }
+
         // Start native recording
         const success = nativeBinding.startRecording(outputPath, recordingOptions);
 

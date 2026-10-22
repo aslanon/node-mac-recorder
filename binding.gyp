@@ -11,6 +11,7 @@
         "src/sync_timeline.mm",
         "src/audio_recorder.mm",
         "src/audio_mixer.mm",
+        "src/mic_filter.mm",
         "src/cursor_tracker.mm",
         "src/keyboard_tracker.mm",
         "src/scroll_tracker.mm",

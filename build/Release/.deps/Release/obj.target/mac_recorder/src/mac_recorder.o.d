@@ -9,7 +9,8 @@ Release/obj.target/mac_recorder/src/mac_recorder.o: \
   /Users/onur/Library/Caches/node-gyp/24.5.0/include/node/node_api_types.h \
   /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.h \
   /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h \
-  ../src/logging.h ../src/sync_timeline.h ../src/screen_capture_kit.h
+  ../src/logging.h ../src/sync_timeline.h ../src/mic_filter.h \
+  ../src/screen_capture_kit.h
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json:
 ../src/mac_recorder.mm:
 /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi.h:
@@ -21,4 +22,5 @@ Release/obj.target/mac_recorder/src/mac_recorder.o: \
 /Users/onur/codes/creavit.studio/node-mac-recorder/node_modules/node-addon-api/napi-inl.deprecated.h:
 ../src/logging.h:
 ../src/sync_timeline.h:
+../src/mic_filter.h:
 ../src/screen_capture_kit.h:

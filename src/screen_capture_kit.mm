@@ -1,6 +1,7 @@
 #import "screen_capture_kit.h"
 #import "logging.h"
 #import "sync_timeline.h"
+#import "mic_filter.h"
 #import "recording_writer_safety.h"
 #include <atomic>
 #import <AVFoundation/AVFoundation.h>
@@ -825,6 +826,14 @@ static void SCKRequestStop(SCStream *expectedStream) {
         MRLog(@"⚠️ %@ audio sample buffer not ready",
               routeToMicrophoneTrack ? @"Microphone" : @"System");
         return;
+    }
+
+    // Mic filters (gate, expander, EQ, compressor, limiter) run on the mic
+    // track only; system audio is written untouched. NULL = filters off.
+    MRMicFilterScopedBuffer filteredMicSample(
+        routeToMicrophoneTrack ? MRMicFilterCopyProcessedBuffer(sampleBuffer) : NULL);
+    if (filteredMicSample.buffer) {
+        sampleBuffer = filteredMicSample.buffer;
     }
     
     if (![ScreenCaptureKitRecorder prepareAudioWriterIfNeededWithSampleBuffer:sampleBuffer

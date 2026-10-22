@@ -3,6 +3,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import "logging.h"
 #import "sync_timeline.h"
+#import "mic_filter.h"
 
 static dispatch_queue_t g_audioCaptureQueue = nil;
 static NSString *g_lastStandaloneAudioOutputPath = nil;
@@ -23,6 +24,9 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
 @property (nonatomic, assign) BOOL primaryPrefixWritten;
 @property (nonatomic, assign) CMTime startTime;
 @property (nonatomic, strong) NSString *outputPath;
+// Only the standalone microphone recorder applies the mic filter chain; the
+// AVFoundation fallback may be recording a system-audio loopback device.
+@property (nonatomic, assign) BOOL applyMicFilters;
 
 - (BOOL)startRecordingWithDeviceId:(NSString *)deviceId
                         outputPath:(NSString *)outputPath
@@ -315,6 +319,12 @@ static CMSampleBufferRef MRCreateSilentAudioPrefix(CMSampleBufferRef sample, dou
     if (!CMSampleBufferDataIsReady(sampleBuffer)) {
         return;
     }
+
+    MRMicFilterScopedBuffer filteredMicSample(
+        self.applyMicFilters ? MRMicFilterCopyProcessedBuffer(sampleBuffer) : NULL);
+    if (filteredMicSample.buffer) {
+        sampleBuffer = filteredMicSample.buffer;
+    }
     
     NSError *writerError = nil;
     if (![self setupWriterWithSampleBuffer:sampleBuffer error:&writerError]) {
@@ -589,6 +599,7 @@ bool startStandaloneAudioRecording(NSString *outputPath,
     }
     
     g_audioRecorder = [[NativeAudioRecorder alloc] init];
+    g_audioRecorder.applyMicFilters = YES;
     if (outputPath && [outputPath length] > 0) {
         NSString *ownedOutputPath = [outputPath copy];
         [g_lastStandaloneAudioOutputPath release];

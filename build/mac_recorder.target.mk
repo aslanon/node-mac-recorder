@@ -121,6 +121,7 @@ OBJS := \
 	$(obj).target/$(TARGET)/src/sync_timeline.o \
 	$(obj).target/$(TARGET)/src/audio_recorder.o \
 	$(obj).target/$(TARGET)/src/audio_mixer.o \
+	$(obj).target/$(TARGET)/src/mic_filter.o \
 	$(obj).target/$(TARGET)/src/cursor_tracker.o \
 	$(obj).target/$(TARGET)/src/keyboard_tracker.o \
 	$(obj).target/$(TARGET)/src/scroll_tracker.o \

@@ -6,6 +6,7 @@
 #import <CoreAudio/CoreAudio.h>
 #import "logging.h"
 #import "sync_timeline.h"
+#import "mic_filter.h"
 
 // Import screen capture (ScreenCaptureKit only)
 #import "screen_capture_kit.h"
@@ -1428,6 +1429,19 @@ Napi::Value PrewarmScreenCapture(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, false);
 }
 
+// Mic filter chain for the next recording's microphone track (JSON string from
+// the desktop app; empty / null turns it off). Call before every start.
+Napi::Value SetMicFilters(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NSString *json = nil;
+    if (info.Length() > 0 && info[0].IsString()) {
+        std::string value = info[0].As<Napi::String>().Utf8Value();
+        json = [NSString stringWithUTF8String:value.c_str()];
+    }
+    MRMicFilterConfigureJSON(json);
+    return Napi::Boolean::New(env, MRMicFilterIsActive());
+}
+
 // Actual native state, independent of the legacy first-ten-frames/UI flag.
 Napi::Value GetRecordingLifecycleStatus(const Napi::CallbackInfo& info) {
     bool recording = hasAVFoundationRecordingResources() || isIOSDeviceRecordingPending();
@@ -1830,6 +1844,7 @@ Napi::Value CheckPermissions(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getRecordingLifecycleStatus", Napi::Function::New(env, GetRecordingLifecycleStatus));
     exports.Set(Napi::String::New(env, "startRecording"), Napi::Function::New(env, StartRecording));
+    exports.Set(Napi::String::New(env, "setMicFilters"), Napi::Function::New(env, SetMicFilters));
     exports.Set(Napi::String::New(env, "stopRecording"), Napi::Function::New(env, StopRecording));
     exports.Set(Napi::String::New(env, "pauseRecording"), Napi::Function::New(env, PauseRecording));
     exports.Set(Napi::String::New(env, "resumeRecording"), Napi::Function::New(env, ResumeRecording));
