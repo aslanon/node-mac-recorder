@@ -322,7 +322,9 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
             continue;
         }
 
-        if (dims.width > 1280 || dims.height > 720) {
+        // Cap at 1080p (FaceTime, iPhone Continuity Camera, external webcams).
+        // Higher (4K) formats are skipped to keep CPU/file size reasonable.
+        if (dims.width > 1920 || dims.height > 1080) {
             continue;
         }
 
@@ -790,12 +792,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
             return;
         }
 
-        NSError *configError = nil;
-        if (![self configureDevice:device withFormat:bestFormat frameRate:frameRate error:&configError]) {
-            MRLog(@"❌ Failed to configure device: %@", configError.localizedDescription);
-            [self completeStart:NO token:token];
-            return;
-        }
+        MRLog(@"🎥 Selected camera format: %dx%d @ %.0f fps max", width, height, frameRate);
 
         if (self.stopInFlight || token != self.activeToken) {
             [self completeStart:NO token:token];
@@ -815,6 +812,15 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
             return;
         }
         [session addInput:deviceInput];
+
+        // Apply the chosen format AFTER the input is attached. Setting activeFormat on a
+        // device that belongs to a session switches the session to InputPriority, so the
+        // HIGH preset can no longer silently downgrade us back to 720p.
+        NSError *configError = nil;
+        if (![self configureDevice:device withFormat:bestFormat frameRate:frameRate error:&configError]) {
+            MRLog(@"⚠️ Failed to apply camera format (%@) - falling back to session preset",
+                  configError.localizedDescription);
+        }
 
         // Setup video data output with delegate pattern (realtime sync)
         AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
@@ -859,7 +865,14 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         self.writerStarted = NO;
         self.startTime = kCMTimeInvalid;
 
+        // On macOS the session can reset activeFormat when it starts running unless the
+        // device is locked for configuration across startRunning.
+        BOOL heldLock = [device lockForConfiguration:nil];
         [session startRunning];
+        if (heldLock) {
+            [device unlockForConfiguration];
+        }
+        MRLog(@"🎥 Active camera format after start: %@", device.activeFormat);
 
         // A/V SYNC FIX: Removed 500ms warmup delay that was causing lip sync issues.
         // The delegate pattern starts writing on first frame, no warmup needed.
