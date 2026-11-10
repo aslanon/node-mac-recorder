@@ -3,6 +3,25 @@
 	"version": "2.24.28",
 	"description": "Native macOS screen recording package for Node.js applications",
 	"main": "index.js",
+	"files": [
+		"index.js",
+		"index-multiprocess.js",
+		"recorder-worker.js",
+		"recorder_runtime_safety.cjs",
+		"MultiWindowRecorder.js",
+		"window-selector.js",
+		"electron-safe-index.js",
+		"install.js",
+		"binding.gyp",
+		"scripts/native-build.cjs",
+		"build-electron-safe.js",
+		"electron-safe-binding.gyp",
+		"src/",
+		"!src/**/*backup*",
+		"!src/**/*.tmp",
+		"!src/screen_capture_kit_new.mm",
+		"!src/screen_capture_kit_simple.mm"
+	],
 	"keywords": [
 		"macos",
 		"screen",
@@ -16,7 +35,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/aslanon/node-mac-recorder.git"
+		"url": "git+https://github.com/aslanon/node-mac-recorder.git"
 	},
 	"homepage": "https://creavit.studio/open-source-screen-recorder",
 	"bugs": {
