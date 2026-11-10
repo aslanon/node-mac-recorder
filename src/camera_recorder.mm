@@ -75,6 +75,125 @@ static BOOL MRIsContinuityCamera(AVCaptureDevice *device) {
     return NO;
 }
 
+// iPhone/iPad used as a webcam. Without NSCameraUseContinuityCameraDeviceType in
+// Info.plist (e.g. the dev Electron.app) macOS lists Continuity Camera as a plain
+// external camera named after the phone, so MRIsContinuityCamera misses it.
+// Muxed devices (the USB iPhone *screen* source) are never included.
+static BOOL MRIsIPhoneCamera(AVCaptureDevice *device) {
+    if (!device) {
+        return NO;
+    }
+    if ([device hasMediaType:AVMediaTypeMuxed] || ![device hasMediaType:AVMediaTypeVideo]) {
+        return NO;
+    }
+    if (MRIsContinuityCamera(device)) {
+        return YES;
+    }
+
+    NSString *deviceType = device.deviceType ?: @"";
+    BOOL external = [deviceType isEqualToString:AVCaptureDeviceTypeExternalUnknown];
+    if (@available(macOS 14.0, *)) {
+        external = external || [deviceType isEqualToString:AVCaptureDeviceTypeExternal];
+    }
+    if (!external) {
+        return NO;
+    }
+
+    NSArray<NSString *> *fields = @[ device.localizedName ?: @"", device.modelID ?: @"" ];
+    for (NSString *field in fields) {
+        if ([field rangeOfString:@"iPhone" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [field rangeOfString:@"iPad" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// Continuity Camera always delivers frames in the iPhone sensor's landscape
+// orientation. macOS reports how far a frame has to be turned (clockwise) to
+// stand upright through AVCaptureDeviceRotationCoordinator; FaceTime uses the
+// same value. Coordinators are cached per device so polling stays cheap.
+API_AVAILABLE(macos(14.0))
+static AVCaptureDeviceRotationCoordinator *MRRotationCoordinatorForDevice(AVCaptureDevice *device) {
+    static NSMutableDictionary<NSString *, AVCaptureDeviceRotationCoordinator *> *cache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [[NSMutableDictionary alloc] init];  // lives for the process
+    });
+
+    NSString *key = device.uniqueID;
+    if (key.length == 0) {
+        return nil;
+    }
+
+    @synchronized (cache) {
+        AVCaptureDeviceRotationCoordinator *coordinator = cache[key];
+        // The coordinator keeps a weak device reference; a reconnected iPhone
+        // is a new AVCaptureDevice instance and needs a new coordinator.
+        if (coordinator && coordinator.device == device) {
+            return coordinator;
+        }
+        @try {
+            coordinator = [[AVCaptureDeviceRotationCoordinator alloc] initWithDevice:device previewLayer:nil];
+        } @catch (NSException *exception) {
+            MRLog(@"⚠️ Camera rotation coordinator unavailable: %@", exception.reason);
+            coordinator = nil;
+        }
+        if (coordinator) {
+            cache[key] = coordinator;
+#if !__has_feature(objc_arc)
+            [coordinator release];  // the cache owns it now (this file builds without ARC)
+#endif
+        } else {
+            [cache removeObjectForKey:key];
+        }
+        return coordinator;
+    }
+}
+
+// 0, 90, 180 or 270 – clockwise degrees that make the frame upright.
+static CGFloat MRCameraUprightRotationAngle(AVCaptureDevice *device) {
+    if (!device || !MRIsIPhoneCamera(device)) {
+        return 0;
+    }
+    if (@available(macOS 14.0, *)) {
+        AVCaptureDeviceRotationCoordinator *coordinator = MRRotationCoordinatorForDevice(device);
+        if (!coordinator) {
+            return 0;
+        }
+        CGFloat angle = coordinator.videoRotationAngleForHorizonLevelCapture;
+        if (!isfinite(angle)) {
+            return 0;
+        }
+        long quarterTurns = lround(angle / 90.0) % 4;
+        if (quarterTurns < 0) {
+            quarterTurns += 4;
+        }
+        return (CGFloat)(quarterTurns * 90);
+    }
+    return 0;
+}
+
+// Applies the upright angle to a capture connection. Returns YES when the
+// connection already had, or now has, that angle.
+static BOOL MRApplyCameraRotation(AVCaptureConnection *connection, CGFloat angle) {
+    if (!connection) {
+        return NO;
+    }
+    if (@available(macOS 14.0, *)) {
+        if (fabs(connection.videoRotationAngle - angle) < 0.5) {
+            return YES;
+        }
+        if (![connection isVideoRotationAngleSupported:angle]) {
+            MRLog(@"⚠️ Camera connection does not support %.0f° rotation", angle);
+            return NO;
+        }
+        connection.videoRotationAngle = angle;
+        return YES;
+    }
+    return angle == 0;
+}
+
 static NSString *MRCameraNormalizeOutputPath(NSString *path) {
     if (![path isKindOfClass:[NSString class]] || [path length] == 0) {
         return nil;
@@ -126,6 +245,8 @@ static void MRCameraRemoveFileIfExists(NSString *path) {
 @property (nonatomic, strong) dispatch_semaphore_t stopSemaphore;
 @property (atomic, assign) uint64_t activeToken;
 @property (atomic, assign) BOOL unexpectedRestartAttempted;
+// Set only for Continuity Camera (iPhone) sessions; used to stand frames upright.
+@property (nonatomic, strong) AVCaptureDevice *rotationDevice;
 
 + (instancetype)sharedRecorder;
 + (NSArray<NSDictionary *> *)availableCameraDevices;
@@ -524,6 +645,24 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         return;
     }
 
+    // The phone's orientation can settle only after the session starts. Until the
+    // writer exists, keep the connection in step and skip frames that were
+    // produced with an outdated angle.
+    AVCaptureDevice *rotationDevice = self.rotationDevice;
+    if (!self.writer && rotationDevice) {
+        CGFloat rotationAngle = MRCameraUprightRotationAngle(rotationDevice);
+        BOOL needsUpdate = NO;
+        if (@available(macOS 14.0, *)) {
+            needsUpdate = fabs(connection.videoRotationAngle - rotationAngle) >= 0.5 &&
+                          [connection isVideoRotationAngleSupported:rotationAngle];
+        }
+        if (needsUpdate) {
+            MRApplyCameraRotation(connection, rotationAngle);
+            NSLog(@"[CameraRecorder] iPhone camera rotation updated before first frame: %.0f°", rotationAngle);
+            return;
+        }
+    }
+
     // Setup writer on first frame
     NSError *setupError = nil;
     if (![self setupWriterWithSampleBuffer:sampleBuffer error:&setupError]) {
@@ -735,6 +874,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 }
 
 - (void)cleanupAfterStopOnQueue {
+    self.rotationDevice = nil;
     self.session = nil;
     self.deviceInput = nil;
     self.videoOutput = nil;
@@ -849,6 +989,19 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
                 videoConnection.automaticallyAdjustsVideoMirroring = NO;
             }
             videoConnection.videoMirrored = YES;
+        }
+
+        // iPhone (Continuity Camera): turn frames upright when the phone is held
+        // in portrait. The angle is fixed once the writer starts so the movie
+        // keeps one frame size for the whole recording.
+        self.rotationDevice = nil;
+        if (MRIsIPhoneCamera(device)) {
+            self.rotationDevice = device;
+            CGFloat rotationAngle = MRCameraUprightRotationAngle(device);
+            BOOL applied = MRApplyCameraRotation(videoConnection, rotationAngle);
+            NSLog(@"[CameraRecorder] iPhone camera '%@' (type=%@, model=%@): rotation %.0f° %@",
+                  device.localizedName, device.deviceType, device.modelID, rotationAngle,
+                  applied ? @"applied" : @"NOT applied");
         }
 
         [session commitConfiguration];
@@ -1031,6 +1184,84 @@ extern "C" {
 
 NSArray<NSDictionary *> *listCameraDevices() {
     return [CameraRecorder availableCameraDevices];
+}
+
+static NSString *MRNormalizeCameraLabel(NSString *value) {
+    NSMutableString *result = [NSMutableString string];
+    NSString *lower = [(value ?: @"") lowercaseString];
+    NSCharacterSet *allowed = [NSCharacterSet alphanumericCharacterSet];
+    for (NSUInteger i = 0; i < lower.length; i++) {
+        unichar c = [lower characterAtIndex:i];
+        if ([allowed characterIsMember:c]) {
+            [result appendFormat:@"%C", c];
+        }
+    }
+    return result;
+}
+
+// Looks a camera up by AVFoundation uniqueID or by its name (Chromium labels
+// may carry a " (vid:pid)" suffix) and reports how to stand its frames upright.
+NSDictionary *cameraRotationInfo(NSString *deviceId, NSString *label) {
+    // Callers wrap this in their own @autoreleasepool.
+    AVCaptureDevice *device = nil;
+    if (deviceId.length > 0) {
+        device = [AVCaptureDevice deviceWithUniqueID:deviceId];
+    }
+
+    if (!device && label.length > 0) {
+        NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray array];
+        [deviceTypes addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+        if (@available(macOS 14.0, *)) {
+            [deviceTypes addObject:AVCaptureDeviceTypeExternal];
+            [deviceTypes addObject:AVCaptureDeviceTypeContinuityCamera];
+        } else {
+            [deviceTypes addObject:AVCaptureDeviceTypeExternalUnknown];
+        }
+        NSArray<AVCaptureDevice *> *devices =
+            [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:deviceTypes
+                                                                   mediaType:AVMediaTypeVideo
+                                                                    position:AVCaptureDevicePositionUnspecified].devices;
+        NSString *target = MRNormalizeCameraLabel(label);
+        for (AVCaptureDevice *candidate in devices) {
+            if ([candidate.localizedName isEqualToString:label]) {
+                device = candidate;
+                break;
+            }
+        }
+        if (!device && target.length > 0) {
+            for (AVCaptureDevice *candidate in devices) {
+                NSString *name = MRNormalizeCameraLabel(candidate.localizedName);
+                if (name.length > 0 && ([target hasPrefix:name] || [name hasPrefix:target])) {
+                    device = candidate;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!device) {
+        return @{ @"found": @NO, @"angle": @0, @"isContinuityCamera": @NO };
+    }
+
+    BOOL iPhoneCamera = MRIsIPhoneCamera(device);
+    double rawAngle = -1;
+    if (iPhoneCamera) {
+        if (@available(macOS 14.0, *)) {
+            AVCaptureDeviceRotationCoordinator *coordinator = MRRotationCoordinatorForDevice(device);
+            rawAngle = coordinator ? coordinator.videoRotationAngleForHorizonLevelCapture : -2;
+        }
+    }
+    return @{
+        @"found": @YES,
+        @"id": device.uniqueID ?: @"",
+        @"name": device.localizedName ?: @"",
+        @"deviceType": device.deviceType ?: @"",
+        @"model": device.modelID ?: @"",
+        @"manufacturer": device.manufacturer ?: @"",
+        @"isContinuityCamera": @(iPhoneCamera),
+        @"rawAngle": @(rawAngle),
+        @"angle": @(iPhoneCamera ? MRCameraUprightRotationAngle(device) : 0)
+    };
 }
 
 bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error) {

@@ -29,7 +29,7 @@ function buildNativeModule() {
 	console.log("\n🏗️  Building native module...");
 
 	// Run node-gyp rebuild
-	const nodeGyp = spawn("node-gyp", ["rebuild"], {
+	const nodeGyp = spawn(process.execPath, [path.join(__dirname, "scripts/native-build.cjs"), "rebuild"], {
 		stdio: "inherit",
 		env: { ...process.env, npm_config_build_from_source: "true" },
 	});

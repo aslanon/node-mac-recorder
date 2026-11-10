@@ -31,8 +31,8 @@ function buildElectronSafeModule() {
 
 	// Run node-gyp configure and build with electron-safe binding
 	const nodeGyp = spawn(
-		"node-gyp",
-		["configure", "build", "--binding_gyp_path=electron-safe-binding.gyp"],
+		process.execPath,
+		[path.join(__dirname, "scripts/native-build.cjs"), "configure", "build", "--binding_gyp_path=electron-safe-binding.gyp"],
 		{
 			stdio: "inherit",
 			env: {

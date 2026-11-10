@@ -161,6 +161,40 @@ class MacRecorder extends EventEmitter {
 	}
 
 	/**
+	 * Kameranın karelerini dik göstermek için gereken saat yönü açısı.
+	 * Continuity Camera (iPhone) telefon dik tutulsa da yatay kare gönderir;
+	 * macOS gereken açıyı ayrıca bildirir. Diğer kameralar için her zaman 0.
+	 * @param {{id?: string, label?: string}|string} query AVFoundation id veya cihaz adı
+	 * @returns {{found: boolean, id?: string, name?: string, isContinuityCamera: boolean, angle: number}}
+	 */
+	getCameraRotation(query = {}) {
+		const empty = { found: false, isContinuityCamera: false, angle: 0 };
+		if (typeof nativeBinding.getCameraRotation !== "function") return empty;
+		const normalized =
+			typeof query === "string" ? { id: query } : {
+				...(typeof query?.id === "string" && query.id ? { id: query.id } : {}),
+				...(typeof query?.label === "string" && query.label ? { label: query.label } : {}),
+			};
+		try {
+			const info = nativeBinding.getCameraRotation(normalized);
+			const angle = Number(info?.angle);
+			return {
+				found: info?.found === true,
+				id: info?.id,
+				name: info?.name,
+				deviceType: info?.deviceType,
+				model: info?.model,
+				manufacturer: info?.manufacturer,
+				rawAngle: info?.rawAngle,
+				isContinuityCamera: info?.isContinuityCamera === true,
+				angle: Number.isFinite(angle) ? ((Math.round(angle / 90) % 4) + 4) % 4 * 90 : 0,
+			};
+		} catch (_) {
+			return empty;
+		}
+	}
+
+	/**
 	 * USB uzerinden AVFoundation muxed capture kaynagi olarak gorunen
 	 * iPhone/iPad cihazlarini listeler. Continuity Camera cihazlari bu listeye
 	 * dahil edilmez; bu kaynak telefonun kamera sensoru degil ekran akışıdır.

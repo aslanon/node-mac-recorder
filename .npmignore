@@ -31,4 +31,6 @@ selected_window.json
 # Mac specific
 .DS_Store
 .AppleDouble
-.LSOverride 
+.LSOverride
+# Native build serialization (kept outside build/)
+.native-build.lock*

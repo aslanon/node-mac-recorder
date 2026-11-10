@@ -31,6 +31,7 @@ extern "C" {
     NSString* getAVFoundationAudioPath();
 
     NSArray<NSDictionary *> *listCameraDevices();
+    NSDictionary *cameraRotationInfo(NSString *deviceId, NSString *label);
     bool startCameraRecording(NSString *outputPath, NSString *deviceId, NSError **error);
     bool stopCameraRecording();
     bool isCameraRecording();
@@ -1194,6 +1195,55 @@ Napi::Value GetAudioDevices(const Napi::CallbackInfo& info) {
     }
 }
 
+// getCameraRotation({ id?, label? }) -> { found, id, name, isContinuityCamera, angle }
+// angle: clockwise degrees (0/90/180/270) that stand the camera's frames upright.
+Napi::Value GetCameraRotation(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("found", Napi::Boolean::New(env, false));
+    result.Set("isContinuityCamera", Napi::Boolean::New(env, false));
+    result.Set("angle", Napi::Number::New(env, 0));
+
+    NSString *deviceId = nil;
+    NSString *label = nil;
+    if (info.Length() > 0 && info[0].IsObject()) {
+        Napi::Object query = info[0].As<Napi::Object>();
+        if (query.Has("id") && query.Get("id").IsString()) {
+            deviceId = [NSString stringWithUTF8String:query.Get("id").As<Napi::String>().Utf8Value().c_str()];
+        }
+        if (query.Has("label") && query.Get("label").IsString()) {
+            label = [NSString stringWithUTF8String:query.Get("label").As<Napi::String>().Utf8Value().c_str()];
+        }
+    } else if (info.Length() > 0 && info[0].IsString()) {
+        deviceId = [NSString stringWithUTF8String:info[0].As<Napi::String>().Utf8Value().c_str()];
+    }
+
+    @try {
+        @autoreleasepool {
+            NSDictionary *rotation = cameraRotationInfo(deviceId, label);
+            if (![rotation isKindOfClass:[NSDictionary class]]) {
+                return result;
+            }
+            result.Set("found", Napi::Boolean::New(env, [rotation[@"found"] boolValue]));
+            result.Set("isContinuityCamera", Napi::Boolean::New(env, [rotation[@"isContinuityCamera"] boolValue]));
+            result.Set("angle", Napi::Number::New(env, [rotation[@"angle"] doubleValue]));
+            for (NSString *field in @[ @"id", @"name", @"deviceType", @"model", @"manufacturer" ]) {
+                NSString *value = rotation[field];
+                if ([value isKindOfClass:[NSString class]]) {
+                    result.Set([field UTF8String], Napi::String::New(env, [value UTF8String]));
+                }
+            }
+            NSNumber *rawAngle = rotation[@"rawAngle"];
+            if ([rawAngle isKindOfClass:[NSNumber class]]) {
+                result.Set("rawAngle", Napi::Number::New(env, [rawAngle doubleValue]));
+            }
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"❌ getCameraRotation failed: %@", exception.reason);
+    }
+    return result;
+}
+
 Napi::Value GetCameraDevices(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
@@ -1852,6 +1902,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     exports.Set(Napi::String::New(env, "getAudioDevices"), Napi::Function::New(env, GetAudioDevices));
     exports.Set(Napi::String::New(env, "getCameraDevices"), Napi::Function::New(env, GetCameraDevices));
+    exports.Set(Napi::String::New(env, "getCameraRotation"), Napi::Function::New(env, GetCameraRotation));
     exports.Set(Napi::String::New(env, "getCameraRecordingPath"), Napi::Function::New(env, GetCameraRecordingPath));
     exports.Set(Napi::String::New(env, "getAudioRecordingPath"), Napi::Function::New(env, GetAudioRecordingPath));
     exports.Set(Napi::String::New(env, "getDisplays"), Napi::Function::New(env, GetDisplays));
