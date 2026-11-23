@@ -256,6 +256,7 @@ class MacRecorder extends EventEmitter {
 		this.recordingMode = "iphone";
 		this._resetPauseState();
 		this._iosCaptureInterrupted = false;
+		this._iosCaptureStalled = false;
 		this._applyMicFilters();
 
 		try {
@@ -283,13 +284,31 @@ class MacRecorder extends EventEmitter {
 			this.syncTimestamp = this.recordingStartTime;
 			this.recordingTimer = setInterval(() => {
 				const status = nativeBinding.getIOSDeviceRecordingStatus?.();
+				// `interrupted` is set only when the phone is really gone (cable
+				// disconnected, capture session died, movie output finished on its
+				// own). A static iPhone screen simply sends no new frames and must
+				// never end the user's recording.
 				if (status?.interrupted && !this._iosCaptureInterrupted) {
 					this._iosCaptureInterrupted = true;
 					this.emit("captureInterrupted", {
 						outputPath: this.outputPath,
+						sourceType: "iphone",
 						videoDuration: status.videoDuration,
-						message: "The iPhone stopped sending video frames. Stop the recording to save the captured portion.",
+						message: status.deviceConnected === false
+							? "The iPhone was disconnected. The captured portion will be saved."
+							: "The iPhone capture stopped unexpectedly. The captured portion will be saved.",
 					});
+				} else if (status?.stalled && !this._iosCaptureStalled) {
+					this._iosCaptureStalled = true;
+					this.emit("captureStalled", {
+						outputPath: this.outputPath,
+						sourceType: "iphone",
+						sampleLag: status.sampleLag,
+						message: "The iPhone is not sending any media. Unlock it and keep it awake; recording continues.",
+					});
+				} else if (!status?.stalled && this._iosCaptureStalled) {
+					this._iosCaptureStalled = false;
+					this.emit("captureResumed", { outputPath: this.outputPath, sourceType: "iphone" });
 				}
 				this.emit("timeUpdate", this._getRecordingTimeSeconds());
 			}, 1000);
@@ -391,6 +410,7 @@ class MacRecorder extends EventEmitter {
 		this.sessionTimestamp = null;
 		this.syncTimestamp = null;
 		this._iosCaptureInterrupted = false;
+		this._iosCaptureStalled = false;
 		this._resetPauseState();
 		return result;
 	}
@@ -1332,7 +1352,29 @@ class MacRecorder extends EventEmitter {
 					console.log(`   Active components: ${activeComponents.join(', ')}`);
 
 					// Timer başlat (progress tracking için)
+					this._screenCaptureInterrupted = false;
 					this.recordingTimer = setInterval(() => {
+						// macOS can end the ScreenCaptureKit stream on its own (display
+						// unplugged, recorded window closed, "Stop Sharing", sleep) and
+						// a writer can fail (disk full). Native finalizes the file; tell
+						// the app so it saves now instead of counting an empty recording.
+						if (!this._screenCaptureInterrupted) {
+							let lifecycle = null;
+							try {
+								lifecycle = nativeBinding.getRecordingLifecycleStatus?.() || null;
+							} catch (_) {}
+							if (lifecycle?.captureSourceStopped === true) {
+								this._screenCaptureInterrupted = true;
+								this.emit("captureInterrupted", {
+									outputPath: this.outputPath,
+									sourceType: "screen",
+									reason: lifecycle.captureStopReason || null,
+									message: lifecycle.videoWriterFailed
+										? "The screen recording could not be written (is the disk full?). The captured portion will be saved."
+										: "macOS stopped the screen capture (display or window changed, sharing stopped, or sleep). The captured portion will be saved.",
+								});
+							}
+						}
 						this.emit("timeUpdate", this._getRecordingTimeSeconds());
 					}, 1000);
 
@@ -1646,7 +1688,8 @@ class MacRecorder extends EventEmitter {
 					}
 				} catch (nativeError) {
 					console.log('⚠️ Native stop failed:', nativeError.message);
-					success = true; // Assume success to avoid throwing
+					// Only report success when there is a file to hand to the app.
+					success = !!this.outputPath && fs.existsSync(this.outputPath);
 				}
 
 				await require("./recorder_runtime_safety.cjs").waitForNativeIdle(nativeBinding);
@@ -1716,6 +1759,14 @@ class MacRecorder extends EventEmitter {
 				this.recordingDisplayInfo = null;
 
 				const sessionId = this.sessionTimestamp;
+				let captureHealth = null;
+				try {
+					captureHealth = nativeBinding.getRecordingLifecycleStatus?.() || null;
+				} catch (_) {}
+				const sourceStopped = this._screenCaptureInterrupted === true ||
+					captureHealth?.captureSourceStopped === true;
+				const audioWriterFailed = captureHealth?.audioWriterFailed === true;
+				this._screenCaptureInterrupted = false;
 				const result = {
 					code: success ? 0 : 1,
 					outputPath: this.outputPath,
@@ -1725,6 +1776,14 @@ class MacRecorder extends EventEmitter {
 					pausedDuration,
 					sessionTimestamp: sessionId,
 					syncTimestamp: this.syncTimestamp,
+					interrupted: sourceStopped,
+					warning: sourceStopped
+						? captureHealth?.videoWriterFailed
+							? "The screen recording could not be written (is the disk full?). The captured portion was saved."
+							: `macOS stopped the screen capture before you pressed Stop${captureHealth?.captureStopReason ? ` (${captureHealth.captureStopReason})` : ""}. The captured portion was saved.`
+						: audioWriterFailed
+							? "The recording's audio could not be written. The video was saved; part of the audio may be missing."
+							: null,
 				};
 
 				this.emit("stopped", result);

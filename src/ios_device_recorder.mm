@@ -48,7 +48,16 @@ extern "C" bool resumeIOSDeviceRecording(void);
 @property(atomic) CMTime stopHostTime;
 @property(atomic) BOOL movieStopIssued;
 @property(atomic) BOOL unexpectedlyFinished;
+// Host-clock seconds at which the most recent sample of any type / of video
+// arrived. A USB iPhone only sends a screen frame when its content changes, so
+// video silence alone is NOT a capture failure; its muxed audio keeps flowing.
+@property(atomic) double lastSampleArrivalSeconds;
+@property(atomic) double lastVideoArrivalSeconds;
 @end
+
+static double MRIOSHostNowSeconds(void) {
+    return CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()));
+}
 
 static BOOL MRIOSHasProducedMedia(MRIOSDeviceRecorder *recorder) {
     if (!recorder.movieOutput.isRecording) return NO;
@@ -87,12 +96,41 @@ static void MRIOSMarkSegmentStarted(MRIOSDeviceRecorder *recorder,
 - (void)captureOutput:(AVCaptureFileOutput *)output
         didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         fromConnection:(AVCaptureConnection *)connection {
+    double arrivalSeconds = MRIOSHostNowSeconds();
+    self.lastSampleArrivalSeconds = arrivalSeconds;
     // A USB iPhone is a muxed source. Audio can arrive well before its first
     // screen frame; starting the movie from that sample produces an audio-long
     // file whose video begins late (or ends early in the editor).
     CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
-    if (!format || CMFormatDescriptionGetMediaType(format) != kCMMediaType_Video ||
-        !CMSampleBufferDataIsReady(sampleBuffer)) return;
+    if (!format || !CMSampleBufferDataIsReady(sampleBuffer)) return;
+    CMMediaType mediaType = CMFormatDescriptionGetMediaType(format);
+    if (mediaType == kCMMediaType_Audio) {
+        // A static iPhone screen sends no new video frames, so waiting for a
+        // video sample at the stop time would always time out (8 s) and flag a
+        // healthy recording as incomplete. When the phone's audio has reached
+        // the stop time and no video arrived recently, the screen is idle (not
+        // lagging): every captured frame is already in the file, stop now.
+        BOOL shouldStopOnAudio = NO;
+        @synchronized (self) {
+            if (self.stopRequested && !self.movieStopIssued && output.isRecording &&
+                CMTIME_IS_NUMERIC(self.stopHostTime)) {
+                CMTime audioHostTime = MRSyncHostTimestamp(
+                    CMSampleBufferGetPresentationTimeStamp(sampleBuffer), self.session.masterClock);
+                BOOL audioReachedStop = CMTIME_IS_NUMERIC(audioHostTime) &&
+                    CMTIME_COMPARE_INLINE(audioHostTime, >=, self.stopHostTime);
+                BOOL videoIdle = self.lastVideoArrivalSeconds <= 0.0 ||
+                    (arrivalSeconds - self.lastVideoArrivalSeconds) >= 1.0;
+                if (audioReachedStop && videoIdle) {
+                    self.movieStopIssued = YES;
+                    shouldStopOnAudio = YES;
+                }
+            }
+        }
+        if (shouldStopOnAudio) [output stopRecording];
+        return;
+    }
+    if (mediaType != kCMMediaType_Video) return;
+    self.lastVideoArrivalSeconds = arrivalSeconds;
     CMTime hostTime = MRSyncHostTimestamp(
         CMSampleBufferGetPresentationTimeStamp(sampleBuffer), self.session.masterClock);
     if (!CMTIME_IS_NUMERIC(hostTime)) return;
@@ -449,6 +487,8 @@ static BOOL MRIOSStartNextSegment(MRIOSDeviceRecorder *recorder, NSError **error
     recorder.movieStopIssued = NO;
     recorder.unexpectedlyFinished = NO;
     recorder.lastVideoHostTime = kCMTimeInvalid;
+    recorder.lastSampleArrivalSeconds = 0.0;
+    recorder.lastVideoArrivalSeconds = 0.0;
 
     recorder.segmentStartPending = YES;
     // The first video sample is the movie's exact origin. Do not wait for the
@@ -972,7 +1012,9 @@ extern "C" bool stopIOSDeviceRecording(void) {
         if (recorder.movieOutput.isRecording && !recorder.movieStopIssued &&
             !recorder.segmentFinishCompleted) {
             BOOL reachedStopFrame = MRWaitForFlag(^bool{
-                return recorder.movieStopIssued || recorder.segmentFinishCompleted;
+                // A disconnected phone will never deliver the stop frame.
+                return recorder.movieStopIssued || recorder.segmentFinishCompleted ||
+                    !recorder.deviceInput.device.isConnected;
             }, 8.0);
             if (!reachedStopFrame) {
                 g_lastIOSStopIncomplete = YES;
@@ -1226,16 +1268,33 @@ Napi::Value GetIOSDeviceRecordingStatus(const Napi::CallbackInfo& info) {
     MRIOSDeviceRecorder *recorder = g_iosRecorder;
     if (recorder) {
         CMTime lastVideo = recorder.lastVideoHostTime;
+        double nowSeconds = MRIOSHostNowSeconds();
         double videoLag = CMTIME_IS_NUMERIC(lastVideo)
             ? MAX(0.0, CMTimeGetSeconds(CMTimeSubtract(
                 CMClockGetTime(CMClockGetHostTimeClock()), lastVideo)))
             : 0.0;
-        BOOL interrupted = recorder.unexpectedlyFinished ||
-            (!recorder.paused && !recorder.stopRequested &&
-             recorder.movieOutput.isRecording && videoLag > 5.0);
+        double sampleLag = recorder.lastSampleArrivalSeconds > 0.0
+            ? MAX(0.0, nowSeconds - recorder.lastSampleArrivalSeconds)
+            : 0.0;
+        AVCaptureDevice *device = recorder.deviceInput.device;
+        BOOL active = !recorder.stopRequested && recorder.startCompleted;
+        // Only a real loss of the source ends the recording: the movie output
+        // finished on its own, the cable was disconnected or the session died.
+        // A static iPhone screen sends no video frames for minutes; that used to
+        // trip a 5-second video-lag check and silently stop the user's recording.
+        BOOL deviceLost = active && device != nil &&
+            (!device.isConnected || !recorder.session.isRunning);
+        BOOL interrupted = recorder.unexpectedlyFinished || deviceLost;
+        // Soft signal for the UI: nothing at all (not even audio) for a while.
+        // Informational only; the recording keeps running.
+        BOOL stalled = !interrupted && active && !recorder.paused &&
+            recorder.movieOutput.isRecording && sampleLag > 10.0;
         status.Set("videoDuration", Napi::Number::New(info.Env(), MRIOSVideoDurationSeconds(recorder)));
         status.Set("videoLag", Napi::Number::New(info.Env(), videoLag));
+        status.Set("sampleLag", Napi::Number::New(info.Env(), sampleLag));
+        status.Set("deviceConnected", Napi::Boolean::New(info.Env(), device != nil && device.isConnected));
         status.Set("interrupted", Napi::Boolean::New(info.Env(), interrupted));
+        status.Set("stalled", Napi::Boolean::New(info.Env(), stalled));
         status.Set("isFinalizing", Napi::Boolean::New(info.Env(), recorder.stopRequested));
     }
     NSString *path = currentIOSDeviceRecordingPath();

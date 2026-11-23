@@ -29,6 +29,12 @@ API_AVAILABLE(macos(12.3))
 + (BOOL)isScheduling;
 + (BOOL)isCleaningUp;
 + (BOOL)isFullyInitialized;  // Check if default session initialized
+// Capture health for the current/last recording (reset when a new one starts).
++ (BOOL)captureSourceStopped;   // macOS ended the stream or the writer failed
++ (BOOL)videoWriterFailed;
++ (BOOL)audioWriterFailed;
++ (NSString *)captureStopReason;
++ (void)resetCaptureHealth;     // call synchronously when a new recording starts
 + (NSTimeInterval)getVideoStartTimestamp;  // Get default session timestamp
 
 + (BOOL)setupVideoWriter;

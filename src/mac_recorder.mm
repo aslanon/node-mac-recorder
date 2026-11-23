@@ -281,6 +281,13 @@ Napi::Value StartRecording(const Napi::CallbackInfo& info) {
     MRSyncSetStopLimitSeconds(-1.0);
     MRLog(@"✅ Stop limit reset to unlimited for new recording");
 
+    // Health flags of the previous recording must not leak into this one: the
+    // JS poll would otherwise stop the new recording right after it started.
+    // ScreenCaptureKit setup is asynchronous, so reset synchronously here.
+    if (@available(macOS 12.3, *)) {
+        [ScreenCaptureKitRecorder resetCaptureHealth];
+    }
+
     if (g_isRecording) {
         MRLog(@"⚠️ Still recording after cleanup - forcing stop");
         return Napi::Boolean::New(env, false);
@@ -1509,6 +1516,26 @@ Napi::Value GetRecordingLifecycleStatus(const Napi::CallbackInfo& info) {
     result.Set("isPaused", MRSyncIsPaused());
     result.Set("pausedDuration", MRSyncGetPausedDurationSeconds());
     result.Set("hasAuxiliaryRecording", hasCameraRecordingResources() || isStandaloneAudioRecording());
+    bool sourceStopped = false;
+    bool videoWriterFailed = false;
+    bool audioWriterFailed = false;
+    std::string stopReason;
+    if (@available(macOS 12.3, *)) {
+        // Polled every second, also from the multi-process worker which has no
+        // Cocoa run loop: keep the autoreleased reason inside a local pool.
+        @autoreleasepool {
+            sourceStopped = [ScreenCaptureKitRecorder captureSourceStopped];
+            videoWriterFailed = [ScreenCaptureKitRecorder videoWriterFailed];
+            audioWriterFailed = [ScreenCaptureKitRecorder audioWriterFailed];
+            NSString *reason = [ScreenCaptureKitRecorder captureStopReason];
+            if (reason.length > 0) stopReason = std::string([reason UTF8String] ?: "");
+        }
+    }
+    // Set when macOS ended the screen stream or the writer failed mid-recording.
+    result.Set("captureSourceStopped", sourceStopped);
+    result.Set("videoWriterFailed", videoWriterFailed);
+    result.Set("audioWriterFailed", audioWriterFailed);
+    if (!stopReason.empty()) result.Set("captureStopReason", stopReason);
     return result;
 }
 

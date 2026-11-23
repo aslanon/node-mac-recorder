@@ -187,6 +187,75 @@ static NSInteger g_lastVideoFramesAppended = 0;
 static NSInteger g_lastVideoFramesDropped = 0;
 static NSInteger g_lastVideoTargetFPS = 0;
 
+// Static-screen tail: ScreenCaptureKit only delivers a frame when the screen
+// changes. Without this the screen movie ended at the last change, shorter than
+// the recording (camera/audio are extended to the stop time). The last appended
+// frame is kept and repeated at the stop time during finalization.
+static CVPixelBufferRef g_lastAppendedPixelBuffer = NULL;
+static CMTime g_lastAppendedPresentation = kCMTimeInvalid;
+
+// Capture health, readable from JS while recording and after the stream ends.
+// Previously a stream stopped by macOS (display unplugged, window closed,
+// "Stop Sharing", sleep) or a failed writer finalized silently while the UI
+// kept counting, so the user later got only the first part of the recording.
+static std::atomic<bool> g_captureSourceStopped{false};
+static std::atomic<bool> g_videoWriterFailed{false};
+static std::atomic<bool> g_audioWriterFailed{false};
+static NSString *g_captureStopReason = nil;
+
+static void SCKReleaseLastAppendedFrame(void) {
+    if (g_lastAppendedPixelBuffer) {
+        CVPixelBufferRelease(g_lastAppendedPixelBuffer);
+        g_lastAppendedPixelBuffer = NULL;
+    }
+    g_lastAppendedPresentation = kCMTimeInvalid;
+}
+
+static void SCKSetCaptureStopReason(NSString *reason) {
+    @synchronized([NSObject class]) {
+        NSString *owned = [reason copy];
+        [g_captureStopReason release];
+        g_captureStopReason = owned;
+    }
+}
+
+static void SCKResetCaptureHealth(void) {
+    g_captureSourceStopped = false;
+    g_videoWriterFailed = false;
+    g_audioWriterFailed = false;
+    SCKSetCaptureStopReason(nil);
+}
+
+static AVAssetWriterInputPixelBufferAdaptor * _Nullable CurrentPixelBufferAdaptor(void);
+
+// Repeat the last captured frame at the stop time so the screen movie lasts as
+// long as the recording even when the screen was static at the end. Runs on
+// the control queue after the sample queues were drained.
+static void SCKAppendStaticTailFrame(double stopLimitSeconds) {
+    if (!g_videoWriter || !g_videoInput || !g_videoWriterStarted) return;
+    if (!g_lastAppendedPixelBuffer || !CMTIME_IS_NUMERIC(g_lastAppendedPresentation)) return;
+    if (!(stopLimitSeconds > 0) || !isfinite(stopLimitSeconds)) return;
+    if (g_videoWriter.status != AVAssetWriterStatusWriting) return;
+    double lastSeconds = CMTimeGetSeconds(g_lastAppendedPresentation);
+    double frameInterval = 1.0 / (double)MAX(1, g_targetFPS);
+    if (stopLimitSeconds <= lastSeconds + frameInterval) return;
+    AVAssetWriterInputPixelBufferAdaptor *adaptor = CurrentPixelBufferAdaptor();
+    if (![adaptor isKindOfClass:[AVAssetWriterInputPixelBufferAdaptor class]]) return;
+    for (int attempt = 0; attempt < 50 && !g_videoInput.readyForMoreMediaData; attempt++) {
+        [NSThread sleepForTimeInterval:0.01];
+    }
+    if (!g_videoInput.readyForMoreMediaData) {
+        NSLog(@"[Recorder] Static tail frame skipped: encoder not ready");
+        return;
+    }
+    CMTime tailTime = CMTimeMakeWithSeconds(stopLimitSeconds, 600);
+    if ([adaptor appendPixelBuffer:g_lastAppendedPixelBuffer withPresentationTime:tailTime]) {
+        MRLog(@"🧷 Static screen tail: held last frame from %.3fs to %.3fs", lastSeconds, stopLimitSeconds);
+    } else {
+        NSLog(@"[Recorder] Static tail frame append failed: %@", g_videoWriter.error);
+    }
+}
+
 // This target uses manual reference counting. Async configuration copies no
 // longer leak, so globals must explicitly own paths used after setup returns.
 static void SCKSetOwnedString(NSString **slot, NSString *value) {
@@ -464,7 +533,17 @@ static void FinishWriter(AVAssetWriter *writer, AVAssetWriterInput *input) {
 
 static void CleanupWriters(void) {
     if (g_videoWriter) {
-        FinishWriter(g_videoWriter, g_videoInput);
+        double stopLimit = MRSyncGetStopLimitSeconds();
+        if (stopLimit > 0 && isfinite(stopLimit) && g_videoWriterStarted) {
+            SCKAppendStaticTailFrame(stopLimit);
+            MRFinishAssetWriterSafely(g_videoWriter, 5.0, stopLimit);
+        } else {
+            FinishWriter(g_videoWriter, g_videoInput);
+        }
+        SCKReleaseLastAppendedFrame();
+        if (g_videoWriterFailed) {
+            NSLog(@"[Recorder] Screen video writer had failed during recording");
+        }
         [g_videoWriter release];
         g_videoWriter = nil;
         g_videoInput = nil;
@@ -608,6 +687,8 @@ static void SCKRequestStop(SCStream *expectedStream) {
     dispatch_async(ScreenCaptureControlQueue(), ^{
         if (stream != g_stream || g_isCleaningUp) return;
         NSLog(@"[Recorder] Capture source stopped: %@", error);
+        g_captureSourceStopped = true;
+        SCKSetCaptureStopReason(error.localizedDescription ?: @"The screen capture source stopped");
         ++g_schedulingGeneration;
         SCKCompleteStop();
     });
@@ -753,8 +834,23 @@ static void SCKRequestStop(SCStream *expectedStream) {
     BOOL appended = [adaptor appendPixelBuffer:pixelBuffer withPresentationTime:relativePresentation];
     if (!appended) {
         NSLog(@"⚠️ Failed appending pixel buffer: %@", g_videoWriter.error);
+        if (g_videoWriter.status == AVAssetWriterStatusFailed && !g_videoWriterFailed) {
+            // A failed writer (disk full, encoder error) accepts nothing more.
+            // Stop now and let JS save the captured part instead of recording
+            // into the void while the UI keeps counting.
+            g_videoWriterFailed = true;
+            g_captureSourceStopped = true;
+            SCKSetCaptureStopReason(g_videoWriter.error.localizedDescription ?: @"The screen video writer failed");
+            dispatch_async(ScreenCaptureControlQueue(), ^{ SCKRequestStop(stream); });
+        }
     } else {
         g_videoFramesAppended++;
+        if (g_lastAppendedPixelBuffer != pixelBuffer) {
+            CVPixelBufferRetain(pixelBuffer);
+            if (g_lastAppendedPixelBuffer) CVPixelBufferRelease(g_lastAppendedPixelBuffer);
+            g_lastAppendedPixelBuffer = pixelBuffer;
+        }
+        g_lastAppendedPresentation = relativePresentation;
     }
 
     // Frame rate debugging
@@ -769,6 +865,10 @@ static void SCKRequestStop(SCStream *expectedStream) {
     }
     } @catch (NSException *exception) {
         NSLog(@"[Recorder] Sample callback failed safely: %@", exception.reason);
+        if (!g_captureSourceStopped) {
+            g_captureSourceStopped = true;
+            SCKSetCaptureStopReason(exception.reason ?: @"The screen capture failed");
+        }
         dispatch_async(ScreenCaptureControlQueue(), ^{ SCKRequestStop(stream); });
     }
 
@@ -1006,6 +1106,10 @@ static void SCKRequestStop(SCStream *expectedStream) {
     BOOL success = [targetInput appendSampleBuffer:bufferToAppend];
     if (!success) {
         NSLog(@"⚠️ Failed appending audio sample buffer: %@", g_audioWriter.error);
+        if (g_audioWriter.status == AVAssetWriterStatusFailed && !g_audioWriterFailed) {
+            g_audioWriterFailed = true;
+            NSLog(@"[Recorder] Audio writer failed; the screen recording continues without audio");
+        }
     } else {
         static int systemAppendCount = 0;
         static int microphoneAppendCount = 0;
@@ -1049,6 +1153,9 @@ static void SCKRequestStop(SCStream *expectedStream) {
         MRLog(@"❌ Failed creating video writer: %@", error && *error ? (*error).localizedDescription : @"unknown");
         return NO;
     }
+    // Movie fragments keep a long recording playable up to the last fragment if
+    // the app crashes or is killed before finalization (same as iPhone capture).
+    g_videoWriter.movieFragmentInterval = CMTimeMakeWithSeconds(2.0, 600);
     
     NSString *normalizedQuality = SCKNormalizeQualityPreset(g_qualityPreset);
     NSInteger encoderFPS = MAX(1, g_targetFPS);
@@ -1518,6 +1625,28 @@ static void SCKRequestStop(SCStream *expectedStream) {
     return g_firstFrameReceived;
 }
 
++ (BOOL)captureSourceStopped {
+    return g_captureSourceStopped;
+}
+
++ (BOOL)videoWriterFailed {
+    return g_videoWriterFailed;
+}
+
++ (BOOL)audioWriterFailed {
+    return g_audioWriterFailed;
+}
+
++ (NSString *)captureStopReason {
+    @synchronized([NSObject class]) {
+        return [[g_captureStopReason copy] autorelease];
+    }
+}
+
++ (void)resetCaptureHealth {
+    SCKResetCaptureHealth();
+}
+
 + (NSTimeInterval)getVideoStartTimestamp {
     if (!CMTIME_IS_VALID(g_videoStartTime)) {
         return 0;
@@ -1647,6 +1776,8 @@ static void SCKPerformRecordingSetup(NSDictionary *config, SCShareableContent *c
         // CRITICAL FIX: Reset frame tracking at START of new recording
         g_firstFrameReceived = NO;
         g_frameCountSinceStart = 0;
+        SCKResetCaptureHealth();
+        SCKReleaseLastAppendedFrame();
         NSLog(@"🔄 Frame tracking reset for new recording");
 
         NSString *outputPath = config[@"outputPath"];
